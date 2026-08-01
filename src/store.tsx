@@ -48,6 +48,16 @@ interface AppState {
   activeEndpointId: string | null;
   visionEndpoint: EndpointConfig | null;
   reloadLlmConfigs: () => Promise<void>;
+  // 新:主 agent 多轮对话 + 分层 list + 深度 + 文件
+  depth: "popular" | "understand" | "deep";
+  setDepth: (d: "popular" | "understand" | "deep") => void;
+  topics: import("./data/llmClient").Topic[];
+  addTopic: (t: import("./data/llmClient").Topic) => void;
+  setTopics: (t: import("./data/llmClient").Topic[]) => void;
+  pendingFiles: { file_id: string; name: string }[];   // 输入框待发送的文件 chip
+  addPendingFile: (f: { file_id: string; name: string }) => void;
+  removePendingFile: (file_id: string) => void;
+  clearPendingFiles: () => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -61,6 +71,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [stageResetKey, setStageResetKey] = useState(0);
   const [sceneCode, setSceneCode] = useState("");
   const [bbCheckEnabled, setBbCheckEnabled] = useState(true); // BB 重叠检测开关(打回动画)
+  // 新:主 agent 多轮对话状态
+  const [depth, setDepth] = useState<"popular" | "understand" | "deep">("understand");
+  const [topics, setTopics] = useState<import("./data/llmClient").Topic[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<{ file_id: string; name: string }[]>([]);
   const [visionCheckEnabled, setVisionCheckEnabled] = useState(false); // 视觉检查开关(截图给 LLM)
   const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number } | null>(null);
   const verifyResultHandler = useRef<((ok: boolean, error: string, frame: string) => void) | null>(null);
@@ -197,8 +211,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       switchSession, resetToEmpty,
       navRequest, requestNav,
       llmEndpoints, activeEndpointId, visionEndpoint, reloadLlmConfigs,
+      depth, setDepth,
+      topics, addTopic: (t) => setTopics((prev) => (prev.some((x) => x.id === t.id) ? prev : [...prev, t])), setTopics,
+      pendingFiles,
+      addPendingFile: (f) => setPendingFiles((prev) => (prev.some((x) => x.file_id === f.file_id) ? prev : [...prev, f])),
+      removePendingFile: (fid) => setPendingFiles((prev) => prev.filter((x) => x.file_id !== fid)),
+      clearPendingFiles: () => setPendingFiles([]),
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

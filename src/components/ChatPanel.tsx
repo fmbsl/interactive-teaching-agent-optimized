@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction, type R
 import {
   startLesson, nextStep, prevStep, gotoStep, updateQuestion, uploadFile,
   postRenderResult, getTrace,
+  chat, chatAnswer, uploadForSession,
   listSessions, newSession, getSession, exportSession, importSessionFromFile,
-  type ChatEvent, type AgentRole,
+  type ChatEvent, type AgentRole, type Topic,
 } from "../data/llmClient";
 import { useApp, type StepStatus } from "../store";
 
@@ -27,6 +28,7 @@ export default function ChatPanel() {
   const [items, setItems] = useState<RenderedItem[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null); // 主 agent 问的问题;非 null 时发送=回答该问题
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileText, setFileText] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
@@ -44,6 +46,8 @@ export default function ChatPanel() {
     sessionList, setSessionList, switchSession, resetToEmpty,
     navRequest,
     requestVerify, verifyResultHandler,
+    depth, setDepth, topics, addTopic, setTopics,
+    pendingFiles, addPendingFile, removePendingFile, clearPendingFiles,
   } = useApp();
   // 同步 sessionId 到 ref,供 consume/handleEvent 异步循环里取最新值(避免闭包陈旧)
   sessionIdRef.current = sessionId;
@@ -86,9 +90,15 @@ export default function ChatPanel() {
   async function handleUpload(f: File) {
     try {
       setLoading(true);
-      const txt = await uploadFile(f);
-      setFileText(txt);
-      setFileName(f.name);
+      // 新流程:需要 session 才能存文件。无 session 先建一个空 session。
+      let sid = sessionIdRef.current;
+      if (!sid) {
+        sid = await newSession();
+        setSessionId(sid);
+        sessionIdRef.current = sid;
+      }
+      const meta = await uploadForSession(sid, f);
+      addPendingFile({ file_id: meta.file_id, name: meta.name });
     } catch (e: any) {
       setItems((prev) => [...prev, makeItem({ kind: "error", message: e.message }, `e-${Date.now()}`)]);
     } finally {
@@ -120,6 +130,13 @@ export default function ChatPanel() {
       if (ev.kind === "plan") {
         setLesson({ title: ev.title, summary: ev.summary, params: ev.params, steps: ev.steps } as any);
         if (!opts?.isUpdate) setItems((p) => p.filter((x) => x.event.kind !== "message" || x.event.role !== "orchestrator" || !x.event.text.includes("正在分析")));
+      }
+      if (ev.kind === "topic_added") {
+        addTopic(ev.topic);
+      }
+      if (ev.kind === "ask") {
+        // 主 agent 问用户:记下问题,发送按钮变为"回答"(answerAsk)
+        setPendingAsk(ev.question);
       }
       if (ev.kind === "explain") {
         setCurrentStep(ev.stepId);
@@ -190,10 +207,16 @@ export default function ChatPanel() {
     setLoading(true);
     setItems((prev) => [...prev, makeItem({ kind: "message", role: "user", text: q } as ChatEvent, `u-${Date.now()}`)]);
     try {
-      if (sessionId && lesson.steps.length > 0) {
-        await consume(updateQuestion(sessionId, q, fileText ?? undefined), { isUpdate: true });
+      // 若有 pendingAsk(主 agent 问了问题),发送=回答该问题;否则正常对话
+      if (pendingAsk) {
+        const ask = pendingAsk;
+        setPendingAsk(null);
+        await consume(chatAnswer(sessionIdRef.current || "", q));
+        void ask;
       } else {
-        await consume(startLesson(q, fileText ?? undefined));
+        const fileIds = pendingFiles.map((f) => f.file_id);
+        clearPendingFiles();
+        await consume(chat(sessionIdRef.current || "", q, depth, fileIds));
       }
     } finally {
       setLoading(false);
@@ -227,8 +250,12 @@ export default function ChatPanel() {
       const sid = await newSession();
       resetToEmpty();
       setSessionId(sid);
+      sessionIdRef.current = sid;
       setItems([]);
       setInput("");
+      setPendingAsk(null);
+      setTopics([]);
+      clearPendingFiles();
       setFileName(null);
       setFileText(null);
       setShowSessions(false);
@@ -259,6 +286,9 @@ export default function ChatPanel() {
       } catch {
         setItems([]);
       }
+      setTopics((detail as any).topics || []);
+      setPendingAsk(null);
+      clearPendingFiles();
       setFileName(null);
       setFileText(null);
       setShowSessions(false);
@@ -345,7 +375,21 @@ export default function ChatPanel() {
         )}
       </div>
 
-      {/* 知识点 list(可点击跳步) */}
+      {/* 分层知识点 list(新:多主题并列,每个主题可展开看子知识点) */}
+      {topics.length > 0 && (
+        <div className="px-3 py-2 border-b border-[#1e293b] bg-[#0b0f18]/60 shrink-0">
+          <div className="flex items-center mb-1">
+            <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">知识点 · {topics.length} 个主题</span>
+          </div>
+          <div className="space-y-1 max-h-56 overflow-y-auto">
+            {topics.map((tp) => (
+              <TopicNode key={tp.id} topic={tp} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 知识点 list(旧:单主题 lesson.steps,兼容旧 session) */}
       {lesson.steps.length > 0 && (
         <div className="px-3 py-2.5 border-b border-[#1e293b] bg-[#0b0f18]/60 shrink-0">
           <div className="flex items-center mb-1.5">
@@ -381,17 +425,36 @@ export default function ChatPanel() {
       </div>
 
       {/* 底部:输入(无上一步/下一步按钮,改用 list 点击或键盘) */}
-      <div className="p-2.5 border-t border-[#1e293b] shrink-0">
+      <div className="p-2.5 border-t border-[#1e293b] shrink-0 space-y-1.5">
+        {/* 深度选择 + 待发文件 chip */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={depth}
+            onChange={(e) => setDepth(e.target.value as any)}
+            className="text-[10px] bg-[#161f2e] border border-[#1e293b] rounded px-1.5 py-0.5 text-[#9aa6b8] outline-none"
+            title="学习深度:影响主 agent 拆解粒度与讲解风格"
+          >
+            <option value="popular">科普</option>
+            <option value="understand">理解</option>
+            <option value="deep">深度理解</option>
+          </select>
+          {pendingFiles.map((f) => (
+            <span key={f.file_id} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#4a9eff]/10 text-[#5fb0ff] border border-[#4a9eff]/20">
+              📎 {f.name}
+              <button onClick={() => removePendingFile(f.file_id)} className="text-[#5fb0ff]/60 hover:text-[#5fb0ff]">×</button>
+            </span>
+          ))}
+        </div>
         <div className="flex items-end gap-2 rounded-lg bg-[#161f2e] border border-[#1e293b] px-2.5 py-1.5 focus-within:border-[#4a9eff]/50 transition-colors">
           <textarea
-            placeholder={sessionId ? "追问或更新问题…" : "输入要学的知识点,如:梯度下降、傅里叶变换…"}
+            placeholder={pendingAsk ? "回答主 agent 的问题…" : sessionId ? "追问或更新问题…" : "输入要学的知识点,如:梯度下降、傅里叶变换…"}
             rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
             className="flex-1 bg-transparent text-[12px] text-[#dfe6f0] resize-none outline-none placeholder:text-[#4a5365] leading-5"
           />
-          <button onClick={submit} disabled={loading} className="btn-blue px-3 py-1 rounded-md text-[11px] disabled:opacity-40">{loading ? "…" : sessionId ? "更新" : "发送"}</button>
+          <button onClick={submit} disabled={loading} className="btn-blue px-3 py-1 rounded-md text-[11px] disabled:opacity-40">{loading ? "…" : pendingAsk ? "回答" : "发送"}</button>
         </div>
       </div>
     </div>
@@ -402,6 +465,30 @@ function StepBadge({ status, id }: { status: StepStatus; id: number }) {
   if (status === "done") return <span className="w-4 h-4 rounded grid place-items-center text-[9px] bg-[#4a9eff] text-[#070a12]">✓</span>;
   if (status === "active") return <span className="w-4 h-4 rounded grid place-items-center text-[9px] bg-[#4a9eff]/20 text-[#5fb0ff] border border-[#4a9eff]/40 tnum">{id}</span>;
   return <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[#4a5365] border border-[#1e293b] tnum">{id}</span>;
+}
+
+// 分层知识点主题节点:可折叠,展开显示子知识点(只读;点击导航待 step_id 字符串化后做)
+function TopicNode({ topic }: { topic: Topic }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="rounded-md border border-[#162032] bg-[#0d121c]/60">
+      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-1.5 px-2 py-1 text-left">
+        <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
+        <span className="text-[11px] font-medium text-[#dfe6f0] truncate">{topic.title}</span>
+        <span className="ml-auto chip">{topic.steps.length} 步</span>
+      </button>
+      {open && (
+        <ol className="px-2 pb-1.5 pl-6 space-y-0.5">
+          {topic.steps.map((s, i) => (
+            <li key={s.id} className="flex items-center gap-2 text-[10.5px] text-[#9aa6b8] py-0.5">
+              <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[#4a5365] border border-[#1e293b] tnum shrink-0">{i + 1}</span>
+              <span className="truncate">{s.title}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
 }
 
 function renderTree(items: RenderedItem[], setItems: Dispatch<SetStateAction<RenderedItem[]>>) {
@@ -525,6 +612,21 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
         <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1.5 my-0.5">
           <div className="text-[10px] text-[#5fb0ff] mb-0.5">✎ 讲解 · {event.title}</div>
           <div className="text-[11px] text-[#9aa6b8] leading-relaxed line-clamp-3">{event.narration}</div>
+        </div>
+      );
+    case "ask":
+      return (
+        <div className="rounded-md border border-[#4a9eff]/40 bg-[#4a9eff]/5 px-2.5 py-1.5 my-0.5">
+          <div className="text-[10px] text-[#5fb0ff] mb-0.5">❓ 主 agent 想确认</div>
+          <div className="text-[11.5px] text-[#dfe6f0] leading-relaxed">{event.question}</div>
+          <div className="text-[9px] text-[#4a5365] mt-1">在下方输入框回答后发送</div>
+        </div>
+      );
+    case "topic_added":
+      return (
+        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
+          <div className="text-[10px] text-[#5fb0ff] mb-0.5">📚 新增主题 · {event.topic.title}</div>
+          <div className="text-[10.5px] text-[#6b7686]">{event.topic.steps.length} 步:{event.topic.steps.map((s) => s.title).join(" / ")}</div>
         </div>
       );
     case "done":

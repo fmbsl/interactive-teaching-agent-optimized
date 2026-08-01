@@ -6,6 +6,11 @@ import type { LessonParam, LessonStep } from "./lesson";
 
 export type AgentRole = "user" | "orchestrator" | "animator" | "verifier" | "narrator";
 
+export type Depth = "popular" | "understand" | "deep";
+
+export interface TopicStep { id: string; title: string }
+export interface Topic { id: string; title: string; summary: string; steps: TopicStep[] }
+
 export type ChatEvent = {
   id?: string; parentId?: string | null; ts?: number; agent?: string;
 } & (
@@ -14,11 +19,14 @@ export type ChatEvent = {
   | { kind: "plan"; title: string; summary: string; params: LessonParam[]; steps: LessonStep[] }
   | { kind: "step-start"; stepId: number; title: string }
   | { kind: "agent_start"; stepId: number; title: string }
-  | { kind: "tool_call"; stepId: number; name: string; args: Record<string, any> }
-  | { kind: "tool_result"; stepId: number; toolCallId: string | null; output: string }
+  | { kind: "tool_call"; stepId: number | null; name: string; args: Record<string, any> }
+  | { kind: "tool_result"; stepId: number | null; toolCallId: string | null; output: string }
   | { kind: "render_request"; stepId: number; code: string }
   | { kind: "render_result"; stepId: number; ok: boolean; error: string }
   | { kind: "explain"; stepId: number; title: string; intent: string; formula: string; narration: string; explanation?: string; paramsUsed: string[]; params: { name: string; label: string; min: number; max: number; step: number; default: number }[]; sceneCode: string }
+  | { kind: "topic_added"; topic: Topic }
+  | { kind: "ask"; question: string }
+  | { kind: "animation_request"; stepId: string; step_id: string }
   | { kind: "done"; message: string }
   | { kind: "error"; message: string }
 );
@@ -33,6 +41,42 @@ export async function uploadFile(file: File): Promise<string> {
   const obj = await resp.json();
   if (obj.error) throw new Error(obj.error);
   return obj.file_text as string;
+}
+
+/** 上传文件到指定 session(新流程):存后端,返回 {file_id,name,size}。主 agent 用 read/grep 按需读。 */
+export async function uploadForSession(sid: string, file: File): Promise<{ file_id: string; name: string; size: number }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("sid", sid);
+  const resp = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: fd });
+  if (!resp.ok) throw new Error(`上传失败 ${resp.status}`);
+  const obj = await resp.json();
+  if (obj.error) throw new Error(obj.error);
+  return { file_id: obj.file_id, name: obj.name, size: obj.size };
+}
+
+/** 主 agent 多轮对话:SSE 流。sid 留空则后端新建。 */
+export async function* chat(sid: string, text: string, depth: Depth = "understand", fileIds: string[] = []): AsyncGenerator<ChatEvent> {
+  yield* streamSSE(`${API_BASE}/api/chat`, { sid, text, depth, file_ids: fileIds });
+}
+
+/** 回传 ask_user 的回答 或 generate_animation 的结果,恢复主 agent:SSE 流。 */
+export async function* chatAnswer(sid: string, answer: string = "", result: any = null): AsyncGenerator<ChatEvent> {
+  const body: Record<string, unknown> = { sid, answer };
+  if (result !== null) body.result = result;
+  yield* streamSSE(`${API_BASE}/api/chat_answer`, body);
+}
+
+/** 用户偏好(全局记忆):GET 取 / POST 存。 */
+export async function getUserPrefs(): Promise<string> {
+  const r = await fetch(`${API_BASE}/api/user_prefs`);
+  if (!r.ok) return "";
+  return (await r.json()).prefs || "";
+}
+export async function saveUserPrefs(prefs: string): Promise<void> {
+  await fetch(`${API_BASE}/api/user_prefs`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefs }),
+  });
 }
 
 /** 发起会话:SSE 流。yield 出事件。 */
@@ -123,6 +167,9 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
       case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? e.stepId), code: p.code || "" };
       case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? e.stepId), ok: !!p.ok, error: p.error || "" };
       case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? e.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
+      case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
+      case "ask": return { ...base, kind: "ask", question: p.question || "" };
+      case "animation_request": return { ...base, kind: "animation_request", stepId: p.step_id || "", step_id: p.step_id || "" };
       case "error": return { ...base, kind: "error", message: p.message };
       default: return null;
     }
@@ -338,6 +385,9 @@ function parseSSE(raw: string): ChatEvent | null {
     case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? tree?.stepId), code: p.code || "" };
     case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? tree?.stepId), ok: !!p.ok, error: p.error || "" };
     case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? tree?.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
+    case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
+    case "ask": return { ...base, kind: "ask", question: p.question || "" };
+    case "animation_request": return { ...base, kind: "animation_request", stepId: p.step_id || "", step_id: p.step_id || "" };
     case "done": return { kind: "done", message: obj.message };
     case "error": return tree ? { ...base, kind: "error", message: p.message } : { kind: "error", message: obj.message };
     default: return null;

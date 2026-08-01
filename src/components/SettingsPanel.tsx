@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../store";
-import { saveLlmConfig, deleteLlmConfig, setActiveLlmConfig, saveVisionConfig, type EndpointConfig } from "../data/llmClient";
+import { saveLlmConfig, deleteLlmConfig, setActiveLlmConfig, saveVisionConfig, getUserPrefs, saveUserPrefs, type EndpointConfig } from "../data/llmClient";
 
 const EMPTY: EndpointConfig = {
   id: "", name: "", baseUrl: "", apiKey: "", model: "",
@@ -14,6 +14,13 @@ const EMPTY_VISION: EndpointConfig = {
 
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { llmEndpoints, activeEndpointId, visionEndpoint, reloadLlmConfigs } = useApp();
+  const [prefs, setPrefs] = useState("");
+  const [prefsBusy, setPrefsBusy] = useState(false);
+  useEffect(() => { getUserPrefs().then(setPrefs); }, []);
+  const savePrefs = async () => {
+    setPrefsBusy(true);
+    try { await saveUserPrefs(prefs); } finally { setPrefsBusy(false); }
+  };
   const [editing, setEditing] = useState<EndpointConfig | null>(null);
   const [editingVision, setEditingVision] = useState<EndpointConfig | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -150,6 +157,21 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 )}
               </div>
             )}
+          </div>
+
+          {/* 用户偏好(全局记忆,主 agent 提示词读它) */}
+          <div className="mt-4">
+            <div className="text-[11px] font-medium text-[#9aa6b8] mb-1.5">用户偏好(主 agent 全局记忆)</div>
+            <textarea
+              value={prefs}
+              onChange={(e) => setPrefs(e.target.value)}
+              rows={4}
+              placeholder="如:喜欢用类比讲解;数学背景较强,可以跳过基础;偏好简洁,少用公式…"
+              className="w-full text-[11px] text-[#dfe6f0] bg-[#0a0f1a] border border-[#1e293b] rounded px-2 py-1.5 outline-none resize-none leading-relaxed"
+            />
+            <button onClick={savePrefs} disabled={prefsBusy} className="btn-blue mt-1.5 px-3 py-1 rounded-md text-[11px] disabled:opacity-40">
+              {prefsBusy ? "保存中…" : "保存偏好"}
+            </button>
           </div>
         </div>
       </div>

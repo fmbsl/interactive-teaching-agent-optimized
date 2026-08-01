@@ -597,6 +597,8 @@ def session_detail(request, sid: str):
         "current_step": s.get("current_step", 1),
         "lesson": {**lesson, "steps": merged_steps},
         "scene_codes": s.get("scene_codes", {}),
+        "topics": s.get("topics", []),
+        "depth": s.get("depth", "understand"),
     })
 
 
