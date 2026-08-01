@@ -1,0 +1,141 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+:root {
+  color-scheme: dark;
+  --bg-0: #070a12;
+  --bg-1: #0b0f18;
+  --bg-2: #111827;
+  --bg-3: #161f2e;
+  --border: #1e293b;
+  --border-soft: #162032;
+  --blue: #4a9eff;
+  --blue-strong: #5fb0ff;
+  --blue-deep: #2b6cb0;
+  --blue-soft: rgba(74,158,255,0.14);
+  --text: #dfe6f0;
+  --text-dim: #9aa6b8;
+  --text-mute: #6b7686;
+  --text-faint: #4a5365;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  /* 深蓝径向渐变底,统一蓝系 */
+  background:
+    radial-gradient(1200px 600px at 15% -10%, #14233f 0%, rgba(20,35,63,0) 55%),
+    radial-gradient(900px 500px at 110% 10%, #0f1a30 0%, rgba(15,26,48,0) 50%),
+    #070a12;
+  background-attachment: fixed;
+  color: var(--text);
+  /* 衬线字体:英文 Georgia,中文宋体 */
+  font-family: Georgia, "Times New Roman", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  letter-spacing: 0.005em;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 滚动条 */
+* { scrollbar-width: thin; scrollbar-color: #1e293b transparent; }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+*::-webkit-scrollbar-thumb:hover { background: #2b3a52; }
+
+/* 面板毛玻璃 */
+.panel {
+  background: rgba(11, 15, 24, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* 主蓝按钮 */
+.btn-blue {
+  background: var(--blue);
+  color: #070a12;
+  font-weight: 600;
+  transition: background .15s, transform .05s;
+}
+.btn-blue:hover { background: var(--blue-strong); }
+.btn-blue:active { transform: translateY(1px); }
+
+/* 描边按钮 */
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  transition: border-color .15s, color .15s, background .15s;
+}
+.btn-ghost:hover { border-color: #2b3a52; color: var(--text); background: rgba(74,158,255,0.04); }
+.btn-ghost:disabled { opacity: .35; cursor: not-allowed; }
+
+/* 滑块 */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 2px;
+  background: #1e293b; outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--blue); cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(74,158,255,0.18);
+  transition: box-shadow .15s;
+}
+input[type="range"]::-webkit-slider-thumb:hover { box-shadow: 0 0 0 5px rgba(74,158,255,0.25); }
+input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border: none; border-radius: 50%;
+  background: var(--blue); cursor: pointer;
+}
+
+.chip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+}
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ExplainPanel 讲解区 Markdown 渲染(无 typography 插件,手写 h/p/list/code/katex 样式)。
+   容器 .md-prose 设基础字号;子元素相对放大标题、缩进列表、描边代码块。 */
+.md-prose { color: var(--text); font-size: 12.5px; line-height: 1.7; }
+.md-prose > :first-child { margin-top: 0; }
+.md-prose > :last-child { margin-bottom: 0; }
+.md-prose h1, .md-prose h2, .md-prose h3, .md-prose h4 {
+  color: #eaf1fb; font-weight: 700; line-height: 1.35; margin: 1.1em 0 0.5em;
+}
+.md-prose h1 { font-size: 1.55em; }
+.md-prose h2 { font-size: 1.32em; }
+.md-prose h3 { font-size: 1.14em; }
+.md-prose h4 { font-size: 1em; }
+/* 同级标题后紧跟标题(无正文)时收紧间距,避免空段感 */
+.md-prose h1 + h2, .md-prose h2 + h3, .md-prose h3 + h4 { margin-top: 0.1em; }
+.md-prose p { margin: 0.5em 0; }
+.md-prose strong { color: #fff; font-weight: 700; }
+.md-prose em { color: var(--text-dim); }
+.md-prose ul, .md-prose ol { margin: 0.5em 0; padding-left: 1.4em; }
+.md-prose li { margin: 0.2em 0; }
+.md-prose ul li { list-style: disc; }
+.md-prose ol li { list-style: decimal; }
+.md-prose li::marker { color: var(--blue); }
+.md-prose a { color: var(--blue-strong); text-decoration: underline; text-underline-offset: 2px; }
+.md-prose blockquote {
+  margin: 0.6em 0; padding: 0.2em 0.9em; border-left: 2px solid var(--blue);
+  color: var(--text-dim); background: rgba(74,158,255,0.05); border-radius: 0 4px 4px 0;
+}
+.md-prose code {
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.88em; padding: 0.1em 0.35em; border-radius: 4px;
+  background: #0a0f1a; border: 1px solid var(--border-soft); color: #b8d4ff;
+}
+.md-prose pre { margin: 0.6em 0; padding: 0.7em 0.9em; border-radius: 6px; overflow-x: auto; background: #0a0f1a; border: 1px solid var(--border-soft); }
+.md-prose pre code { padding: 0; border: 0; background: transparent; color: var(--text); font-size: 0.86em; }
+.md-prose hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+.md-prose table { border-collapse: collapse; margin: 0.6em 0; font-size: 0.92em; }
+.md-prose th, .md-prose td { border: 1px solid var(--border); padding: 0.3em 0.6em; }
+.md-prose th { background: var(--bg-2); color: var(--text); font-weight: 600; }
+/* KaTeX 公式:块级 $$ 居中,行内 $ 不换行 */
+.md-prose .katex-display { margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; }
+.md-prose .katex { font-size: 1.05em; }

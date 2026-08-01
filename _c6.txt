@@ -1,0 +1,4 @@
+len=0
+hasFontFamily=False
+TextCount=0
+=== code ===

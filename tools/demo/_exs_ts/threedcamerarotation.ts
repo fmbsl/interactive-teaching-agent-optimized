@@ -1,0 +1,10 @@
+const { scene, Circle, ThreeDAxes, ThreeDScene } = ctx;
+const axes = new ThreeDAxes();
+  const circle = new Circle();
+  scene.setCameraOrientation(75 * (Math.PI / 180), 30 * (Math.PI / 180));
+  scene.add(circle, axes);
+  scene.beginAmbientCameraRotation(0.1);
+  await scene.wait(1);
+  scene.stopAmbientCameraRotation();
+  scene.moveCamera({ phi: 75 * (Math.PI / 180), theta: 30 * (Math.PI / 180) });
+  await scene.wait(1);

@@ -1,0 +1,33 @@
+const { Axes, BLUE, Dot, MoveAlongPath, MoveToTarget, ORANGE, Restore, Scene, linear, scene, params } = ctx;
+// Save camera frame state
+  scene.camera.frame.saveState();
+
+  // Create the axes and the curve
+  const ax = new Axes({ xRange: [-1, 10], yRange: [-1, 10] });
+  const graph = ax.plot((x) => Math.sin(x), { color: BLUE, xRange: [0, 3 * Math.PI] });
+
+  // Create dots based on the graph
+  const movingDot = new Dot({ point: ax.i2gp(graph.tMin, graph), color: ORANGE });
+  const dot1 = new Dot({ point: ax.i2gp(graph.tMin, graph) });
+  const dot2 = new Dot({ point: ax.i2gp(graph.tMax, graph) });
+
+  scene.add(ax, graph, dot1, dot2, movingDot);
+
+  // Zoom camera to 0.5x and center on moving dot
+  scene.camera.frame.generateTarget();
+  scene.camera.frame.targetCopy.scale(0.5);
+  scene.camera.frame.targetCopy.moveTo(movingDot.getCenter());
+  await scene.play(new MoveToTarget(scene.camera.frame));
+
+  // Add updater so camera follows the moving dot
+  const updateCurve = (mob) => {
+    mob.moveTo(movingDot.getCenter());
+  };
+  scene.camera.frame.addUpdater(updateCurve);
+
+  // Animate dot moving along the graph path
+  await scene.play(new MoveAlongPath(movingDot, { path: graph, rateFunc: linear }));
+
+  // Remove updater and restore camera to original state
+  scene.camera.frame.removeUpdater(updateCurve);
+  await scene.play(new Restore(scene.camera.frame));

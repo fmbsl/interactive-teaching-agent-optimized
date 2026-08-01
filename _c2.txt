@@ -1,0 +1,3 @@
+has fontFamily: False
+Text count: 0
+--- Text lines ---

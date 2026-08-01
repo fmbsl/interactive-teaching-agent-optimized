@@ -1,0 +1,211 @@
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { emptyLesson, type Lesson } from "./data/lesson";
+import { listLlmConfigs, type EndpointConfig, type SessionSummary } from "./data/llmClient";
+
+type ParamValues = Record<string, number>;
+export type StepStatus = "pending" | "active" | "done";
+
+interface AppState {
+  lesson: Lesson;
+  setLesson: (l: Lesson) => void;
+  currentStep: number;
+  setCurrentStep: (id: number) => void;
+  stepStatus: Record<number, StepStatus>;
+  markStepActive: (id: number) => void;
+  markStepDone: (id: number) => void;
+  paramValues: ParamValues;
+  setParam: (name: string, value: number) => void;
+  mergeStepParams: (params: { name: string; label: string; min: number; max: number; step: number; default: number }[]) => void;
+  updateStepContent: (stepId: number, content: { title?: string; narration?: string; formula?: string; explanation?: string; intent?: string; paramsUsed?: string[] }) => void;
+  isPlaying: boolean;
+  setIsPlaying: (v: boolean) => void;
+  stageResetKey: number;
+  bumpStageReset: () => void;
+  sceneCode: string;
+  setSceneCode: (code: string) => void;
+  // 浏览器在环验证:后端 render_request 推一段待验证 code,StagePanel 跑完回调 reportVerifyResult
+  verifyRequest: { stepId: number; code: string; nonce: number } | null;
+  requestVerify: (stepId: number, code: string) => void;
+  reportVerifyResult: (ok: boolean, error: string, frame?: string) => void;
+  verifyResultHandler: React.MutableRefObject<((ok: boolean, error: string, frame: string) => void) | null>;
+  // 验证开关:BB 重叠检测 / 视觉检查
+  bbCheckEnabled: boolean; setBbCheckEnabled: (v: boolean) => void;
+  visionCheckEnabled: boolean; setVisionCheckEnabled: (v: boolean) => void;
+  sessionId: string | null;
+  setSessionId: (id: string | null) => void;
+  // 会话列表
+  sessionList: SessionSummary[];
+  setSessionList: (s: SessionSummary[]) => void;
+  // 切换会话:恢复某会话的状态(lesson/当前步/sceneCode)
+  switchSession: (info: { sessionId: string; lesson: Lesson | null; currentStep: number; sceneCode: string }) => void;
+  // 重置为空会话
+  resetToEmpty: () => void;
+  // 步骤导航请求(由舞台栏按钮触发,ChatPanel 监听执行 consume)
+  navRequest: { target: "next" | "prev" | number; nonce: number } | null;
+  requestNav: (target: "next" | "prev" | number) => void;
+  // LLM 接入点配置
+  llmEndpoints: EndpointConfig[];
+  activeEndpointId: string | null;
+  visionEndpoint: EndpointConfig | null;
+  reloadLlmConfigs: () => Promise<void>;
+}
+
+const Ctx = createContext<AppState | null>(null);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [lesson, setLessonState] = useState<Lesson>(emptyLesson);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionList, setSessionList] = useState<SessionSummary[]>([]);
+  const [stageResetKey, setStageResetKey] = useState(0);
+  const [sceneCode, setSceneCode] = useState("");
+  const [bbCheckEnabled, setBbCheckEnabled] = useState(true); // BB 重叠检测开关(打回动画)
+  const [visionCheckEnabled, setVisionCheckEnabled] = useState(false); // 视觉检查开关(截图给 LLM)
+  const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number } | null>(null);
+  const verifyResultHandler = useRef<((ok: boolean, error: string, frame: string) => void) | null>(null);
+  const requestVerify = (stepId: number, code: string) => setVerifyRequest({ stepId, code, nonce: Date.now() });
+  const reportVerifyResult = (ok: boolean, error: string, frame: string = "") => {
+    const h = verifyResultHandler.current;
+    if (h) { verifyResultHandler.current = null; h(ok, error, frame); }
+  };
+  const [stepStatus, setStepStatus] = useState<Record<number, StepStatus>>({ 1: "active" });
+  const [paramValues, setParamValues] = useState<ParamValues>(() => ({}));
+
+  const setLesson = (l: Lesson) => {
+    // 补全后端可能缺的字段(outline 只给 id/title,paramsUsed/explanation 等稍后才填)
+    const steps = l.steps.map((s) => ({
+      paramsUsed: [] as string[],
+      intent: "",
+      formula: "",
+      narration: "",
+      explanation: "",
+      ...s,
+    }));
+    const normalized = { ...l, steps };
+    setLessonState(normalized);
+    const init: ParamValues = {};
+    for (const p of normalized.params) init[p.name] = p.default;
+    setParamValues(init);
+    setCurrentStep(1);
+    const st: Record<number, StepStatus> = {};
+    for (const s of normalized.steps) st[s.id] = s.id === 1 ? "active" : "pending";
+    setStepStatus(st);
+  };
+
+  const markStepActive = (id: number) =>
+    setStepStatus((prev) => {
+      const next = { ...prev };
+      for (const s of Object.keys(next)) {
+        const sid = Number(s);
+        if (sid === id) next[sid] = "active";
+        else if (next[sid] !== "done") next[sid] = "pending";
+      }
+      return next;
+    });
+  const markStepDone = (id: number) =>
+    setStepStatus((prev) => ({ ...prev, [id]: "done" }));
+
+  // 下游 agent 为某步设计的参数,合并进全局 params + paramValues(去重)
+  const mergeStepParams = (params: { name: string; label: string; min: number; max: number; step: number; default: number }[]) => {
+    setLessonState((prev) => {
+      const existing = new Map(prev.params.map((p) => [p.name, p]));
+      for (const p of params) if (!existing.has(p.name)) existing.set(p.name, p as any);
+      return { ...prev, params: [...existing.values()] };
+    });
+    setParamValues((prev) => {
+      const next = { ...prev };
+      for (const p of params) if (!(p.name in next)) next[p.name] = p.default;
+      return next;
+    });
+  };
+
+  // 下游 agent 设计完某步,把 narration/formula/intent/paramsUsed 写回 lesson.steps(右栏讲解要用)
+  const updateStepContent = (stepId: number, content: { title?: string; narration?: string; formula?: string; explanation?: string; intent?: string; paramsUsed?: string[] }) => {
+    setLessonState((prev) => ({
+      ...prev,
+      steps: prev.steps.map((s) => (s.id === stepId ? { ...s, ...content } : s)),
+    }));
+  };
+
+  const switchSession = (info: { sessionId: string; lesson: Lesson | null; currentStep: number; sceneCode: string }) => {
+    setSessionId(info.sessionId);
+    setCurrentStep(info.currentStep);
+    setSceneCode(info.sceneCode);
+    if (info.lesson) {
+      const steps = info.lesson.steps.map((s) => ({
+        paramsUsed: [] as string[], intent: "", formula: "", narration: "", explanation: "",
+        ...s,
+      }));
+      const lesson = { ...info.lesson, steps };
+      setLessonState(lesson);
+      const init: ParamValues = {};
+      for (const p of lesson.params) init[p.name] = p.default;
+      setParamValues(init);
+      const st: Record<number, StepStatus> = {};
+      for (const s of lesson.steps) st[s.id] = s.id === info.currentStep ? "active" : (s.id < info.currentStep ? "done" : "pending");
+      setStepStatus(st);
+    }
+    setStageResetKey((k) => k + 1);
+  };
+
+  const resetToEmpty = () => {
+    setSessionId(null);
+    setCurrentStep(1);
+    setSceneCode("");
+    setLessonState(emptyLesson);
+    setStepStatus({ 1: "active" });
+    setParamValues({});
+    setStageResetKey((k) => k + 1);
+  };
+
+  // 步骤导航请求:舞台栏按钮调 requestNav,ChatPanel useEffect 监听 navRequest.nonce 变化执行
+  const [navRequest, setNavRequest] = useState<{ target: "next" | "prev" | number; nonce: number } | null>(null);
+  const requestNav = (target: "next" | "prev" | number) => setNavRequest({ target, nonce: Date.now() });
+
+  // LLM 接入点
+  const [llmEndpoints, setLlmEndpoints] = useState<EndpointConfig[]>([]);
+  const [activeEndpointId, setActiveEndpointId] = useState<string | null>(null);
+  const [visionEndpoint, setVisionEndpoint] = useState<EndpointConfig | null>(null);
+  const reloadLlmConfigs = async () => {
+    try {
+      const s = await listLlmConfigs();
+      setLlmEndpoints(s.endpoints || []);
+      setActiveEndpointId(s.activeId);
+      setVisionEndpoint(s.visionEndpoint || null);
+    } catch (e) {
+      console.warn("[llm] 加载接入点配置失败:", e);
+    }
+  };
+  useEffect(() => { void reloadLlmConfigs(); }, []);
+
+  const value = useMemo<AppState>(
+    () => ({
+      lesson, setLesson,
+      currentStep, setCurrentStep,
+      stepStatus, markStepActive, markStepDone,
+      paramValues, setParam: (name, v) => setParamValues((prev) => ({ ...prev, [name]: v })),
+      mergeStepParams,
+      updateStepContent,
+      isPlaying, setIsPlaying,
+      stageResetKey, bumpStageReset: () => setStageResetKey((k) => k + 1),
+      sceneCode, setSceneCode,
+      verifyRequest, requestVerify, reportVerifyResult, verifyResultHandler,
+      bbCheckEnabled, setBbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled,
+      sessionId, setSessionId,
+      sessionList, setSessionList,
+      switchSession, resetToEmpty,
+      navRequest, requestNav,
+      llmEndpoints, activeEndpointId, visionEndpoint, reloadLlmConfigs,
+    }),
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint]
+  );
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useApp(): AppState {
+  const ctx = useContext(Ctx);
+  if (!ctx) throw new Error("useApp must be used within AppProvider");
+  return ctx;
+}

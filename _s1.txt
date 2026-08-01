@@ -1,0 +1,4 @@
+title: 马鞍面的形象
+intent: 展示双曲抛物面 z = x^2/a^2 - y^2/b^2 的三维形状，突出鞍点(0,0)。
+formula: z = \frac{x^2}{a^2} - \frac{y^2}{b^2}
+paramsUsed: ['a', 'b']

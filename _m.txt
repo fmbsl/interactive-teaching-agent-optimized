@@ -1,0 +1,49 @@
+const { scene, Axes, Dot, Line, Text, VGroup, Create, FadeIn, params } = ctx;
+const axes = new Axes({ xRange: [-3,3], yRange: [-3,3], xLength: 6, yLength: 6, axisConfig: {color: "#2b3a52"} });
+scene.add(axes);
+
+const origin = axes.c2p(0,0);
+const initialTip = axes.c2p(1,0);
+const initialLine = new Line({start: origin, end: initialTip, color: "#4a9eff", strokeWidth: 3});
+const initialDot = new Dot({point: initialTip, radius: 0.05, color: "#4a9eff"});
+const initialLabel = new Text({text: "原始", fontSize: 20, color: "#4a9eff", fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'});
+initialLabel.moveTo(initialTip[0]+0.3, initialTip[1]+0.3, 0);
+scene.add(initialLine, initialDot, initialLabel);
+await scene.play(Create(initialLine), Create(initialDot), Create(initialLabel));
+
+const rotLine = new Line({start: origin, end: origin, color: "#5fb0ff", strokeWidth: 3});
+const rotDot = new Dot({point: origin, radius: 0.05, color: "#5fb0ff"});
+const rotLabel = new Text({text: "旋转后", fontSize: 20, color: "#5fb0ff", fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'});
+rotLine.addUpdater(() => {
+    const ang = params.angle * Math.PI / 180;
+    const tip = axes.c2p(Math.cos(ang), Math.sin(ang));
+    rotLine.end = tip;
+    rotDot.point = tip;
+    rotLabel.moveTo(tip[0]+0.3, tip[1]+0.3, 0);
+});
+scene.add(rotLine, rotDot, rotLabel);
+await scene.play(Create(rotLine), Create(rotDot), Create(rotLabel));
+
+const scale = 2;
+const scaleLine = new Line({start: origin, end: origin, color: "#a8c8e8", strokeWidth: 3});
+const scaleDot = new Dot({point: origin, radius: 0.05, color: "#a8c8e8"});
+const scaleLabel = new Text({text: "缩放后", fontSize: 20, color: "#a8c8e8", fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'});
+scaleLine.addUpdater(() => {
+    const ang = params.angle * Math.PI / 180;
+    const tip = axes.c2p(Math.cos(ang)*scale, Math.sin(ang)*scale);
+    scaleLine.end = tip;
+    scaleDot.point = tip;
+    scaleLabel.moveTo(tip[0]+0.3, tip[1]+0.3, 0);
+});
+scene.add(scaleLine, scaleDot, scaleLabel);
+await scene.play(Create(scaleLine), Create(scaleDot), Create(scaleLabel));
+
+const explanation = new Text({
+    text: "复合变换的矩阵 = 缩放矩阵 × 旋转矩阵",
+    fontSize: 24,
+    color: "#2b6cb0",
+    fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+explanation.moveTo([0, -2.5, 0]);
+scene.add(explanation);
+await scene.play(FadeIn(explanation));

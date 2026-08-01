@@ -1,0 +1,21 @@
+const { scene, Axes, BLUE, Create, Dot, Polygon, Scene, ValueTracker, YELLOW_B, YELLOW_D } = ctx;
+const ax = new Axes({ xRange: [0, 10], yRange: [0, 10], xLength: 6, yLength: 6, axisConfig: { includeTip: false } });
+  const t = new ValueTracker({ value: 5 });
+  const k = 25;
+  const graph = ax.plot((x) => k / x, { color: YELLOW_D, xRange: [k / 10, 10.0, 0.01], useSmoothing: false });
+  const getRectangle = () => {
+    const polygon = new Polygon({ vertices: scene.getRectangleCorners([0, 0], [t.getValue(), k / t.getValue()]).map((i) => ax.c2p(...i)) });
+    polygon.strokeWidth = 1;
+    polygon.setFill(BLUE, { opacity: 0.5 });
+    polygon.setStroke(YELLOW_B);
+    return polygon;
+  };
+  let polygon = alwaysRedraw(getRectangle);
+  const dot = new Dot();
+  dot.addUpdater((x) => x.moveTo(ax.c2p(t.getValue(), k / t.getValue())));
+  dot.setZIndex(10);
+  scene.add(ax, graph, dot);
+  await scene.play(new Create(polygon));
+  await scene.play(t.animateTo(10));
+  await scene.play(t.animateTo(k / 10));
+  await scene.play(t.animateTo(5));

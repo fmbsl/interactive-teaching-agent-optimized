@@ -1,0 +1,68 @@
+const { scene, Axes, Dot, Line, Text, Arrow, Create, FadeIn, VGroup, params } = ctx;
+const axes = new Axes({
+  xRange: [-5, 3, 1],
+  yRange: [-1, 7, 1],
+  xLength: 12,
+  yLength: 10,
+  axisConfig: { color: "#2b3a52", strokeWidth: 2 }
+});
+const func = (x) => 0.4 * (x + 2) ** 2 + 0.2;
+const curve = axes.plot(func, {
+  xRange: [-4.5, 0.5],
+  color: "#4a9eff",
+  strokeWidth: 3
+});
+const startX = -4,
+  endX = -2;
+const startY = func(startX),
+  endY = func(endX);
+const startDot = new Dot({ point: axes.c2p(startX, startY), radius: 0.12, color: "#5fb0ff" });
+const endDot = new Dot({ point: axes.c2p(endX, endY), radius: 0.12, color: "#5fb0ff" });
+const steps = 6;
+const pathPoints = [];
+for (let i = 0; i <= steps; i++) {
+  const x = startX + (endX - startX) * i / steps;
+  pathPoints.push(axes.c2p(x, func(x)));
+}
+const arrows = [];
+for (let i = 0; i < pathPoints.length - 1; i++) {
+  arrows.push(new Arrow({ start: pathPoints[i], end: pathPoints[i + 1], color: "#9aa6b8", strokeWidth: 2 }));
+}
+const pathGroup = new VGroup(...arrows);
+const gradArrow = new Arrow({
+  start: axes.c2p(startX, startY),
+  end: axes.c2p(startX + 0.6, startY),
+  color: "#4a9eff",
+  strokeWidth: 2
+});
+const gradLabel = new Text({
+  text: "最陡下降方向",
+  fontSize: 0.25,
+  color: "#a8c8e8",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+gradLabel.moveTo(axes.c2p(startX + 1.2, startY + 0.3));
+const startLabel = new Text({
+  text: "起点",
+  fontSize: 0.3,
+  color: "#a8c8e8",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+startLabel.moveTo(axes.c2p(startX, startY).concat([0, -0.4, 0]));
+const endLabel = new Text({
+  text: "终点(谷底)",
+  fontSize: 0.3,
+  color: "#a8c8e8",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+endLabel.moveTo(axes.c2p(endX, endY).concat([0.4, 0.3, 0]));
+const title = new Text({
+  text: "下山路径",
+  fontSize: 0.4,
+  color: "#5fb0ff",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+title.moveTo([0, 5, 0]);
+scene.add(axes, curve);
+await scene.play(new Create(curve));
+await scene.play(new FadeIn(new VGroup(startDot, endDot, pathGroup, gradArrow, gradLabel, startLabel, endLabel, title)));

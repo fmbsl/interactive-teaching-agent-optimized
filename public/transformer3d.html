@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>Transformer 3D</title>
+<style>html,body{margin:0;height:100%;background:#0a0c14;}#c{width:100%;height:100%;}</style>
+</head><body><div id="c"></div>
+<script type="module">
+import * as MW from "https://cdn.jsdelivr.net/npm/manim-web@0.3.24/dist/manim-web.browser.js";
+const container = document.getElementById('c');
+const Scene = MW.ThreeDScene;
+const s = new Scene(container, { backgroundColor: '#0a0c14', width: window.innerWidth, height: window.innerHeight });
+const params = {};
+const ctx = { ...MW, matMul: (a,b)=>{const iv=(x)=>!Array.isArray(x[0]);if(iv(b)){const M=a,v=b;return M.map(r=>r.reduce((s,m,i)=>s+m*v[i],0));}const M=a,N=b;return M.map(r=>N[0].map((_,j)=>r.reduce((s,m,i)=>s+m*N[i][j],0)));}, scene: s, params };
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+const fn = new AsyncFunction("ctx", "const { scene, Arrow3D, BLUE, BLUE_B, BLUE_C, BLUE_D, BLUE_E, Cube, DOWN, RIGHT, Scene, Text, UL, UP, VGroup, scaleVec } = ctx;\nscene.setCameraOrientation(70 * (Math.PI / 180), -60 * (Math.PI / 180), 18 );\n  let title = new Text({ text: \"AlexNet \u7ed3\u6784\", fontFamily: \"Microsoft YaHei\", fontSize: 32, color: BLUE });\n  title.toCorner(UL);\n  scene.addFixedInFrameMobjects(title);\n  let layers = [[\"Conv1\", 1.6, BLUE_C],[\"MaxPool1\", 1.2, BLUE_D],[\"Conv2\", 1.6, BLUE_C],[\"MaxPool2\", 1.2, BLUE_D],[\"Conv3\", 1.0, BLUE_E],[\"Conv4\", 1.0, BLUE_E],[\"Conv5\", 1.0, BLUE_E],[\"MaxPool5\", 0.7, BLUE_D],[\"FC6\", 0.5, BLUE_B],[\"FC7\", 0.5, BLUE_B],[\"FC8\", 0.5, BLUE]];\n  let boxes = new VGroup();\n  let labels = new VGroup();\n  let y = 6.0;\n  for (const [name, size, color] of layers) {\n      let box = new Cube({ sideLength: size, fillOpacity: 0.4, fillColor: color, strokeColor: color });\n      box.shift(scaleVec(y, UP));\n      let label = new Text({ text: name, fontFamily: \"Microsoft YaHei\", fontSize: 16, color: BLUE_E });\n      label.nextTo(box, RIGHT, { buff: 0.3 });\n      boxes.add(box);\n      labels.add(label);\n      y = y - size - 0.3;\n}\n  scene.add(boxes, labels);\n  await scene.wait(1);\n  for (let i = 0; i < (boxes.length - 1); i++) {\n      let arrow = new Arrow3D({ start: boxes.get(i).getCenter() + scaleVec(0.8, DOWN), end: boxes.get(i + 1).getCenter() + scaleVec(0.8, UP), color: BLUE_B, thickness: 0.03 });\n      scene.add(arrow);\n}\n  await scene.wait(3);");
+fn(ctx).catch(e => console.error('EXEC FAIL:', e.message, e.stack));
+</script></body></html>

@@ -1,0 +1,11 @@
+step1: hasText=True
+const label = new Text({ text: i === 0 ? "θ⁽⁰⁾" : i === stepCount ? "θ*" : "", fontSize: 0.28, color: "#a8c8e8" });
+const formula = new Text({
+step2: hasText=True
+const labelPos = new Text({ text: "正梯度方向", fontSize: 0.2, color: "#5fb0ff" });
+const labelNeg = new Text({ text: "负梯度方向", fontSize: 0.2, color: "#a8c8e8" });
+const formula = new Text({ text: "∇J(θ) = [∂J/∂θ₁, ∂J/∂θ₂, ...]", fontSize: 0.3, color: "#a8c8e8" });
+step3: hasText=True
+const xLabel = new Text({ text: "θ", fontSize: 0.3, color: "#9aa6b8" });
+const labelOld = new Text({ text: "θ_old", fontSize: 0.25, color: "#4a9eff" });
+const labelNew = new Text({ text: "θ_new", fontSize: 0.25, color: "#5fb0ff" });

@@ -1,0 +1,55 @@
+const { scene, ThreeDAxes, Surface3D, Text, Dot3D, Create, FadeIn, VGroup, params } = ctx;
+
+// 读取用户可调参数
+const a = params.a;
+const b = params.b;
+
+// 创建三维坐标轴
+const axes = new ThreeDAxes({
+  xRange: [-3, 3, 1],
+  yRange: [-3, 3, 1],
+  zRange: [-4, 4, 1],
+  axisColor: "#2b3a52",
+  showLabels: true
+});
+
+// 创建双曲抛物面
+const surf = new Surface3D({
+  func: (u, v) => [u, v, (u * u) / (a * a) - (v * v) / (b * b)],
+  uRange: [-3, 3],
+  vRange: [-3, 3],
+  uResolution: 36,
+  vResolution: 36,
+  color: "#4a9eff",
+  opacity: 0.85
+});
+
+// 标题文本（固定到屏幕帧）
+const title = new Text({
+  text: "双曲抛物面  z = x²/a² - y²/b²",
+  fontSize: 0.35,
+  color: "#a8c8e8",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+title.moveTo([0, 3.5, 0]);
+
+// 鞍点标注
+const saddleDot = new Dot3D({ point: [0, 0, 0], radius: 0.12, color: "#5fb0ff" });
+const saddleLabel = new Text({
+  text: "鞍点 (0,0,0)",
+  fontSize: 0.25,
+  color: "#a8c8e8",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+saddleLabel.moveTo([0.5, 0.5, 0.3]);
+
+// 将文本固定到屏幕帧（不受3D相机影响）
+scene.addFixedInFrameMobjects(title);
+scene.addFixedInFrameMobjects(saddleLabel);
+
+// 先添加坐标轴和曲面（但曲面不立即显示）
+scene.add(axes, surf);
+
+// 分步动画：第一步显示曲面，第二步显示标注
+await scene.play(new Create(surf));
+await scene.play(new FadeIn(new VGroup(saddleDot, saddleLabel)));

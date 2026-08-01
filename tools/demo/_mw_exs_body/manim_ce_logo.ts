@@ -1,0 +1,15 @@
+const { Circle, LEFT, MathTexImage, ORIGIN, RIGHT, Scene, Square, Triangle, UP, VGroup, addVec, scaleVec, scene, params } = ctx;
+const logoGreen = '#87c2a5';
+  const logoBlue = '#525893';
+  const logoRed = '#e07a5f';
+  const logoBlack = '#343434';
+  const dsM = new MathTexImage({ latex: '\\mathbb{M}', fillColor: logoBlack });
+  await dsM.waitForRender();
+  dsM.scale(7);
+  dsM.shift(addVec(scaleVec(2.25, LEFT), scaleVec(1.5, UP)));
+  const circle = new Circle({ color: logoGreen, fillOpacity: 1 }).shift(LEFT);
+  const square = new Square({ color: logoBlue, fillOpacity: 1 }).shift(UP);
+  const triangle = new Triangle({ color: logoRed, fillOpacity: 1 }).shift(RIGHT);
+  const logo = new VGroup(triangle, square, circle, dsM);
+  logo.moveTo(ORIGIN);
+  scene.add(logo);

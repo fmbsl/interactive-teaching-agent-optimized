@@ -1,0 +1,11 @@
+const { scene, BLUE, BLUE_C, Create, ParametricSurface, Scene, Text, ThreeDAxes, UL } = ctx;
+scene.setCameraOrientation(70 * (Math.PI / 180), -45 * (Math.PI / 180));
+  const axes = new ThreeDAxes({ xRange: [-3, 3, 1], yRange: [-3, 3, 1], zRange: [-3, 3, 1], xLength: 6, yLength: 6, zLength: 6 });
+  await scene.play(new Create(axes));
+  const saddle = new ParametricSurface({ func: (u, v) => [u, v, 0.5 * (u * u - v * v)], uRange: [-2, 2], vRange: [-2, 2], color: BLUE_C, fillOpacity: 0.7 });
+  await scene.play(new Create(saddle));
+  scene.beginAmbientCameraRotation();
+  const title = new Text({ text: "马鞍面 z = (x^2 - y^2)/2", fontFamily: "Microsoft YaHei", fontSize: 28, color: BLUE });
+  title.toCorner(UL);
+  scene.addFixedInFrameMobjects(title);
+  await scene.wait(3);

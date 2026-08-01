@@ -1,0 +1,31 @@
+const { scene, Axes, Dot, Line, Text, Arrow, Matrix, ValueTracker, Create, FadeIn, Transform, VGroup, Circle, Rectangle } = ctx;
+const thetaRad = params.theta * Math.PI / 180;
+const axes = new Axes({ xRange: [-3, 3], yRange: [-3, 3], xLength: 6, yLength: 6, axisConfig: { color: '#2b3a52' } });
+scene.add(axes);
+const v = new Arrow({ start: [0,0,0], end: [1,0,0], color: '#4a9eff', strokeWidth: 6 });
+const vLabel = new Text({ text: 'v', fontSize: 24, color: '#4a9eff', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([1.2, -0.2, 0]);
+await scene.play(new Create(v), new FadeIn(vLabel));
+// 矩阵 A 文本
+const aText = new Text({ text: 'A: 缩放 x2', fontSize: 24, color: '#5fb0ff', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([2.5, 2.5, 0]);
+await scene.play(new FadeIn(aText));
+const av = new Arrow({ start: [0,0,0], end: [2,0,0], color: '#5fb0ff', strokeWidth: 6 });
+const avLabel = new Text({ text: 'Av', fontSize: 24, color: '#5fb0ff', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([2.2, -0.2, 0]);
+await scene.play(new Transform(v, av), new Transform(vLabel, avLabel));
+// 矩阵 B 文本
+const bText = new Text({ text: 'B: 旋转 θ', fontSize: 24, color: '#a8c8e8', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([2.5, 1.8, 0]);
+await scene.play(new FadeIn(bText));
+const endX = 2 * Math.cos(thetaRad);
+const endY = 2 * Math.sin(thetaRad);
+const bav = new Arrow({ start: [0,0,0], end: [endX, endY, 0], color: '#a8c8e8', strokeWidth: 6 });
+const bavLabel = new Text({ text: 'B(Av)', fontSize: 24, color: '#a8c8e8', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([endX*1.1, endY*1.1, 0]);
+await scene.play(new Transform(av, bav), new Transform(avLabel, bavLabel));
+// 复合矩阵 C 文本
+const cText = new Text({ text: 'C = B·A', fontSize: 24, color: '#2b6cb0', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([2.5, 1.1, 0]);
+await scene.play(new FadeIn(cText));
+// 计算 Cv 终点：复合矩阵 C = B*A = [[2cosθ, -sinθ], [2sinθ, cosθ]] 作用在 (1,0) 得 (2cosθ, 2sinθ)
+const cv = new Arrow({ start: [0,0,0], end: [endX, endY, 0], color: '#2b6cb0', strokeWidth: 6 });
+const cvLabel = new Text({ text: 'Cv', fontSize: 24, color: '#2b6cb0', fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' }).moveTo([endX*1.1, endY*0.8, 0]);
+await scene.play(new Create(cv), new FadeIn(cvLabel));
+// 高亮相同结果（给 Cv 加圈）
+const circle = new Circle({ radius: 0.3, color: '#4a9eff', fillOpacity: 0.3 }).moveTo([endX, endY, 0]);
+await scene.play(new Create(circle));

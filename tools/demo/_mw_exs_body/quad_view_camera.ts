@@ -1,0 +1,82 @@
+const { BLUE, Camera2D, Circle, Create, GREEN, MultiCamera, ORANGE, RED, Scene, Square, Triangle, ValueTracker, YELLOW, scene, params } = ctx;
+// Four Camera2D instances framing the same scene at different positions
+  // and zoom levels — a "control room" layout. setupQuadView() places them
+  // in viewport order [top-left, top-right, bottom-left, bottom-right] on
+  // the canvas, so the variable names below describe the on-screen pane,
+  // not the world region the camera looks at.
+  // `contain` keeps each pane's requested frame fully visible in its
+  // quad-cell viewport instead of letting MultiCamera stretch widths.
+  const overviewPane = new Camera2D({
+    frameWidth: 14,
+    frameHeight: 8,
+    position: [0, 0, 10],
+    aspectMode: 'contain',
+  });
+  const circlePane = new Camera2D({
+    frameWidth: 4,
+    frameHeight: 4,
+    position: [-3, 2, 10],
+    aspectMode: 'contain',
+  });
+  const squarePane = new Camera2D({
+    frameWidth: 4,
+    frameHeight: 4,
+    position: [3, 2, 10],
+    aspectMode: 'contain',
+  });
+  const trianglePane = new Camera2D({
+    frameWidth: 6,
+    frameHeight: 4,
+    position: [0, -2, 10],
+    aspectMode: 'contain',
+  });
+
+  const mc = new MultiCamera();
+  mc.setupQuadView([overviewPane, circlePane, squarePane, trianglePane]);
+  // Highlight every cell so the four-pane grid is obvious. Different
+  // tints make the close-up panes easy to tell apart at a glance.
+  mc.setViewportBorder(0, { borderColor: '#888888', borderWidth: 2 });
+  mc.setViewportBorder(1, { borderColor: '#ef5350', borderWidth: 2 });
+  mc.setViewportBorder(2, { borderColor: '#42a5f5', borderWidth: 2 });
+  mc.setViewportBorder(3, { borderColor: '#66bb6a', borderWidth: 2 });
+  scene.useMultiCamera(mc);
+
+  const circle = new Circle({ radius: 0.9, color: RED, strokeWidth: 4 });
+  circle.shift([-3, 2, 0]);
+  const square = new Square({ sideLength: 1.4, color: BLUE, strokeWidth: 4 });
+  square.shift([3, 2, 0]);
+  const triangle = new Triangle({ color: GREEN, strokeWidth: 4 });
+  triangle.shift([0, -2, 0]);
+  const ball = new Circle({ radius: 0.25, color: YELLOW, strokeWidth: 3 });
+
+  // Animate a "ball" bouncing between the three regions; each quad-view
+  // close-up shows the ball passing through its quadrant in detail.
+  const t = new ValueTracker(0);
+  ball.addUpdater(() => {
+    const a = t.getValue();
+    const path: Array<[number, number]> = [
+      [-3, 2],
+      [3, 2],
+      [0, -2],
+      [-3, 2],
+    ];
+    const seg = Math.floor(a) % (path.length - 1);
+    const f = a - Math.floor(a);
+    const [x0, y0] = path[seg];
+    const [x1, y1] = path[seg + 1];
+    ball.moveTo([x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, 0]);
+  });
+  scene.add(t);
+
+  // Highlight marker that stays at world origin so the overview pane has
+  // a visible reference point too.
+  const marker = new Circle({ radius: 0.12, color: ORANGE, strokeWidth: 2 });
+  scene.add(marker);
+
+  scene.add(circle, square, triangle, ball);
+  await scene.play(new Create(circle));
+  await scene.play(new Create(square));
+  await scene.play(new Create(triangle));
+  await scene.play(new Create(ball));
+  await scene.play(t.animateTo(3, { duration: 4 }));
+  await scene.wait(0.5);

@@ -1,0 +1,49 @@
+const { scene, ThreeDAxes, Sphere, Text, Create, FadeIn, VGroup, params } = ctx;
+const a = params.a;
+
+// 坐标轴
+const axes = new ThreeDAxes({
+  xRange: [-4, 4, 1],
+  yRange: [-4, 4, 1],
+  zRange: [-4, 4, 1],
+  axisColor: "#2b3a52",
+  showLabels: true
+});
+
+// 球体（使用蓝色主色，半透明）
+const sphere = new Sphere({
+  radius: a,
+  color: "#4a9eff",
+  center: [0, 0, 0],
+  opacity: 0.85
+});
+
+// 标题（固定帧：屏幕顶部）
+const title = new Text({
+  text: "球体",
+  fontSize: 0.35,
+  color: "#a8c8e8",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+title.moveTo([0, 3.5, 0]);
+title.setOpacity(0); // 初始透明用于渐显
+
+// 半径标注（固定帧：屏幕右侧）
+const label = new Text({
+  text: `半径 = ${a.toFixed(1)}`,
+  fontSize: 0.3,
+  color: "#5fb0ff",
+  fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+label.moveTo([4.0, 0, 0]);
+label.setOpacity(0);
+
+// 将固定帧文字提前加入场景（隐藏）
+scene.addFixedInFrameMobjects(title, label);
+
+// 添加坐标轴和球体（轴不动画，球体通过Create出现）
+scene.add(axes);
+await scene.play(new Create(sphere));
+
+// 渐显文字标注
+await scene.play(new FadeIn(title), new FadeIn(label));

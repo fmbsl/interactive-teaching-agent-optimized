@@ -1,0 +1,13 @@
+const { scene, BLUE, Dot, GREEN, Line, RED, RIGHT, Scene, VGroup, ValueTracker } = ctx;
+const [d1, d2] = [new Dot({ color: BLUE }), new Dot({ color: GREEN })];
+  const dg = new VGroup(d1, d2).arrange(RIGHT, { buff: 1 });
+  const l1 = new Line({ start: d1.getCenter(), end: d2.getCenter() }).setColor(RED);
+  const x = new ValueTracker({ value: 0 });
+  const y = new ValueTracker({ value: 0 });
+  d1.addUpdater((z) => z.setX(x.getValue()));
+  d2.addUpdater((z) => z.setY(y.getValue()));
+  l1.addUpdater((z) => z.become(new Line({ start: d1.getCenter(), end: d2.getCenter() })));
+  scene.add(d1, d2, l1);
+  await scene.play(x.animateTo(5));
+  await scene.play(y.animateTo(4));
+  await scene.wait(1);

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>3D 马鞍面 py2ts 转换验证</title>
+<style>
+  body { margin: 0; background: #0a0c14; color: #dfe6f0; font-family: "Microsoft YaHei", sans-serif; }
+  #stage { width: 100vw; height: 80vh; }
+  #log { padding: 12px 16px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; background: #0d121c; border-top: 1px solid #1e293b; height: 20vh; overflow: auto; }
+  .ok { color: #5fb0ff; } .err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="log"></div>
+<script type="module">
+import * as manimWeb from "https://esm.sh/manim-web@0.3.24";
+
+const log = (msg, cls) => {
+  const el = document.getElementById("log");
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+  el.appendChild(d);
+};
+
+// matMul 辅助(若 sceneCode 用到 @ 矩阵乘法会引用)
+function matMul(a, b) {
+  const isVec = (x) => !Array.isArray(x[0]);
+  if (isVec(b)) {
+    const M = a, v = b;
+    return M.map((row) => row.reduce((s, m, i) => s + m * v[i], 0));
+  }
+  const M = a, N = b;
+  return M.map((row) => N[0].map((_, j) => row.reduce((s, m, i) => s + m * N[i][j], 0)));
+}
+
+const sceneCode = await fetch("./test_saddle_sc.js").then(r => r.text());
+log("sceneCode 加载成功,长度=" + sceneCode.length);
+
+const container = document.getElementById("stage");
+const { Scene, ThreeDScene } = manimWeb;
+// is3DCode 检测:sceneCode 含 ParametricSurface/ThreeDAxes → 用 ThreeDScene
+const want3D = /ThreeDAxes|ParametricSurface|Surface3D|Sphere|ThreeDScene/.test(sceneCode);
+log("want3D=" + want3D + ",用 " + (want3D ? "ThreeDScene" : "Scene"));
+const s = want3D ? new ThreeDScene(container, { backgroundColor: "#0a0c14", width: window.innerWidth, height: window.innerHeight * 0.8 })
+                 : new Scene(container, { backgroundColor: "#0a0c14", width: window.innerWidth, height: window.innerHeight * 0.8 });
+
+const ctx = { ...manimWeb, matMul, scene: s, params: { a: 1.5, b: 1.5, saddleScale: 1, alpha: 0.5, gridSize: 32 } };
+
+try {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const fn = new AsyncFunction("ctx", sceneCode);
+  log("开始执行 sceneCode...");
+  await fn(ctx);
+  log("✅ 执行成功,3D 马鞍面应已渲染(可拖拽旋转)", "ok");
+} catch (e) {
+  log("❌ 执行失败: " + (e?.message || e), "err");
+  console.error(e);
+}
+</script>
+</body>
+</html>

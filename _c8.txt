@@ -1,0 +1,106 @@
+const { scene, ThreeDAxes, Surface3D, Text, Sphere, Line3D, Transform, Create, FadeIn, VGroup, ValueTracker, params } = ctx;
+
+// 坐标轴
+const axes = new ThreeDAxes({
+    xRange: [-3.5, 3.5, 1],
+    yRange: [-3.5, 3.5, 1],
+    zRange: [0, 5, 1],
+    axisColor: "#2b3a52",
+    showLabels: true
+});
+
+// 曲面: z = 0.5*(x^2 + y^2)
+const surf = new Surface3D({
+    func: (u, v) => [u, v, 0.5 * (u * u + v * v)],
+    uRange: [-3, 3],
+    vRange: [-3, 3],
+    uResolution: 32,
+    vResolution: 32,
+    color: "#4a9eff",
+    opacity: 0.85
+});
+
+// 标题
+const title = new Text({
+    text: "直观建立：下山寻谷",
+    fontSize: 0.4,
+    color: "#a8c8e8",
+    fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+title.moveTo([0, 3.8, 0]);
+
+// 路径参数
+const startX = params.startX ?? 2;
+const startY = params.startY ?? 2;
+const endX = 0;
+const endY = 0;
+
+// 生成路径点 (沿径向直线投影到曲面上)
+const numPoints = 15;
+const pathPoints = [];
+for (let i = 0; i < numPoints; i++) {
+    const t = i / (numPoints - 1);
+    const x = startX * (1 - t) + endX * t;
+    const y = startY * (1 - t) + endY * t;
+    const z = 0.5 * (x * x + y * y);
+    pathPoints.push([x, y, z]);
+}
+
+// 路径线 (折线)
+const pathLines = [];
+for (let i = 0; i < pathPoints.length - 1; i++) {
+    const segment = new Line3D({
+        start: pathPoints[i],
+        end: pathPoints[i + 1],
+        color: "#9aa6b8",
+        strokeWidth: 2
+    });
+    pathLines.push(segment);
+}
+const pathGroup = new VGroup(...pathLines);
+
+// 小球 (起始位置)
+const ball = new Sphere({
+    radius: 0.2,
+    color: "#5fb0ff",
+    center: pathPoints[0]
+});
+
+// 文本标注
+const startLabel = new Text({
+    text: "山顶",
+    fontSize: 0.25,
+    color: "#a8c8e8",
+    fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+startLabel.moveTo([pathPoints[0][0] + 0.4, pathPoints[0][1] + 0.4, pathPoints[0][2] + 0.3]);
+
+const endLabel = new Text({
+    text: "谷底",
+    fontSize: 0.25,
+    color: "#a8c8e8",
+    fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif'
+});
+endLabel.moveTo([pathPoints[numPoints - 1][0] - 0.4, pathPoints[numPoints - 1][1] - 0.4, pathPoints[numPoints - 1][2] + 0.3]);
+
+// 第一步：创建曲面、坐标轴、标题
+scene.add(axes, surf, title);
+await scene.play(new Create(surf));
+await scene.play(new FadeIn(title));
+
+// 第二步：显示路径、小球、标注
+scene.add(pathGroup, ball, startLabel, endLabel);
+await scene.play(new FadeIn(pathGroup));
+await scene.play(new FadeIn(ball));
+await scene.play(new FadeIn(startLabel));
+await scene.play(new FadeIn(endLabel));
+
+// 第三步：小球沿路径滚动 (使用Transform逐段移动)
+for (let i = 1; i < pathPoints.length; i++) {
+    const nextBall = new Sphere({
+        radius: 0.2,
+        color: "#5fb0ff",
+        center: pathPoints[i]
+    });
+    await scene.play(new Transform(ball, nextBall));
+}
