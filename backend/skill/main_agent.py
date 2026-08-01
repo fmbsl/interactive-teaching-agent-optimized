@@ -100,11 +100,12 @@ def _build_tools(sid: str):
     def add_topic(title: str, summary: str, steps: list[str]) -> str:
         """拆解一个主题为子知识点列表,追加到知识点 list。每次调用加一个主题(可多次,多主题并列)。
         title=主题名;summary=一句话概括;steps=子知识点标题数组(10-20字,顺序即讲解顺序)。"""
+        topic_id = _uuid.uuid4().hex[:8]
         topic = {
-            "id": _uuid.uuid4().hex[:8],
+            "id": topic_id,
             "title": title,
             "summary": summary,
-            "steps": [{"id": f"{topic['id']}-{i+1}", "title": t} for i, t in enumerate(steps or [])],
+            "steps": [{"id": f"{topic_id}-{i+1}", "title": t} for i, t in enumerate(steps or [])],
         }
         # 写回 session.topics + 草稿
         s = _agent().get_session(sid)

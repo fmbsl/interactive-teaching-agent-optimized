@@ -640,23 +640,135 @@ def import_session(request):
 
 @csrf_exempt
 def upload(request):
-    """接收文件,提取文本。支持 .txt/.md/.pdf。"""
+    """接收文件,提取文本。支持 .txt/.md/.pdf。
+    新流程:若带 sid(POST 字段),存到 backend/uploads/<sid>/ 返回 file_id(主 agent 用 read/grep 读)。
+    旧流程:不带 sid,返回 file_text(前端随 start/update 发,兼容)。"""
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
     f = request.FILES.get("file")
     if not f:
         return JsonResponse({"error": "缺少 file"}, status=400)
     name = f.name.lower()
+    raw = f.read()
+    sid = request.POST.get("sid", "")
+    # 若带 sid:存文件,返回 file_id(主 agent 按需 read/grep,不全量塞上下文)
+    if sid:
+        try:
+            meta = agent.save_upload(sid, f.name, raw)
+            return JsonResponse({"file_id": meta["id"], "name": meta["name"], "size": meta["size"]})
+        except Exception as e:
+            return JsonResponse({"error": f"存储失败: {e}"}, status=500)
+    # 旧流程:提取文本返回(兼容 start/update 的 file_text)
     try:
         if name.endswith(".pdf"):
             from pypdf import PdfReader
-            reader = PdfReader(BytesIO(f.read()))
+            reader = PdfReader(BytesIO(raw))
             text = "\n".join((p.extract_text() or "") for p in reader.pages)
         else:
-            text = f.read().decode("utf-8", errors="ignore")
+            text = raw.decode("utf-8", errors="ignore")
         return JsonResponse({"file_text": text[:8000], "filename": f.name})
     except Exception as e:
         return JsonResponse({"error": f"解析失败: {e}"}, status=500)
+
+
+@csrf_exempt
+def chat(request):
+    """主 agent 多轮对话:POST {sid, text, depth?, file_ids?} -> SSE。
+    跑主 agent(run_main_agent),发 agent_start/tool_call/tool_result/ask/topic_added/animation_request/done/error。
+    遇 ask/animation_request 的 interrupt,本段结束(等前端 POST /api/chat_answer resume)。"""
+    if request.method != "POST":
+        return _streaming_response(iter([_sse("error", {"message": "POST only"})]))
+    try:
+        body = json.loads(request.body or b"{}")
+        sid = body.get("sid", "")
+        text = body.get("text", "").strip()
+        depth = body.get("depth")
+        file_ids = body.get("file_ids", []) or []
+    except Exception:
+        sid, text, depth, file_ids = "", "", None, []
+    if not text:
+        return _streaming_response(iter([_sse("error", {"message": "缺少 text"})]))
+
+    # 若 sid 不存在(首次),新建空 session
+    if not sid or not agent.get_session(sid):
+        sid = str(__import__("uuid").uuid4())[:8]
+        agent.create_session_with_lesson(sid, text, None, {"title": text[:20], "summary": "", "params": [], "steps": []})
+
+    # 把用户消息里的文件信息拼进给主 agent 的文本(只给 file_id+name,不给全文)
+    user_msg = text
+    s = agent.get_session(sid)
+    if file_ids and s:
+        files_info = ", ".join(f"{fid}({next((f['name'] for f in s.get('files',[]) if f['id']==fid), '?')})" for fid in file_ids)
+        user_msg = f"{text}\n[用户上传文件: {files_info}。用 read/grep 工具按需读取,不要凭文件名猜测内容。]"
+    if depth:
+        s["depth"] = depth
+        agent._persist_state(sid)
+
+    dlog(f"CHAT sid={sid} text={text!r} depth={depth} files={file_ids}")
+    from skill.main_agent import run_main_agent
+
+    def gen_factory():
+        try:
+            yield {"kind": "session", "session_id": sid}
+            for ev in run_main_agent(sid, user_msg, depth):
+                yield ev  # main_agent 已构造好事件(id/parentId/agent/stepId/payload)
+        except Exception as e:
+            dlog(f"CHAT EXCEPTION: {type(e).__name__}: {e}")
+            yield _new_evt(sid, "error", {"message": f"对话失败: {e}"}, agent_name="main")
+
+    run = start_run(sid, f"chat", gen_factory)
+    return _streaming_response(_stream_run(sid, run.run_id))
+
+
+@csrf_exempt
+def chat_answer(request):
+    """前端回传对 ask_user 的回答 或 generate_animation 的结果:POST {sid, answer | result} -> SSE。
+    resume 主 agent 继续跑。"""
+    if request.method != "POST":
+        return _streaming_response(iter([_sse("error", {"message": "POST only"})]))
+    try:
+        body = json.loads(request.body or b"{}")
+        sid = body.get("sid", "")
+        answer = body.get("answer", "")
+        result = body.get("result")  # generate_animation 的结果 {ok, step_id, error?}
+    except Exception:
+        sid, answer, result = "", "", None
+    if not sid:
+        return _streaming_response(iter([_sse("error", {"message": "缺少 sid"})]))
+
+    from skill.main_agent import set_chat_answer, resume_main_agent
+    # ask 回答 / generate 结果都走 set_chat_answer(resume_main_agent 统一取)
+    if result is not None:
+        set_chat_answer(sid, result)
+    else:
+        set_chat_answer(sid, answer)
+    dlog(f"CHAT_ANSWER sid={sid} answer={answer!r} result={result}")
+
+    def gen_factory():
+        try:
+            for ev in resume_main_agent(sid):
+                yield ev
+        except Exception as e:
+            yield _new_evt(sid, "error", {"message": f"续对话失败: {e}"}, agent_name="main")
+
+    run = start_run(sid, f"chat-answer", gen_factory)
+    return _streaming_response(_stream_run(sid, run.run_id))
+
+
+@csrf_exempt
+def user_preferences(request):
+    """GET 返回用户偏好文本;POST {prefs} 保存。"""
+    from skill import user_prefs
+    if request.method == "GET":
+        return JsonResponse({"prefs": user_prefs.load_prefs()})
+    if request.method == "POST":
+        try:
+            body = json.loads(request.body or b"{}")
+            user_prefs.save_prefs(body.get("prefs", ""))
+            return JsonResponse({"ok": True})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": "GET/POST only"}, status=405)
 
 
 @csrf_exempt
