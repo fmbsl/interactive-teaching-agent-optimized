@@ -108,6 +108,12 @@ def create_session_with_lesson(sid: str, question: str, file_text: Optional[str]
         "current_step": 1, "finished": False,
         "step_cache": {}, "scene_codes": {},
         "title": lesson.get("title", question[:20]),
+        # 新:主 agent 多轮对话 + 分层 list + 文件 + 深度 + 步骤状态黑板
+        "conversation": [],       # [{role,content,files:[file_id]}] 主 agent 对话历史
+        "files": [],              # [{id,name,path,size}] 上传文件元数据
+        "depth": "understand",    # popular | understand | deep
+        "topics": [],             # [{id,title,summary,steps:[{id,title}]}] 分层知识点(多主题并列)
+        "step_status": {},        # step_id(全局唯一) -> pending|generating|done|error 共享黑板
     }
     _persist_state(sid)
 
@@ -134,10 +140,53 @@ def restore_session(sid: str, state: dict) -> None:
         "title": state.get("title", ""),
         "step_cache": {int(k): v for k, v in (state.get("step_cache") or {}).items()},
         "scene_codes": {},
+        # 新字段(旧 state.json 没有则空默认)
+        "conversation": state.get("conversation", []),
+        "files": state.get("files", []),
+        "depth": state.get("depth", "understand"),
+        "topics": state.get("topics", []),
+        "step_status": state.get("step_status", {}),
     }
     # 重建 scene_codes(兼容),键统一 int
     for k, v in _SESSIONS[sid]["step_cache"].items():
         _SESSIONS[sid]["scene_codes"][int(k)] = v.get("sceneCode", "")
+
+
+# ---------- 文件存储 ----------
+
+import os as _os
+
+def _uploads_dir(sid: str) -> str:
+    """session 的上传文件目录。"""
+    base = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "uploads", sid)
+    _os.makedirs(base, exist_ok=True)
+    return base
+
+
+def save_upload(sid: str, name: str, data: bytes) -> dict:
+    """存上传文件,返回元数据 {id,name,path,size}。id 用于 read/grep 工具引用。"""
+    fid = uuid.uuid4().hex[:8]
+    safe_name = "".join(c for c in name if c.isalnum() or c in "._-") or "file"
+    path = _os.path.join(_uploads_dir(sid), f"{fid}_{safe_name}")
+    with open(path, "wb") as f:
+        f.write(data)
+    meta = {"id": fid, "name": name, "path": path, "size": len(data)}
+    s = _SESSIONS.get(sid)
+    if s is not None:
+        s.setdefault("files", []).append(meta)
+        _persist_state(sid)
+    return meta
+
+
+def get_file_meta(sid: str, file_id: str) -> Optional[dict]:
+    """按 file_id 取文件元数据(含 path)。"""
+    s = _SESSIONS.get(sid)
+    if not s:
+        return None
+    for f in s.get("files", []):
+        if f.get("id") == file_id:
+            return f
+    return None
 
 
 def load_sessions_on_startup() -> None:
@@ -244,6 +293,17 @@ def set_step_cache(sid: str, step_id: int, step_data: dict) -> None:
     s.setdefault("step_cache", {})[step_id] = step_data
     # 同步 scene_codes(兼容)
     s.setdefault("scene_codes", {})[step_id] = step_data.get("sceneCode", "")
+    # 同步 step_status 黑板:有 sceneCode 即视为 done
+    s.setdefault("step_status", {})[str(step_id)] = "done" if step_data.get("sceneCode") else "error"
+    _persist_state(sid)
+
+
+def set_step_status(sid: str, step_id: int, status: str) -> None:
+    """更新某步动画生成状态(共享黑板):pending/generating/done/error。"""
+    s = _SESSIONS.get(sid)
+    if not s:
+        return
+    s.setdefault("step_status", {})[str(step_id)] = status
     _persist_state(sid)
 
 
