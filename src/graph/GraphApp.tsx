@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { ReactFlow, Background, Controls, MiniMap, Position, SelectionMode, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
+import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { uploadFile, decompose, decomposeToTopics, decomposeEdit, decomposeAutoSplit, newSession } from "../data/llmClient";
 import { useApp } from "../store";
@@ -209,6 +209,10 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
   const selectedIdRef = useRef<string | null>(null);  // 高亮节点的 ref(effect 内读,不进依赖)
   selectedIdRef.current = selectedId;
   const selectedNodesRef = useRef<Set<string>>(new Set());  // 框选多选(右键菜单用)
+  // 右键框选:右键按下拖动画矩形,松开时选中矩形内节点 + 弹多选菜单。左键仍平移画布(panOnDrag 默认)。
+  const rightDragRef = useRef<{ startX: number; startY: number; moved: boolean }>({ startX: 0, startY: 0, moved: false });
+  const [selRect, setSelRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const paneRef = useRef<HTMLDivElement | null>(null);
   const { sessionId, setSessionId, setTopics, setView, decomposeGraph, setDecomposeGraph } = useApp();
   // sid 直接用 store.sessionId(图随 session 走);本地不再单独存 sid
 
@@ -237,6 +241,63 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
     setRfEdges(edges);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
+
+  // 右键框选:在画布容器上监听 mousedown(button=2) 开始,mousemove 画矩形+实时选中,mouseup 弹多选菜单。
+  // 左键(button=0)不拦截,ReactFlow 默认 panOnDrag 平移画布。
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 2) return;  // 只右键
+      // 只在点空白(pane)开始框选;点节点上右键由 onNodeContextMenu 处理
+      const tgt = e.target as HTMLElement;
+      if (tgt.closest(".react-flow__node") || tgt.closest(".react-flow__edge")) return;
+      rightDragRef.current = { startX: e.clientX, startY: e.clientY, moved: false };
+    };
+    const onMove = (e: MouseEvent) => {
+      const d = rightDragRef.current;
+      if (e.buttons !== 2 || d.startX === 0 && d.startY === 0) return;
+      const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
+      if (!d.moved && Math.hypot(dx, dy) < 6) return;  // 阈值,防误触
+      d.moved = true;
+      const x = Math.min(d.startX, e.clientX), y = Math.min(d.startY, e.clientY);
+      setSelRect({ x, y, w: Math.abs(dx), h: Math.abs(dy) });
+      // 实时计算矩形内节点,设为 ReactFlow 选中(通过 setRfNodes selected)
+      const rect = { x, y, w: Math.abs(dx), h: Math.abs(dy) };
+      setRfNodes((prev) => prev.map((n) => {
+        const elN = el.querySelector(`[data-id="${n.id}"]`) as HTMLElement | null;
+        if (!elN) return n;
+        const r = elN.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const inside = cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
+        return inside ? { ...n, selected: true } : { ...n, selected: false };
+      }));
+    };
+    const onUp = (e: MouseEvent) => {
+      const d = rightDragRef.current;
+      if (e.button !== 2 || !d.moved) { rightDragRef.current = { startX: 0, startY: 0, moved: false }; setSelRect(null); return; }
+      // 框选松开:用最后矩形重新算选中节点(不依赖 onSelectionChange 的异步 ref),弹多选菜单
+      const r = { x: Math.min(d.startX, e.clientX), y: Math.min(d.startY, e.clientY), w: Math.abs(e.clientX - d.startX), h: Math.abs(e.clientY - d.startY) };
+      const selIds: string[] = [];
+      el.querySelectorAll(".react-flow__node").forEach((nEl) => {
+        const r2 = (nEl as HTMLElement).getBoundingClientRect();
+        const cx = r2.left + r2.width / 2, cy = r2.top + r2.height / 2;
+        if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) selIds.push((nEl as HTMLElement).getAttribute("data-id") || "");
+      });
+      selectedNodesRef.current = new Set(selIds.filter(Boolean));
+      rightDragRef.current = { startX: 0, startY: 0, moved: false };
+      setSelRect(null);
+      if (selIds.filter(Boolean).length > 0) setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: selIds.filter(Boolean) });
+    };
+    el.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      el.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   // 视图从 hidden 切到可见时:GraphApp 常驻 DOM,但 hidden(display:none) 下 ReactFlow 的
   // ResizeObserver 不触发 → 节点没测量 → minimap 不画节点缩略图。切可见后 dispatch resize
@@ -404,7 +465,7 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
         </div>
       )}
       <div className="flex-1 flex min-h-0" style={{ flex: "1 1 0", minHeight: 0 }}>
-        <div className="flex-1 relative min-w-0" style={{ flex: "1 1 0", position: "relative", minWidth: 0, minHeight: 0 }}>
+        <div ref={paneRef} className="flex-1 relative min-w-0" style={{ flex: "1 1 0", position: "relative", minWidth: 0, minHeight: 0 }} onContextMenu={(e) => e.preventDefault()}>
           <ReactFlow
             nodes={rfNodes} edges={rfEdges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -412,16 +473,20 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
             onPaneClick={() => setSelectedId(null)}
             onNodeContextMenu={(e, node) => {
               e.preventDefault();
+              // 右键节点:若刚框选了多节点且含本节点,用多选;否则单选。框选拖动时不弹(由 mouseup 处理)
+              if (rightDragRef.current.moved) return;
               const ids = selectedNodesRef.current.has(node.id) && selectedNodesRef.current.size > 1
                 ? [...selectedNodesRef.current] : [node.id];
               setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: ids });
             }}
             onPaneContextMenu={(e) => {
               e.preventDefault();
-              setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: [] });  // 空白右键:添加节点
+              // 空白右键:若刚框选拖动了,由 mouseup 弹多选菜单(不在此弹);未拖动则弹添加菜单
+              if (rightDragRef.current.moved) return;
+              setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: [] });
             }}
             onSelectionChange={({ nodes: sel }) => { selectedNodesRef.current = new Set(sel.map((n) => n.id)); }}
-            selectionOnDrag selectionMode={SelectionMode.Partial} multiSelectionKeyCode="Shift" panOnDrag={false}
+            multiSelectionKeyCode="Shift"
             fitView proOptions={{ hideAttribution: true }} style={{ width: "100%", height: "100%" }}>
             <Background color="#1e293b" gap={20} />
             <Controls showInteractive={false} />
@@ -433,6 +498,11 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
               return "#4a9eff";
             }} />
           </ReactFlow>
+          {/* 右键框选矩形(屏幕坐标,fixed 定位) */}
+          {selRect && createPortal(
+            <div style={{ position: "fixed", left: selRect.x, top: selRect.y, width: selRect.w, height: selRect.h,
+              zIndex: 9990, pointerEvents: "none", border: "1.5px solid #5fb0ff", background: "rgba(74,158,255,0.10)", borderRadius: 3 }} />,
+            document.body)}
           {sessionId && (
             <div style={{ position: "absolute", top: 8, left: 8, fontSize: 11, fontFamily: "monospace", color: "var(--text-mute)", background: "rgba(7,10,18,0.7)", padding: "4px 8px", borderRadius: 4, pointerEvents: "none" }}>
               节点 {rfNodes.length} · 边 {rfEdges.length}
