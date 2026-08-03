@@ -60,10 +60,10 @@ export default function MermaidPanel() {
 
   if (!code) {
     return (
-      <div className="stage-transition flex h-full flex-col items-center justify-center text-[#4a5365] text-[11px] px-6 text-center">
-        <div className="text-[28px] mb-3 opacity-40">:UITableView</div>
-        主 agent 会对流程/结构/关系类知识点(生物分类、历史脉络、软件架构、状态机等)自动选用 mermaid 图展示。
-        <div className="mt-1">数学/物理类仍用 manim 动画。</div>
+      <div className="stage-transition empty-state h-full">
+        <div className="empty-icon">📊</div>
+        <div className="text-[12px] text-[#6b7686]">主 agent 会按知识点类型自选展示方式</div>
+        <div className="text-[10.5px] text-[#4a5365] max-w-[280px]">数学/物理 → manim 动画 · 流程/结构/分类/关系 → mermaid 图示(生物分类、历史脉络、软件架构、状态机等)</div>
       </div>
     );
   }

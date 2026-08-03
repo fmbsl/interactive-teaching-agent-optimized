@@ -65,44 +65,47 @@ function AppShell() {
 
   return (
     <div className="flex h-screen w-screen flex-col text-[#dfe6f0]">
-      {/* 顶部 header */}
+      {/* 顶部 header:三段式 — 品牌(左) / 舞台切换 segmented(中) / 操作(右) */}
       <header className="flex items-center gap-3 px-5 h-12 border-b border-[#1e293b] panel shrink-0">
-        <div className="flex items-center gap-2.5">
+        {/* 品牌 */}
+        <div className="flex items-center gap-2.5 shrink-0">
           <div
-            className="w-6 h-6 rounded-md grid place-items-center text-[13px] font-bold text-[#070a12]"
-            style={{ background: "linear-gradient(135deg,#4a9eff,#2b6cb0)" }}
+            className="w-7 h-7 rounded-lg grid place-items-center text-[14px] font-bold text-[#070a12] logo-glow"
+            style={{ background: "linear-gradient(135deg,#5fb0ff,#2b6cb0)" }}
           >∑</div>
-          <span className="font-semibold text-[13px] tracking-tight">Manim Agent</span>
-          <span className="chip">教学可视化智能体</span>
-        </div>
-        <div className="ml-auto flex items-center gap-3 text-[11px] text-[#6b7686]">
-          <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" /> 实时可交互 · 对话式重生成
-          </span>
-          <span className="text-[#1e293b]">|</span>
-          {/* 中间舞台手动切换:动画 / 分解图。主 agent 也会自动切换,两者都设 view,互不冲突 */}
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] text-[#4a5365] mr-1">舞台</span>
-            <button
-              onClick={() => setView("animation")}
-              className={`px-2 py-0.5 rounded text-[11px] ${view === "animation" ? "btn-blue" : "btn-ghost"}`}
-              title="中间舞台显示动画"
-            >动画</button>
-            <button
-              onClick={() => setView("graph")}
-              className={`px-2 py-0.5 rounded text-[11px] ${view === "graph" ? "btn-blue" : "btn-ghost"}`}
-              title="中间舞台显示知识分解图"
-            >分解</button>
-            <button
-              onClick={() => setView("mermaid")}
-              className={`px-2 py-0.5 rounded text-[11px] ${view === "mermaid" ? "btn-blue" : "btn-ghost"}`}
-              title="中间舞台显示 mermaid 图(流程/结构/关系类知识点)"
-            >图示</button>
+          <div className="flex flex-col leading-tight">
+            <span className="font-semibold text-[13px] tracking-tight">Manim Agent</span>
+            <span className="text-[9.5px] text-[#53606f] -mt-0.5">教学可视化智能体</span>
           </div>
-          <span className="text-[#1e293b]">|</span>
-          <button className="btn-ghost px-2 py-0.5 rounded text-[11px]" onClick={() => setShowSettings(true)}>⚙ LLM</button>
-          <span className="text-[#1e293b]">|</span>
-          <span className="text-[#9aa6b8]">MVP demo</span>
+        </div>
+
+        {/* 中间舞台切换:segmented control 风格,主 agent 也会自动切换,互不冲突 */}
+        <div className="mx-auto flex items-center gap-1 p-0.5 rounded-lg bg-[#0b0f18]/70 border border-[#1e293b]">
+          {([
+            { v: "animation", label: "动画", icon: "🎬", tip: "中间舞台显示动画" },
+            { v: "graph", label: "分解", icon: "🕸", tip: "中间舞台显示知识分解图" },
+            { v: "mermaid", label: "图示", icon: "📊", tip: "中间舞台显示 mermaid 图(流程/结构/关系类知识点)" },
+          ] as const).map((b) => (
+            <button
+              key={b.v}
+              onClick={() => setView(b.v)}
+              title={b.tip}
+              className={`px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1 transition-all duration-200 ${view === b.v ? "btn-blue shadow-sm" : "text-[#6b7686] hover:text-[#dfe6f0] hover:bg-[#161f2e]"}`}
+            >
+              <span className="text-[10px] opacity-80">{b.icon}</span>{b.label}
+            </button>
+          ))}
+        </div>
+
+        {/* 操作区 */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <span className="hidden md:flex items-center gap-1.5 text-[10.5px] text-[#53606f]">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 实时可交互
+          </span>
+          <span className="w-px h-4 bg-[#1e293b]" />
+          <button className="btn-ghost px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1" onClick={() => setShowSettings(true)}>
+            <span className="text-[12px]">⚙</span>LLM
+          </button>
         </div>
       </header>
 
@@ -119,7 +122,7 @@ function AppShell() {
         {/* 左 splitter:拖拽改左栏宽 */}
         <div
           onPointerDown={startDrag("left")}
-          className="w-full cursor-col-resize bg-[#1e293b] hover:bg-[#4a9eff]/50 active:bg-[#4a9eff]/80 transition-colors shrink-0 z-10"
+          className="splitter w-full cursor-col-resize shrink-0 z-10"
           title="拖拽调整左栏宽度"
         />
         <section className="min-h-0 overflow-hidden bg-[#0b0f18]/60 backdrop-blur-md relative panel-anim">
@@ -128,7 +131,7 @@ function AppShell() {
         {/* 右 splitter:拖拽改右栏宽 */}
         <div
           onPointerDown={startDrag("right")}
-          className="w-full cursor-col-resize bg-[#1e293b] hover:bg-[#4a9eff]/50 active:bg-[#4a9eff]/80 transition-colors shrink-0 z-10"
+          className="splitter w-full cursor-col-resize shrink-0 z-10"
           title="拖拽调整右栏宽度"
         />
         <section className="min-h-0 overflow-hidden bg-[#0b0f18]/80 backdrop-blur-md panel-anim">
@@ -137,11 +140,11 @@ function AppShell() {
       </main>
 
       {/* 底部编排状态条 */}
-      <footer className="flex items-center gap-3 px-5 h-7 border-t border-[#1e293b] panel text-[10px] text-[#6b7686] shrink-0">
-        <span>编排:主agent → 拆解 → 生成 → 校验</span>
-        <span className="text-[#1e293b]">|</span>
-        <span>知识类型:数学/算法 · 计算流程</span>
-        <span className="ml-auto text-[#4a5365]">manim-web · React 19 · KaTeX</span>
+      <footer className="flex items-center gap-3 px-5 h-7 border-t border-[#1e293b] panel text-[10px] text-[#53606f] shrink-0">
+        <span className="flex items-center gap-1.5"><span className="w-1 h-1 rounded-full bg-[#4a9eff]/60" />编排:主agent → 拆解 → 生成 → 校验</span>
+        <span className="text-[#1e293b]">·</span>
+        <span>数学/物理 → manim · 流程/结构 → mermaid</span>
+        <span className="ml-auto text-[#4a5365]">manim-web · React 19 · KaTeX · Mermaid</span>
       </footer>
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}

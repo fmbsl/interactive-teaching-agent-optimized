@@ -475,7 +475,15 @@ export default function StagePanel() {
         <span className="ml-2 text-[12px] text-[#9aa6b8]">{stageStepTitle || "等待提问…"}</span>
         <span className="ml-auto text-[10px] text-[#4a5365] tnum">{stageStepLabel}</span>
       </div>
-      <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden" />
+      <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden relative">
+        {!sceneCode && (
+          <div className="empty-state absolute inset-0">
+            <div className="empty-icon">🎬</div>
+            <div className="text-[12px] text-[#6b7686]">在左侧输入一个 STEM 知识点开始</div>
+            <div className="text-[10.5px] text-[#4a5365]">主 agent 会拆解知识点,逐个用动画 + 讲解带你学</div>
+          </div>
+        )}
+      </div>
       <div className="border-t border-[#1e293b] px-4 py-3 space-y-3 shrink-0">
         <div className="flex items-center gap-2">
           {/* 左:知识点导航(整个 step 切换) */}

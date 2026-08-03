@@ -631,8 +631,10 @@ export default function ChatPanel() {
       {/* 对话流 */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2">
         {items.length === 0 && !loading && (
-          <div className="text-[11px] text-[#4a5365] leading-relaxed px-1">
-            输入要学的 STEM 知识点(可先上传课件),我会拆成知识点 list 逐个用动画+公式+文字讲解。回车发送,←/→ 切换步骤。
+          <div className="empty-state mt-6">
+            <div className="empty-icon">💬</div>
+            <div className="text-[12px] text-[#6b7686]">输入要学的 STEM 知识点开始对话</div>
+            <div className="text-[10.5px] text-[#4a5365] max-w-[260px]">可先上传课件。我会拆成知识点 list 逐个用动画 + 公式 + 图文讲解,还能出题考你</div>
           </div>
         )}
         {renderTree(items, setItems)}
@@ -719,10 +721,10 @@ function TopicNode({ topic, onStepClick, loading }: { topic: Topic; onStepClick:
                 key={s.id}
                 onClick={() => onStepClick(s.id)}
                 style={{ paddingLeft: 4 + lvl * 14 }}
-                className={`flex items-center gap-2 text-[10.5px] py-0.5 px-1 rounded cursor-pointer hover:bg-[#161f2e] transition-colors ${loading ? "opacity-50 pointer-events-none" : ""} ${isSum ? "border-t border-[#1e293b] mt-1 pt-1.5" : ""}`}
+                className={`group flex items-center gap-2 text-[10.5px] py-1 px-1.5 rounded cursor-pointer border border-transparent hover:bg-[#161f2e] hover:border-[#2b3a52] hover:translate-x-0.5 transition-all duration-150 ${loading ? "opacity-50 pointer-events-none" : ""} ${isSum ? "border-t border-[#1e293b] mt-1 pt-1.5 hover:bg-[#2b6cb0]/8 hover:border-[#2b6cb0]/40" : ""}`}
               >
-                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum ${generated ? "bg-[#4a9eff] text-[#070a12]" : isSum ? "bg-[#2b6cb0]/30 text-[#9ec5ff] border border-[#2b6cb0]" : "text-[#4a5365] border border-[#1e293b]"}`}>{generated ? "✓" : isSum ? "Σ" : i + 1}</span>
-                <span className={`truncate ${generated ? "text-[#9aa6b8]" : isSum ? "text-[#9ec5ff] font-medium" : "text-[#7a8696]"}`}>{s.title}</span>
+                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum transition-transform group-hover:scale-110 ${generated ? "bg-[#4a9eff] text-[#070a12]" : isSum ? "bg-[#2b6cb0]/30 text-[#9ec5ff] border border-[#2b6cb0]" : "text-[#4a5365] border border-[#1e293b] group-hover:border-[#4a9eff]/40 group-hover:text-[#5fb0ff]"}`}>{generated ? "✓" : isSum ? "Σ" : i + 1}</span>
+                <span className={`truncate ${generated ? "text-[#9aa6b8]" : isSum ? "text-[#9ec5ff] font-medium" : "text-[#7a8696] group-hover:text-[#9aa6b8]"}`}>{s.title}</span>
                 {generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">已生成</span>}
                 {isSum && !generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">融合</span>}
               </li>
@@ -807,12 +809,14 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       const isUser = event.role === "user";
       return (
         <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-0.5`}>
-          <div className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[12px] leading-[1.55] ${
+          <div className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[12px] leading-[1.55] transition-shadow duration-200 ${
             isUser
-              ? "bg-[#4a9eff]/15 border border-[#4a9eff]/30 text-[#dfe6f0]"
-              : "bg-[#0d121c] border border-[#1e293b] text-[#9aa6b8]"
+              ? "bg-[#4a9eff]/15 border border-[#4a9eff]/35 text-[#dfe6f0] shadow-[0_1px_8px_-2px_rgba(74,158,255,0.25)]"
+              : "bg-[#0d121c] border border-[#1e293b] text-[#9aa6b8] hover:border-[#2b3a52] hover:bg-[#101725]"
           }`}>
-            {!isUser && <div className="text-[10px] font-medium mb-0.5" style={{ color: r.color }}>{r.name}</div>}
+            {!isUser && <div className="text-[10px] font-medium mb-0.5 flex items-center gap-1.5" style={{ color: r.color }}>
+              <span className="w-1 h-1 rounded-full" style={{ background: r.color }} />{r.name}
+            </div>}
             {isUser
               ? <div className="whitespace-pre-wrap">{event.text}</div>
               : <div className="md-prose"><ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>{event.text}</ReactMarkdown></div>}

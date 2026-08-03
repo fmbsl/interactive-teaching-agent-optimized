@@ -39,8 +39,10 @@ export default function ExplainPanel() {
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-5">
         {!step ? (
-          <div className="grid place-items-center text-[11px] text-[#4a5365] px-6 text-center min-h-[120px]">
-            在左侧输入知识点后,这里会显示当前步骤的公式与讲解。
+          <div className="empty-state min-h-[140px]">
+            <div className="empty-icon">📖</div>
+            <div className="text-[12px] text-[#6b7686]">在左侧输入知识点后,这里会显示讲解</div>
+            <div className="text-[10.5px] text-[#4a5365]">含动画意图、公式推导、Markdown 图文</div>
           </div>
         ) : (<>
         {/* 动画意图 */}
@@ -88,18 +90,18 @@ export default function ExplainPanel() {
               {pendingQuiz.options.map((opt, i) => {
                 const chosen = quizResult?.choice === i;
                 const isAnswer = pendingQuiz.answer === i;
-                let cls = "border-[#1e293b] hover:border-[#4a9eff]/50 hover:bg-[#4a9eff]/5 text-[#9aa6b8]";
+                let cls = "border-[#1e293b] hover:border-[#4a9eff]/50 hover:bg-[#4a9eff]/8 hover:translate-x-0.5 text-[#9aa6b8]";
                 if (quizResult) {
-                  if (isAnswer) cls = "border-[#16a34a] bg-[#16a34a]/12 text-[#86efac]";
-                  else if (chosen) cls = "border-[#ef4444] bg-[#ef4444]/10 text-[#fca5a5]";
-                  else cls = "border-[#1e293b] text-[#6b7686] opacity-70";
+                  if (isAnswer) cls = "border-[#16a34a] bg-[#16a34a]/15 text-[#86efac] shadow-[0_0_0_1px_rgba(22,163,74,0.3)]";
+                  else if (chosen) cls = "border-[#ef4444] bg-[#ef4444]/12 text-[#fca5a5]";
+                  else cls = "border-[#1e293b] text-[#6b7686] opacity-60";
                 }
                 return (
                   <button
                     key={i}
                     onClick={() => answerQuiz(i)}
                     disabled={!!quizResult}
-                    className={`w-full text-left text-[11px] px-2.5 py-1.5 rounded-md border transition-colors ${cls} ${quizResult ? "cursor-default" : "cursor-pointer"}`}
+                    className={`w-full text-left text-[11px] px-2.5 py-1.5 rounded-md border transition-all duration-150 ${cls} ${quizResult ? "cursor-default" : "cursor-pointer"}`}
                   >
                     <span className="text-[10px] font-semibold mr-1.5 tnum">{String.fromCharCode(65 + i)}.</span>
                     {opt}
