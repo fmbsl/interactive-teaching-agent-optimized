@@ -6,6 +6,7 @@ import ExplainPanel from "./components/ExplainPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import GraphApp from "./graph/GraphApp";
 import MermaidPanel from "./components/MermaidPanel";
+import { Settings } from "lucide-react";
 
 export default function App() {
   return (
@@ -82,17 +83,17 @@ function AppShell() {
         {/* 中间舞台切换:segmented control 风格,主 agent 也会自动切换,互不冲突 */}
         <div className="mx-auto flex items-center gap-1 p-0.5 rounded-lg bg-[#0b0f18]/70 border border-[#1e293b]">
           {([
-            { v: "animation", label: "动画", icon: "🎬", tip: "中间舞台显示动画" },
-            { v: "graph", label: "分解", icon: "🕸", tip: "中间舞台显示知识分解图" },
-            { v: "mermaid", label: "图示", icon: "📊", tip: "中间舞台显示 mermaid 图(流程/结构/关系类知识点)" },
+            { v: "animation", label: "动画", tip: "中间舞台显示动画" },
+            { v: "graph", label: "分解", tip: "中间舞台显示知识分解图" },
+            { v: "mermaid", label: "图示", tip: "中间舞台显示 mermaid 图(流程/结构/关系类知识点)" },
           ] as const).map((b) => (
             <button
               key={b.v}
               onClick={() => setView(b.v)}
               title={b.tip}
-              className={`px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1 transition-all duration-200 ${view === b.v ? "btn-blue shadow-sm" : "text-[#6b7686] hover:text-[#dfe6f0] hover:bg-[#161f2e]"}`}
+              className={`px-2.5 py-1 rounded-md text-[11px] transition-all duration-200 ${view === b.v ? "btn-blue shadow-sm" : "text-[#6b7686] hover:text-[#dfe6f0] hover:bg-[#161f2e]"}`}
             >
-              <span className="text-[10px] opacity-80">{b.icon}</span>{b.label}
+              {b.label}
             </button>
           ))}
         </div>
@@ -103,8 +104,8 @@ function AppShell() {
             <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 实时可交互
           </span>
           <span className="w-px h-4 bg-[#1e293b]" />
-          <button className="btn-ghost px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1" onClick={() => setShowSettings(true)}>
-            <span className="text-[12px]">⚙</span>LLM
+          <button className="btn-ghost px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1.5" onClick={() => setShowSettings(true)}>
+            <Settings size={13} /> LLM
           </button>
         </div>
       </header>

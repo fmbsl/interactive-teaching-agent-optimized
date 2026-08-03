@@ -3,6 +3,7 @@ import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edg
 import "@xyflow/react/dist/style.css";
 import { uploadFile, decompose, decomposeToTopics, newSession } from "../data/llmClient";
 import { useApp } from "../store";
+import { Wrench, Paperclip } from "lucide-react";
 
 // 深色主题。xyflow v12 的 .react-flow__edges 缺 width/height,强制铺满。
 // 用默认 node(ReactFlow 内置)而非自定义 nodeTypes——自定义 node 在本环境会触发 ResizeObserver 不触发→visibility:hidden→边不画。
@@ -239,7 +240,7 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
           break;
         }
         case "tool_call":
-          setLog((prev) => [...prev, { id: ev.id ?? String(prev.length), parentId: ev.parentId, kind, text: `🔧 ${p.name}(${JSON.stringify(p.args ?? {}).slice(0, 120)})`, depth: 1 }]);
+          setLog((prev) => [...prev, { id: ev.id ?? String(prev.length), parentId: ev.parentId, kind, text: `工具 ${p.name}(${JSON.stringify(p.args ?? {}).slice(0, 120)})`, depth: 1 }]);
           break;
         case "tool_result":
           setLog((prev) => [...prev, { id: ev.id ?? String(prev.length), parentId: ev.parentId, kind, text: `↳ ${String(p.output ?? "").slice(0, 160)}`, depth: 2 }]);
@@ -285,7 +286,7 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
         <input style={{ ...inputStyle, flex: 1, minWidth: 120 }} value={question} onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") run(); }} placeholder="输入 STEM 知识点" disabled={busy} />
         <input type="file" accept=".pdf,.txt,.md" ref={fileInputRef} onChange={onFile} className="hidden" />
-        {!embedded && <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 13, borderRadius: 4 }} onClick={() => fileInputRef.current?.click()} disabled={busy}>{fileName ? `📄 ${fileName.slice(0, 16)}` : "📄 附件"}</button>}
+        {!embedded && <button className="btn-ghost inline-flex items-center gap-1" style={{ padding: "4px 10px", fontSize: 13, borderRadius: 4 }} onClick={() => fileInputRef.current?.click()} disabled={busy}><Paperclip size={13} /> {fileName ? fileName.slice(0, 16) : "附件"}</button>}
         <button className="btn-blue" style={{ padding: "4px 12px", borderRadius: 4, fontSize: 13 }} onClick={run} disabled={busy || !question.trim()}>{busy ? "分解中…" : "分解"}</button>
         <button className="btn-blue" style={{ padding: "4px 10px", borderRadius: 4, fontSize: 13 }} onClick={toTopics} disabled={converting || !done || rfNodes.length === 0} title="把分解图按前置依赖拓扑排序,生成学习清单">{converting ? "转换中…" : "转为学习清单 →"}</button>
       </header>

@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 类型检查:`npm run type-check`(注意:`tsc -b` 报的 `Scene`/`ValueTracker` as type、`title unused` 是预先存在的噪音,vite dev 不跑 tsc 不挡)
 - 构建:`npm run build`(tsc + vite build,产出 `dist/` 含 main + standalone 两个入口)
 - 装后端依赖:`pip install -r backend/requirements.txt`(Django/openai/python-dotenv/django-cors-headers)+ langgraph/langchain-openai/langchain-core(已装,未在 requirements.txt)
-- 前端依赖:`npm install`(含 `mermaid`——mermaid 图展示,动态 `import("mermaid")` 加载)
+- 前端依赖:`npm install`(含 `mermaid`——mermaid 图展示,动态 `import("mermaid")` 加载;`lucide-react`——开源 SVG 图标库,替代符号图标)
 
 **改后端 .py 必须重启 Django 才生效**(`--noreload` 不自动重载)。重启会清内存 session,但 `backend/sessions/*.state.json` 会自动重建(见下)。
 
@@ -122,7 +122,8 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 - 流式:`consume` 收 `message_delta` 事件(同 id 增量)找同 id 的 message item 追加 text(无则新建带 id 的 message)。parseSSE 有 `message_delta` case(streamSSE 用)。
 - ask_user 选项:收到 `ask` 事件(带 `options?`)记 `pendingAsk={question,options}`,输入框上方渲染可点击选项按钮(点击即发送该选项文本,`answerWithOption`),也可自定义输入。
 - 分层 topics list:`TopicNode` 可折叠,子知识点按 `explanation||sceneCode` 判断已缓存(✓ 蓝底 + "已生成"标记)vs 未生成(数字灰边)。**多级缩进**:`step.level`(sets 链长)控制 paddingLeft(level 0=4px,每级 +14px)。**融合总结节点**(`is_summary`):badge 显示 `Σ`,标题"总结:XXX",上方分隔线,"融合"标记,蓝边样式。点击 → `handleTopicStep` → `/api/explain`(已缓存 HIT cache 不重跑,后端缓存命中时不发 step-start 不重复加卡片)。
-- 工具调用折叠:`makeItem` 对 subagent 的 `agent_start` 默认折叠(藏其下 tool_call 组),主 agent 的不折叠。tool_call collapsed 只显 `🔧 工具名`(藏 argSummary,展开看 args)。连续 tool_call 用 `ToolGroup` 聚合成一行"🔧 t1 → t2 · N 个工具"。step subagent 段(agent_start + set_title/.../update_animation/渲染结果/finish)整体折叠成一行"🤖 设计第 X 步",点开看工具过程。
+- 工具调用折叠:`makeItem` 对 subagent 的 `agent_start` 默认折叠(藏其下 tool_call 组),主 agent 的不折叠。tool_call collapsed 只显 `Wrench 图标 + 工具名`(藏 argSummary,展开看 args)。连续 tool_call 用 `ToolGroup` 聚合成一行"Wrench t1 → t2 · N 个工具"。step subagent 段整体折叠成一行"Bot 图标 + 设计第 X 步",点开看工具过程。图标用 `lucide-react`(Wrench/Bot/Code2/Play/Check/X/Menu/Plus/Paperclip/Download/Upload/Settings/SkipBack/Play/Pause/SkipForward/RotateCcw/Sparkles/Loader2)。
+- **思考动效**:`loading` 时对话末尾显示 `.thinking-dot`(三点错峰脉冲 + 旋转 Loader2 + "主 agent 正在思考…"),表示等 LLM 回答/拆解/生成。
 - `consume` 处理 `stage_switch`(setView,支持 graph/animation/mermaid)、`graph`(主 agent 图编辑工具改图后推的快照,调 `setDecomposeGraph` 刷新画布,不进对话栏)、`quiz`(主 agent 出题,`setPendingQuiz` 存 store,右边栏显示)、`diagram`(主 agent 产 mermaid 图,`setDiagram` 存 store,MermaidPanel 渲染)、`decompose_request`(调 `/api/decompose` 跑分解 agent,每个 graph 事件实时 setDecomposeGraph,跑完 chatAnswer resume)、`animation_request`(调 `explainStep` 跑 step subagent,流正常结束即 ok=true resume)。`consumeRunIdRef` 防 session 串台。
 - ⚠️ **非 ChatPanel 发起的 resume(右边栏考题作答)经 `store.pendingResume`**:ExplainPanel 点选项 → `setQuizResult`(本地判对错)+ `setPendingResume({answer})`;ChatPanel useEffect 监听 pendingResume → `consume(chatAnswer(sid, answer))`(主 agent 反馈才进对话栏)→ 清空。不能在 ExplainPanel 直接 consume(事件不进 ChatPanel 对话栏)。
 - ⚠️ **graph 事件分支必须在 `consume` 里(不是 `handleEvent`)**:`consume` 是主 agent `/api/chat` 流的消费者,主 agent 图编辑工具推的 `graph` 事件走这里。`handleEvent` 只处理子流递归(render_request/decompose_request/animation_request 的回传流),里面的 graph 分支轮不到。曾误加在 handleEvent 导致画布不刷新。`consume` 用独立 `if (ev.kind === "graph")`(在 stage_switch 之后,和 session/plan/ask 等同级),非 `else if`。

@@ -1,4 +1,5 @@
 import { useApp } from "../store";
+import { Check, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
@@ -40,7 +41,7 @@ export default function ExplainPanel() {
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-5">
         {!step ? (
           <div className="empty-state min-h-[140px]">
-            <div className="empty-icon">📖</div>
+            <div className="empty-icon">¶</div>
             <div className="text-[12px] text-[#6b7686]">在左侧输入知识点后,这里会显示讲解</div>
             <div className="text-[10.5px] text-[#4a5365]">含动画意图、公式推导、Markdown 图文</div>
           </div>
@@ -105,8 +106,8 @@ export default function ExplainPanel() {
                   >
                     <span className="text-[10px] font-semibold mr-1.5 tnum">{String.fromCharCode(65 + i)}.</span>
                     {opt}
-                    {quizResult && isAnswer && <span className="ml-2 text-[10px]">✓ 正确</span>}
-                    {quizResult && chosen && !isAnswer && <span className="ml-2 text-[10px]">✗ 你选的</span>}
+                    {quizResult && isAnswer && <span className="ml-2 text-[10px] inline-flex items-center gap-0.5"><Check size={11} /> 正确</span>}
+                    {quizResult && chosen && !isAnswer && <span className="ml-2 text-[10px] inline-flex items-center gap-0.5"><X size={11} /> 你选的</span>}
                   </button>
                 );
               })}

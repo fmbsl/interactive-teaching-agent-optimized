@@ -12,6 +12,10 @@ import {
   type ChatEvent, type AgentRole, type Topic,
 } from "../data/llmClient";
 import { useApp, type StepStatus } from "../store";
+import {
+  Menu, Plus, Paperclip, Download, Upload, ChevronRight, Wrench, Bot,
+  Code2, Play, Check, X, Loader2, Sparkles,
+} from "lucide-react";
 
 interface RenderedItem { key: string; event: ChatEvent; collapsed: boolean; }
 
@@ -545,9 +549,9 @@ export default function ChatPanel() {
       {/* 顶栏:会话切换 + 上传 */}
       <div className="flex items-center gap-2 px-3 h-11 border-b border-[#1e293b] shrink-0 relative">
         <button onClick={() => setShowSessions((v) => !v)} className="btn-ghost px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1.5">
-          ☰ <span className="max-w-[80px] truncate">{sessionList.find((s) => s.session_id === sessionId)?.title || "会话"}</span>
+          <Menu size={13} /> <span className="max-w-[80px] truncate">{sessionList.find((s) => s.session_id === sessionId)?.title || "会话"}</span>
         </button>
-        <button onClick={handleNewSession} className="btn-ghost px-2 py-1 rounded-md text-[11px]" title="新建会话">+ 新建</button>
+        <button onClick={handleNewSession} className="btn-ghost px-2 py-1 rounded-md text-[11px] flex items-center gap-1" title="新建会话"><Plus size={13} /> 新建</button>
         <input
           ref={fileInputRef}
           type="file"
@@ -562,11 +566,11 @@ export default function ChatPanel() {
           className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = ""; }}
         />
-        <button onClick={() => fileInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px]" title="上传课件">
-          {fileName ? fileName.slice(0, 12) : "📎"}
+        <button onClick={() => fileInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] flex items-center gap-1" title="上传课件">
+          {fileName ? <><Paperclip size={13} /> {fileName.slice(0, 12)}</> : <Paperclip size={13} />}
         </button>
-        <button onClick={handleExport} disabled={!sessionId} className="btn-ghost px-2 py-1 rounded-md text-[11px] disabled:opacity-30" title="导出当前会话为 JSON">⬇ 导出</button>
-        <button onClick={() => importInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] ml-auto" title="导入 JSON 恢复会话">⬆ 导入</button>
+        <button onClick={handleExport} disabled={!sessionId} className="btn-ghost px-2 py-1 rounded-md text-[11px] disabled:opacity-30 flex items-center gap-1" title="导出当前会话为 JSON"><Download size={13} /> 导出</button>
+        <button onClick={() => importInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] ml-auto flex items-center gap-1" title="导入 JSON 恢复会话"><Upload size={13} /> 导入</button>
         <span className="text-[10px] text-[#4a5365] flex items-center gap-1">
           {loading ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 生成中</> : sessionId ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" /> 会话中</> : <><span className="w-1.5 h-1.5 rounded-full bg-[#4a5365]" /> 待输入</>}
         </span>
@@ -632,12 +636,23 @@ export default function ChatPanel() {
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2">
         {items.length === 0 && !loading && (
           <div className="empty-state mt-6">
-            <div className="empty-icon">💬</div>
+            <div className="empty-icon"><Sparkles size={30} /></div>
             <div className="text-[12px] text-[#6b7686]">输入要学的 STEM 知识点开始对话</div>
             <div className="text-[10.5px] text-[#4a5365] max-w-[260px]">可先上传课件。我会拆成知识点 list 逐个用动画 + 公式 + 图文讲解,还能出题考你</div>
           </div>
         )}
         {renderTree(items, setItems)}
+        {loading && (
+          <div className="flex items-center gap-2 text-[11px] text-[#6b7686] px-1 py-1 thinking-dot">
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" />
+            </span>
+            <Loader2 size={12} className="animate-spin text-[#5fb0ff]" />
+            <span>主 agent 正在思考…</span>
+          </div>
+        )}
       </div>
 
       {/* 底部:输入(无上一步/下一步按钮,改用 list 点击或键盘) */}
@@ -656,8 +671,8 @@ export default function ChatPanel() {
           </select>
           {pendingFiles.map((f) => (
             <span key={f.file_id} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#4a9eff]/10 text-[#5fb0ff] border border-[#4a9eff]/20">
-              📎 {f.name}
-              <button onClick={() => removePendingFile(f.file_id)} className="text-[#5fb0ff]/60 hover:text-[#5fb0ff]">×</button>
+              <Paperclip size={11} /> {f.name}
+              <button onClick={() => removePendingFile(f.file_id)} className="text-[#5fb0ff]/60 hover:text-[#5fb0ff]"><X size={11} /></button>
             </span>
           ))}
         </div>
@@ -695,7 +710,7 @@ export default function ChatPanel() {
 }
 
 function StepBadge({ status, id }: { status: StepStatus; id: number }) {
-  if (status === "done") return <span className="w-4 h-4 rounded grid place-items-center text-[9px] bg-[#4a9eff] text-[#070a12]">✓</span>;
+  if (status === "done") return <span className="w-4 h-4 rounded grid place-items-center bg-[#4a9eff] text-[#070a12]"><Check size={11} /></span>;
   if (status === "active") return <span className="w-4 h-4 rounded grid place-items-center text-[9px] bg-[#4a9eff]/20 text-[#5fb0ff] border border-[#4a9eff]/40 tnum">{id}</span>;
   return <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[#4a5365] border border-[#1e293b] tnum">{id}</span>;
 }
@@ -723,7 +738,7 @@ function TopicNode({ topic, onStepClick, loading }: { topic: Topic; onStepClick:
                 style={{ paddingLeft: 4 + lvl * 14 }}
                 className={`group flex items-center gap-2 text-[10.5px] py-1 px-1.5 rounded cursor-pointer border border-transparent hover:bg-[#161f2e] hover:border-[#2b3a52] hover:translate-x-0.5 transition-all duration-150 ${loading ? "opacity-50 pointer-events-none" : ""} ${isSum ? "border-t border-[#1e293b] mt-1 pt-1.5 hover:bg-[#2b6cb0]/8 hover:border-[#2b6cb0]/40" : ""}`}
               >
-                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum transition-transform group-hover:scale-110 ${generated ? "bg-[#4a9eff] text-[#070a12]" : isSum ? "bg-[#2b6cb0]/30 text-[#9ec5ff] border border-[#2b6cb0]" : "text-[#4a5365] border border-[#1e293b] group-hover:border-[#4a9eff]/40 group-hover:text-[#5fb0ff]"}`}>{generated ? "✓" : isSum ? "Σ" : i + 1}</span>
+                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum transition-transform group-hover:scale-110 ${generated ? "bg-[#4a9eff] text-[#070a12]" : isSum ? "bg-[#2b6cb0]/30 text-[#9ec5ff] border border-[#2b6cb0]" : "text-[#4a5365] border border-[#1e293b] group-hover:border-[#4a9eff]/40 group-hover:text-[#5fb0ff]"}`}>{generated ? <Check size={11} /> : isSum ? "Σ" : i + 1}</span>
                 <span className={`truncate ${generated ? "text-[#9aa6b8]" : isSum ? "text-[#9ec5ff] font-medium" : "text-[#7a8696] group-hover:text-[#9aa6b8]"}`}>{s.title}</span>
                 {generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">已生成</span>}
                 {isSum && !generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">融合</span>}
@@ -758,7 +773,7 @@ function renderTree(items: RenderedItem[], setItems: Dispatch<SetStateAction<Ren
       </div>
     );
   };
-  // 渲染一组 children:把连续的 tool_call 聚合成 ToolGroup(一行"🔧 t1 → t2 · N 个",点开逐个展开)
+  // 渲染一组 children:把连续的 tool_call 聚合成 ToolGroup(一行"Wrench t1 → t2 · N 个",点开逐个展开)
   const renderKids = (kids: RenderedItem[], depth: number, toggle: (k: string) => void): ReactNode => {
     const out: ReactNode[] = [];
     let group: RenderedItem[] = [];
@@ -785,7 +800,7 @@ function renderTree(items: RenderedItem[], setItems: Dispatch<SetStateAction<Ren
   return <>{roots.map((it) => renderNode(it, 0))}</>;
 }
 
-// 连续多个 tool_call 的聚合视图:一行"🔧 t1 → t2 → ... · N 个工具",点开逐个展开(每个 tool_call 再点开看 args)
+// 连续多个 tool_call 的聚合视图:一行"Wrench t1 → t2 → ... · N 个工具",点开逐个展开(每个 tool_call 再点开看 args)
 function ToolGroup({ items, depth, renderNode }: { items: RenderedItem[]; depth: number; renderNode: (it: RenderedItem, d: number) => ReactNode }) {
   const [open, setOpen] = useState(false);
   const names = items.map((it) => (it.event as any).name).join(" → ");
@@ -793,7 +808,7 @@ function ToolGroup({ items, depth, renderNode }: { items: RenderedItem[]; depth:
     <div style={{ paddingLeft: depth * 0 }}>
       <div onClick={() => setOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] text-[#6b7686]">
         <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
-        <span>🔧</span> <span className="font-mono">{names}</span> <span className="text-[#4a5365]">· {items.length} 个工具</span>
+        <Wrench size={12} /> <span className="font-mono">{names}</span> <span className="text-[#4a5365]">· {items.length} 个工具</span>
       </div>
       {open && items.map((it) => renderNode(it, depth))}
     </div>
@@ -843,7 +858,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       return (
         <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] text-[#6b7686] py-0.5 cursor-pointer hover:text-[#9aa6b8]">
           {collapsible && <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${collapsed ? "" : "rotate-90"}`}>▶</span>}
-          <span>🤖</span> <span>{`设计第 ${event.stepId} 步`}</span>
+          <Bot size={12} /> <span>{`设计第 ${event.stepId} 步`}</span>
           <span className="text-[#4a5365] text-[9px]">{collapsed ? "点击展开工具过程" : ""}</span>
         </div>
       );
@@ -868,7 +883,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       return (
         <div className="my-0.5">
           <div onClick={onToggle} className={`flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] ${collapsed ? "text-[#6b7686]" : "text-[#9aa6b8]"}`}>
-            {collapsible && <Twist />} <span>🔧</span> <span className="font-mono">{event.name}</span>
+            {collapsible && <Twist />} <Wrench size={12} /> <span className="font-mono">{event.name}</span>
           </div>
           {!collapsed && (
             <div className="mt-0.5 ml-5">
@@ -898,7 +913,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       return (
         <div className="my-0.5">
           <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer text-[#5fb0ff] hover:text-[#9aa6b8]">
-            {collapsible && <Twist />} <span>▶</span> <span>渲染请求</span> <span className="text-[#4a5365]">code {event.code.length} 字符</span>
+            {collapsible && <Twist />} <Code2 size={12} /> <span>渲染请求</span> <span className="text-[#4a5365]">code {event.code.length} 字符</span>
           </div>
           {!collapsed && (
             <pre className="mt-0.5 ml-5 text-[10px] text-[#7a8696] bg-[#0a0f1a] border border-[#162032] rounded px-2 py-1 whitespace-pre-wrap break-all max-h-60 overflow-y-auto">{event.code}</pre>
@@ -908,7 +923,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "render_result":
       return (
         <div className={`flex items-center gap-1.5 text-[10.5px] py-0.5 ml-2 ${event.ok ? "text-[#5fb0ff]" : "text-[#e07a5f]"}`}>
-          <span>{event.ok ? "✓" : "✗"}</span> <span>{event.ok ? "渲染通过" : "渲染失败"}</span>{!event.ok && event.error && <span className="text-[#7a8696] truncate">{event.error.slice(0, 60)}</span>}
+          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.ok ? "渲染通过" : "渲染失败"}</span>{!event.ok && event.error && <span className="text-[#7a8696] truncate">{event.error.slice(0, 60)}</span>}
         </div>
       );
     case "explain":
@@ -943,7 +958,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "animation_request":
       return (
         <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
-          <div className="text-[10px] text-[#5fb0ff]">▶ 生成动画 · 第 {(event as any).step_id || event.stepId} 步</div>
+          <div className="text-[10px] text-[#5fb0ff] flex items-center gap-1"><Play size={11} /> 生成动画 · 第 {(event as any).step_id || event.stepId} 步</div>
           <div className="text-[9px] text-[#4a5365]">主 agent 触发 subagent,浏览器在环验证中…</div>
         </div>
       );

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { makeManimCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn } from "../manimCtx";
 import { useApp } from "../store";
 import { regenerateScene } from "../data/llmClient";
+import { SkipBack, Play, Pause, SkipForward, RotateCcw } from "lucide-react";
 
 // 转换器路线:后端把 Python Manim → TS,再拼成 `const {...} = ctx; <body>`。
 // ctx 注入 manim-web 全部命名导出(类/颜色/方向/工具函数)+ scene + params,
@@ -478,7 +479,7 @@ export default function StagePanel() {
       <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden relative">
         {!sceneCode && (
           <div className="empty-state absolute inset-0">
-            <div className="empty-icon">🎬</div>
+            <div className="empty-icon">▷</div>
             <div className="text-[12px] text-[#6b7686]">在左侧输入一个 STEM 知识点开始</div>
             <div className="text-[10.5px] text-[#4a5365]">主 agent 会拆解知识点,逐个用动画 + 讲解带你学</div>
           </div>
@@ -501,13 +502,13 @@ export default function StagePanel() {
           {/* 右:动画段控制(单步内断点) */}
           <div className="ml-auto flex items-center gap-1.5">
             <button
-              className="btn-ghost px-2.5 py-1.5 rounded-md text-[13px] leading-none disabled:opacity-30"
+              className="btn-ghost px-2.5 py-1.5 rounded-md leading-none disabled:opacity-30"
               title="回到动画开头"
               disabled={!sceneCode}
               onClick={bumpStageReset}
-            >⏮</button>
+            ><SkipBack size={15} /></button>
             <button
-              className="btn-blue px-4 py-1.5 rounded-md text-[12px]"
+              className="btn-blue px-4 py-1.5 rounded-md text-[12px] flex items-center gap-1.5"
               onClick={() => {
                 const next = !isPlaying;
                 setIsPlaying(next);
@@ -516,9 +517,9 @@ export default function StagePanel() {
                 pauseCtrl.current.paused = !next;
                 if (next && pauseCtrl.current.resume) { const r = pauseCtrl.current.resume; pauseCtrl.current.resume = null; r(); }
               }}
-            >{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
+            >{isPlaying ? <><Pause size={14} /> 暂停</> : <><Play size={14} /> 播放</>}</button>
             <button
-              className="btn-ghost px-2.5 py-1.5 rounded-md text-[13px] leading-none disabled:opacity-30"
+              className="btn-ghost px-2.5 py-1.5 rounded-md leading-none disabled:opacity-30"
               title="下一段动画"
               disabled={!sceneCode || isPlaying}
               onClick={() => {
@@ -527,12 +528,12 @@ export default function StagePanel() {
                 pauseCtrl.current.paused = false;
                 if (pauseCtrl.current.resume) { const r = pauseCtrl.current.resume; pauseCtrl.current.resume = null; r(); }
               }}
-            >⏭</button>
+            ><SkipForward size={15} /></button>
             <button
-              className="btn-ghost px-2.5 py-1.5 rounded-md text-[13px] leading-none"
+              className="btn-ghost px-2.5 py-1.5 rounded-md leading-none"
               title="重置舞台"
               onClick={bumpStageReset}
-            >↺</button>
+            ><RotateCcw size={15} /></button>
             <label className="flex items-center gap-1 text-[10px] text-[#6b7686] cursor-pointer select-none ml-1" title="通过后截最后一帧给视觉模型检查画面(需在设置里配视觉辅助模型)">
               <input type="checkbox" checked={visionCheckEnabled} onChange={(e) => setVisionCheckEnabled(e.target.checked)} className="accent-[#4a9eff]" />
               视觉检查
