@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
+import { createPortal } from "react-dom";
+import { ReactFlow, Background, Controls, MiniMap, Position, SelectionMode, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { uploadFile, decompose, decomposeToTopics, decomposeEdit, decomposeAutoSplit, newSession } from "../data/llmClient";
 import { useApp } from "../store";
@@ -351,15 +352,19 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
     }
   }, [sessionId, decomposeGraph, setDecomposeGraph]);
 
-  // 右键菜单点击处理
-  const onMenu = useCallback(async (action: string, ids: string[]) => {
+  // 右键菜单点击处理。inputValue 用于修改/合并/添加(由 ContextMenu 内置弹窗提供,非 window.prompt)
+  const onMenu = useCallback(async (action: string, ids: string[], inputValue?: string) => {
     setContextMenu(null);
-    if (!sessionId || ids.length === 0) return;
-    // 从 snapshot 里查标题(节点 label 是 React 元素,直接读 snapshot.nodes 更稳)
+    if (!sessionId) return;
     const snap = decomposeGraph?.snapshot;
     const titleOf = (id: string) => (snap?.nodes?.find((n: any) => n.id === id)?.title) || "";
     const ts = ids.map(titleOf).filter(Boolean);
-    if (action === "remove") {
+    if (action === "add") {
+      // 空白右键添加:ids 为空,inputValue 是新标题
+      if (inputValue && inputValue.trim()) await applyEdit("add", { title: inputValue.trim(), mastery: false });
+    } else if (ids.length === 0) {
+      return;
+    } else if (action === "remove") {
       for (const t of ts) await applyEdit("remove", { title: t });
     } else if (action === "set_mastered") {
       for (const t of ts) await applyEdit("set_mastered", { title: t, mastered: true });
@@ -370,22 +375,16 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
     } else if (action === "split" && ts.length === 1) {
       await applyEdit("auto_split", { target: ts[0] });
     } else if (action === "rename" && ts.length === 1) {
-      const nt = window.prompt(`修改「${ts[0]}」的标题为:`, ts[0]);
-      if (nt && nt.trim()) await applyEdit("rename", { title: ts[0], new_title: nt.trim() });
+      if (inputValue && inputValue.trim()) await applyEdit("rename", { title: ts[0], new_title: inputValue.trim() });
     } else if (action === "merge" && ts.length >= 2) {
-      // 合并:询问合并为哪个父标题(从共同 sets 找选项),或自定义
-      const commonSets = snap ? Array.from(new Set((snap.nodes as any[]).filter((n: any) => ts.includes(n.title)).flatMap((n: any) => n.sets || []))) : [];
-      const opts = commonSets.length ? commonSets : ts;
-      const nt = window.prompt(`合并 ${ts.length} 个节点为新节点,标题为:`, opts[0]);
-      if (nt && nt.trim()) await applyEdit("merge", { titles: ts, new_title: nt.trim() });
+      if (inputValue && inputValue.trim()) await applyEdit("merge", { titles: ts, new_title: inputValue.trim() });
     }
-  }, [sessionId, rfNodes, decomposeGraph, applyEdit]);
+  }, [sessionId, decomposeGraph, applyEdit]);
 
   const inputStyle: React.CSSProperties = { background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 4, padding: "4px 8px" };
 
   return (
-    <div className="stage-transition" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden", color: "var(--text)" }}
-      onClick={() => { if (contextMenu) setContextMenu(null); }}>
+    <div className="stage-transition" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden", color: "var(--text)" }}>
       <style>{FLOW_CSS}</style>
       {/* embedded(中间舞台):无顶栏,画布占满;分解由主 agent 对话触发。非 embedded(独立页)保留输入框+分解按钮 */}
       {!embedded && (
@@ -422,7 +421,7 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
               setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: [] });  // 空白右键:添加节点
             }}
             onSelectionChange={({ nodes: sel }) => { selectedNodesRef.current = new Set(sel.map((n) => n.id)); }}
-            selectionOnDrag multiSelectionKeyCode="Shift"
+            selectionOnDrag selectionMode={SelectionMode.Partial} multiSelectionKeyCode="Shift" panOnDrag={false}
             fitView proOptions={{ hideAttribution: true }} style={{ width: "100%", height: "100%" }}>
             <Background color="#1e293b" gap={20} />
             <Controls showInteractive={false} />
@@ -465,56 +464,93 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
           </aside>
         )}
       </div>
-      {/* 右键菜单:节点(单/多选)或空白(添加) */}
+      {/* 右键菜单:节点(单/多选)或空白(添加)。portal 到 body,定位不受祖先影响 */}
       {contextMenu && (
-        <ContextMenu x={contextMenu.x} y={contextMenu.y} nodeIds={contextMenu.nodeIds} onAction={onMenu} onAdd={async (title) => {
-          setContextMenu(null);
-          if (sessionId && title.trim()) await applyEdit("add", { title: title.trim(), mastery: false });
-        }} />
+        <ContextMenu
+          x={contextMenu.x} y={contextMenu.y} nodeIds={contextMenu.nodeIds}
+          masteredMap={Object.fromEntries((decomposeGraph?.snapshot?.nodes || []).map((n: any) => [n.id, !!n.mastery]))}
+          onAction={(action, ids, val) => onMenu(action, ids, val)}
+          onClose={() => setContextMenu(null)} />
       )}
     </div>
   );
 }
 
-// 右键菜单组件:nodeIds 空=空白右键(只显示"添加");单选=修改/删除/已学习/拆分/加入清单;多选=删除/已学习/合并/加入清单
-function ContextMenu({ x, y, nodeIds, onAction, onAdd }: {
+// 右键菜单组件:portal 到 body(不受祖先 transform/onClick 影响,定位准)。
+// nodeIds 空=空白右键(添加);单选=修改/删除/已学习切换/拆分/加入清单;多选=删除/已学习切换/合并/加入清单。
+// masteredMap: id->mastery,决定"标记/取消已学习"的文案。输入类操作(修改/合并/添加)用内置弹窗,不用 window.prompt。
+function ContextMenu({ x, y, nodeIds, masteredMap, onAction, onClose }: {
   x: number; y: number; nodeIds: string[];
-  onAction: (action: string, ids: string[]) => void;
-  onAdd: (title: string) => void;
+  masteredMap: Record<string, boolean>;
+  onAction: (action: string, ids: string[], inputValue?: string) => void;
+  onClose: () => void;
 }) {
+  const [prompting, setPrompting] = useState<{ label: string; action: string; def: string } | null>(null);
+  const [inputVal, setInputVal] = useState("");
   const multi = nodeIds.length > 1;
   const empty = nodeIds.length === 0;
-  const items: { action: string; label: string; icon: any; danger?: boolean }[] = empty
-    ? [{ action: "add", label: "添加知识点", icon: Plus }]
+  // 选中节点的 mastery:全已掌握->显示"取消已学习",否则"标记已学习"
+  const allMastered = nodeIds.length > 0 && nodeIds.every((id) => masteredMap[id]);
+  const masteredLabel = allMastered ? "取消已学习" : "标记已学习";
+  const masteredAction = allMastered ? "unset_mastered" : "set_mastered";
+  const items: { action: string; label: string; icon: any; danger?: boolean; needInput?: string }[] = empty
+    ? [{ action: "add", label: "添加知识点", icon: Plus, needInput: "输入新知识点标题:" }]
     : multi
       ? [
           { action: "remove", label: "删除选中", icon: Trash2, danger: true },
-          { action: "set_mastered", label: "标记已学习", icon: GraduationCap },
-          { action: "unset_mastered", label: "取消已学习", icon: GraduationCap },
-          { action: "merge", label: "合并选中…", icon: Merge },
+          { action: masteredAction, label: masteredLabel, icon: GraduationCap },
+          { action: "merge", label: "合并选中…", icon: Merge, needInput: `合并 ${nodeIds.length} 个节点为新节点,标题:` },
           { action: "add_to_topics", label: "加入至知识清单", icon: ListPlus },
         ]
       : [
-          { action: "rename", label: "修改…", icon: Pencil },
+          { action: "rename", label: "修改…", icon: Pencil, needInput: "修改为:" },
           { action: "remove", label: "删除", icon: Trash2, danger: true },
-          { action: "set_mastered", label: "标记已学习", icon: GraduationCap },
-          { action: "unset_mastered", label: "取消已学习", icon: GraduationCap },
+          { action: masteredAction, label: masteredLabel, icon: GraduationCap },
           { action: "split", label: "拆分(agent自动)", icon: Split },
           { action: "add_to_topics", label: "加入至知识清单", icon: ListPlus },
         ];
-  // 防菜单超出视口
-  const left = Math.min(x, window.innerWidth - 200);
-  const top = Math.min(y, window.innerHeight - items.length * 32 - 16);
-  return (
-    <div onClick={(e) => e.stopPropagation()}
-      style={{ position: "fixed", left, top, zIndex: 50, minWidth: 180, background: "rgba(11,15,24,0.96)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", padding: 4, backdropFilter: "blur(8px)" }}>
+  // 防菜单超出视口/负坐标
+  const left = Math.max(8, Math.min(x, window.innerWidth - 210));
+  const top = Math.max(8, Math.min(y, window.innerHeight - items.length * 34 - 16));
+  const menu = (
+    <div onClick={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      style={{ position: "fixed", left, top, zIndex: 9999, minWidth: 190, background: "rgba(11,15,24,0.97)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", padding: 4, backdropFilter: "blur(8px)" }}>
       {items.map((it) => (
         <button key={it.action}
-          onClick={() => { if (it.action === "add") { const t = window.prompt("输入新知识点标题:"); if (t) onAdd(t); } else onAction(it.action, nodeIds); }}
+          onClick={() => {
+            if (it.needInput) {
+              setPrompting({ label: it.needInput, action: it.action, def: it.action === "rename" ? (masteredMap[nodeIds[0]] != null ? "" : "") : "" });
+              setInputVal("");
+            } else {
+              onAction(it.action, nodeIds);
+            }
+          }}
           className={`w-full flex items-center gap-2 text-left text-[12px] px-2.5 py-1.5 rounded transition-colors ${it.danger ? "text-[#fca5a5] hover:bg-[#ef4444]/12" : "text-[#dfe6f0] hover:bg-[#161f2e]"}`}>
           <it.icon size={14} /> {it.label}
         </button>
       ))}
+      {prompting && (
+        <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontSize: 10.5, color: "var(--text-dim)" }}>{prompting.label}</div>
+          <input autoFocus value={inputVal} onChange={(e) => setInputVal(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && inputVal.trim()) { onAction(prompting.action, nodeIds, inputVal.trim()); } else if (e.key === "Escape") setPrompting(null); }}
+            placeholder="标题" style={{ background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 4, padding: "4px 6px", fontSize: 12, outline: "none" }} />
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => { if (inputVal.trim()) onAction(prompting.action, nodeIds, inputVal.trim()); }}
+              className="btn-blue" style={{ flex: 1, padding: "3px 6px", borderRadius: 4, fontSize: 11 }}>确定</button>
+            <button onClick={() => setPrompting(null)} className="btn-ghost" style={{ flex: 1, padding: "3px 6px", borderRadius: 4, fontSize: 11 }}>取消</button>
+          </div>
+        </div>
+      )}
     </div>
+  );
+  // 点菜单外关闭:用一个全屏透明层捕获点击。菜单用 portal 渲染到 body,不受祖先 transform/onClick 影响。
+  return createPortal(
+    <>
+      <div onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}
+        style={{ position: "fixed", inset: 0, zIndex: 9998 }} />
+      {menu}
+    </>,
+    document.body,
   );
 }
