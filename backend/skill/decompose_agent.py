@@ -122,6 +122,43 @@ def _resolve_existing(sid: str, title: str, aliases: list[str] | None = None) ->
     return None
 
 
+# 已掌握清单关键词(与系统提示词的【已掌握清单】对齐)。LLM 返回 mastery=true 时在此校验:
+# 标题/别名命中这些关键词才允许 mastery=true,否则强制 false(防 LLM 泛化误标,如把"矩阵"当高中已掌握)。
+_MASTERY_KEYWORDS = [
+    # 初等代数
+    "整数", "分数", "指数", "对数", "一元一次", "一元二次", "方程", "因式分解", "多项式", "不等式",
+    # 函数
+    "一次函数", "二次函数", "反比例", "指数函数", "对数函数", "幂函数", "定义域", "值域", "单调", "奇偶",
+    "函数",
+    # 基本几何
+    "面积", "体积", "相似", "全等", "坐标平面", "两点距离", "斜率", "勾股定理",
+    # 三角函数
+    "sin", "cos", "tan", "正弦", "余弦", "正切", "单位圆", "正弦定理", "余弦定理", "三角",
+    # 向量基础
+    "向量", "数乘", "点积", "模长",
+    # 一元微积分基础(高中水平:极限直观 + 基本求导 + 定积分面积)
+    "极限", "导数", "求导", "定积分", "微积分基本定理",
+    # 概率统计基础
+    "频率", "概率", "均值", "方差", "标准差", "排列", "组合", "计数",
+    # 集合与逻辑
+    "集合", "命题", "充分", "必要",
+]
+
+
+def _in_mastery_list(title: str, aliases: list[str] | None = None) -> bool:
+    """判断标题/别名是否命中已掌握清单(高中毕业水平)。用于校验 LLM 的 mastery=true 是否合理。"""
+    names = [title] + list(aliases or [])
+    for n in names:
+        nl = (n or "").lower()
+        # 排除大学/进阶修饰词:即使含高中关键词,带这些前缀的也是大学内容(偏导数/链式法则/多元微积分...)
+        if any(x in nl for x in ["偏导", "链式", "多元", "重积分", "级数", "傅里叶", "微分方程", "矩阵", "行列式", "特征值", "特征向量", "线性变换"]):
+            continue
+        for kw in _MASTERY_KEYWORDS:
+            if kw.lower() in nl:
+                return True
+    return False
+
+
 def _add_node(sid: str, title: str, mastery: bool, aliases: list[str] | None,
               sets: list[str], depth: int, events: list[dict]) -> str:
     """新建或合并节点(按标题+别名去重)。返回 node_id。合并时 sets/aliases 取并集、mastery 只升不降。"""
@@ -284,21 +321,26 @@ def _split_replace(sid: str, target_id: str, children: list[dict], prereqs: list
     new_depth = target_depth + 1
 
     # --- A. 建/合并 children(继承 sets) 与 prereqs(外部,sets=[]) ---
+    # 校验 LLM 的 mastery=true:必须命中已掌握清单,否则强制 false(防泛化误标)
     child_ids: list[tuple[str, str]] = []   # (title, id)
     for ch in children or []:
         ct = (ch.get("title") or "").strip()
         if not ct:
             continue
-        nid = _add_node(sid, ct, bool(ch.get("mastery", False)),
-                        ch.get("aliases", []), inherit_sets, new_depth, events)
+        cm = bool(ch.get("mastery", False))
+        if cm and not _in_mastery_list(ct, ch.get("aliases")):
+            cm = False  # LLM 误标已掌握,回退为待学
+        nid = _add_node(sid, ct, cm, ch.get("aliases", []), inherit_sets, new_depth, events)
         child_ids.append((ct, nid))
     prereq_ids: list[tuple[str, str]] = []
     for pr in prereqs or []:
         pt = (pr.get("title") or "").strip()
         if not pt:
             continue
-        nid = _add_node(sid, pt, bool(pr.get("mastery", False)),
-                        pr.get("aliases", []), [], new_depth, events)
+        pm = bool(pr.get("mastery", False))
+        if pm and not _in_mastery_list(pt, pr.get("aliases")):
+            pm = False
+        nid = _add_node(sid, pt, pm, pr.get("aliases", []), [], new_depth, events)
         prereq_ids.append((pt, nid))
 
     # 标题/别名 -> id 映射(供 deps 解析)
@@ -416,9 +458,11 @@ def _build_tools(sid: str):
     def expand_node(target: str, children: list[dict], prereqs: list[dict], deps: list[dict]) -> str:
         """拆分 frontier 中的 target(知识点标题)。
         - children:target 分解出的子概念。每项 {"title": str, "mastery": bool, "aliases": [str,...](可选)}。原子概念给 []。
-        - prereqs:外部前置知识(不在 children 里)。每项同上。命中已掌握清单的 mastery=true。
+        - prereqs:外部前置知识(不在 children 里)。每项同上。
         - deps:前置依赖。每项 {"from": "先学标题", "to": "后学标题"}。from/to 取自 children/prereqs/target。
         拆分后 target 消失(变集合标签),其依赖改接到子节点并自动剪枝。返回当前 frontier(待拆标题)。空则调 finish()。
+        ⚠️ **mastery 判定**:只有命中【已掌握清单】(高中毕业水平)的概念才给 mastery=true,其余一律 mastery=false。
+          后端会校验:mastery=true 但不在清单的会被强制回退为 false。如"矩阵""卷积""梯度""神经网络"等大学内容绝不能 mastery=true。
         """
         tgt = (target or "").strip()
         with _LOCKS[sid]:  # 防并行 tool_call 改图竞态
@@ -846,3 +890,104 @@ def edit_list_nodes(sid: str) -> str:
         sets = f" [集合:{'/'.join(nd.get('sets', []))}]" if nd.get("sets") else ""
         lines.append(f"  - {nd['title']}({flag}, depth={nd['depth']}){sets}")
     return f"当前图 {len(G['nodes'])} 节点,{len(G['edges'])} 边:\n" + "\n".join(lines)
+
+
+def edit_merge_nodes(sid: str, titles: list[str], new_title: str) -> tuple[str, dict]:
+    """合并多个节点为一个新节点(用户指定标题)。新节点继承被合并节点的 sets 交集(共同父集合)+
+    合并节点的 aliases,入/出边全连到新节点,删旧节点。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    new_title = (new_title or "").strip()
+    if not new_title:
+        return "错误:缺少合并后的新标题。", _snapshot_graph(sid)
+    if not titles or len(titles) < 2:
+        return "错误:合并至少需要 2 个节点。", _snapshot_graph(sid)
+    with _LOCKS[sid]:
+        ids = []
+        for t in titles:
+            nid = _resolve_existing(sid, t.strip(), [])
+            if not nid:
+                return f"错误:找不到节点「{t}」", _snapshot_graph(sid)
+            ids.append(nid)
+        if len(set(ids)) < 2:
+            return "错误:选中的是同一个节点,无需合并。", _snapshot_graph(sid)
+        # 共同父集合(sets 交集):合并后保留共同的上层归属
+        common_sets = set(G["nodes"][ids[0]].get("sets", []))
+        for nid in ids[1:]:
+            common_sets &= set(G["nodes"][nid].get("sets", []))
+        # 合并 aliases:被合并节点标题都作为新节点别名
+        merged_aliases = sorted({G["nodes"][nid]["title"] for nid in ids} | {a for nid in ids for a in G["nodes"][nid].get("aliases", [])})
+        # 收集入/出边(排除被合并节点之间的内部边)
+        in_edges = [(f, nid) for (f, t) in G["edges"] for nid in ids if t == nid and f not in ids]
+        out_edges = [(nid, t) for (f, t) in G["edges"] for nid in ids if f == nid and t not in ids]
+        # 新节点 depth = 最浅被合并节点 depth(合并后层级取较上层)
+        new_depth = min(G["nodes"][nid]["depth"] for nid in ids)
+        new_mastery = all(G["nodes"][nid]["mastery"] for nid in ids)  # 全已掌握才算已掌握
+        # 删旧节点(及其边)
+        for nid in ids:
+            G["edges"] = {(f, t) for (f, t) in G["edges"] if f != nid and t != nid}
+            old = G["nodes"].pop(nid, None)
+            if old:
+                G["title_index"].pop(old["title"], None)
+                for a in old.get("aliases", []):
+                    G["title_index"].pop(a, None)
+            if nid in G["frontier"]:
+                G["frontier"].remove(nid)
+        # 加新节点
+        new_id = "n" + _uuid.uuid4().hex[:8]
+        G["nodes"][new_id] = {"title": new_title, "aliases": list(merged_aliases), "sets": sorted(common_sets),
+                              "mastery": new_mastery, "depth": new_depth}
+        G["title_index"][new_title] = new_id
+        for a in merged_aliases:
+            G["title_index"][a] = new_id
+        # 重连入/出边(环检测)
+        for (f, _) in in_edges:
+            if f != new_id and (f, new_id) not in G["edges"] and not _has_path(G, new_id, f):
+                G["edges"].add((f, new_id))
+        for (_, t) in out_edges:
+            if t != new_id and (new_id, t) not in G["edges"] and not _has_path(G, t, new_id):
+                G["edges"].add((new_id, t))
+    return f"已合并 {len(ids)} 个节点为「{new_title}」。", _snapshot_graph(sid)
+
+
+def edit_auto_split(sid: str, target: str) -> tuple[str, dict]:
+    """LLM 自动拆分某节点(右键"拆分"菜单):用 LLM 产 children/prereqs/deps,再调 _split_replace。
+    适用于用户想细分某节点但不想手填子概念。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    target = (target or "").strip()
+    if not target:
+        return "错误:缺少要拆分的节点标题。", _snapshot_graph(sid)
+    nid = _resolve_existing(sid, target, [])
+    if not nid or nid not in G["nodes"]:
+        return f"错误:找不到节点「{target}」", _snapshot_graph(sid)
+    nd = G["nodes"][nid]
+    if nd["mastery"]:
+        return f"「{target}」已标记为已掌握,无需拆分。", _snapshot_graph(sid)
+    try:
+        cfg = _get_runtime_cfg()
+        model = ChatOpenAI(base_url=cfg.base_url, api_key=cfg.api_key or "dummy",
+                           model=cfg.model, temperature=0.3, request_timeout=45)
+        prompt = (f"把知识点「{target}」(深度={nd['depth']},集合标签={nd.get('sets',[])})拆分为 3-6 个子概念。"
+                  f"返回 JSON:{{\"children\":[{{\"title\":...,\"mastery\":false,\"aliases\":[]}}],"
+                  f"\"prereqs\":[{{\"title\":...,\"mastery\":false}}],"
+                  f"\"deps\":[{{\"from\":\"先学\",\"to\":\"后学\"}}]}}。"
+                  f"子概念标题 4-16 字,与 target 不同。只有高中已掌握的概念(代数/函数/几何/三角/向量/微积分基础/概率/集合)才 mastery=true。"
+                  f"deps 的 from/to 取自 children/prereqs/target 标题。只返回 JSON。")
+        resp = model.invoke([{"role": "user", "content": prompt}])
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        dlog(f"AUTO_SPLIT target={target} resp={content[:300]!r}")
+        m = _re.search(r'\{[\s\S]*\}', content)
+        if not m:
+            return f"自动拆分失败:LLM 未返回 JSON。", _snapshot_graph(sid)
+        obj = _json.loads(m.group(0))
+        children = obj.get("children", []) or []
+        prereqs = obj.get("prereqs", []) or []
+        deps = obj.get("deps", []) or []
+        if not children:
+            return f"自动拆分:{target} 是原子概念,LLM 未拆出子节点。可手动拆分。", _snapshot_graph(sid)
+    except Exception as e:
+        dlog(f"AUTO_SPLIT EXC {type(e).__name__}: {e}")
+        return f"自动拆分出错:{type(e).__name__}: {e}", _snapshot_graph(sid)
+    events, msg = _split_replace(sid, nid, children, prereqs, deps, prune=True)
+    return f"已自动拆分「{target}」:{msg}", _snapshot_graph(sid)

@@ -989,6 +989,130 @@ def decompose_split(request, sid: str):
 
 
 @csrf_exempt
+def decompose_edit(request, sid: str):
+    """通用图编辑(右键菜单用):直接调 decompose_agent.edit_*,绕过 LLM 即时改图。
+    POST {op, ...params}。op: remove/add/rename/set_mastered/merge/add_to_topics。
+    返回 {sid, message, graph}(graph=新快照)。改完写回 session.graph 持久化。"""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        body = json.loads(request.body or b"{}")
+        op = (body.get("op") or "").strip()
+    except Exception as e:
+        return JsonResponse({"error": f"bad body: {e}"}, status=400)
+    from skill import decompose_agent as _d
+    from skill.decompose_agent import ensure_graph_loaded
+    if not ensure_graph_loaded(sid):
+        return JsonResponse({"error": f"会话 {sid} 尚未分解知识图谱"}, status=404)
+    try:
+        if op == "remove":
+            title = (body.get("title") or "").strip()
+            msg, snap = _d.edit_remove_node(sid, title)
+        elif op == "add":
+            title = (body.get("title") or "").strip()
+            mastery = bool(body.get("mastery", False))
+            aliases = body.get("aliases", []) or []
+            msg, snap = _d.edit_add_node(sid, title, mastery, aliases)
+        elif op == "rename":
+            title = (body.get("title") or "").strip()
+            new_title = (body.get("new_title") or "").strip()
+            msg, snap = _d.edit_rename_node(sid, title, new_title)
+        elif op == "set_mastered":
+            title = (body.get("title") or "").strip()
+            mastered = bool(body.get("mastered", True))
+            msg, snap = _d.edit_set_mastered(sid, title, mastered)
+        elif op == "merge":
+            titles = body.get("titles", []) or []
+            new_title = (body.get("new_title") or "").strip()
+            msg, snap = _d.edit_merge_nodes(sid, titles, new_title)
+        elif op == "add_to_topics":
+            # 把选中节点(及其子树)转成学习清单追加到 session.topics
+            titles = body.get("titles", []) or []
+            msg, snap = _decompose_add_to_topics(sid, titles)
+        else:
+            return JsonResponse({"error": f"未知 op: {op}"}, status=400)
+    except Exception as e:
+        return JsonResponse({"error": f"编辑出错: {type(e).__name__}: {e}"}, status=500)
+    # 写回 session.graph 持久化(编辑只改内存 _GRAPHS,要同步到 session + state.json)
+    _persist_decompose_graph(sid, snap)
+    dlog(f"DECOMPOSE EDIT sid={sid} op={op} msg={msg[:60]!r}")
+    return JsonResponse({"sid": sid, "message": msg, "graph": snap})
+
+
+@csrf_exempt
+def decompose_auto_split(request, sid: str):
+    """LLM 自动拆分某节点(右键"拆分"菜单)。POST {target}。返回 {sid, message, graph}。"""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        body = json.loads(request.body or b"{}")
+        target = (body.get("target") or "").strip()
+    except Exception as e:
+        return JsonResponse({"error": f"bad body: {e}"}, status=400)
+    if not target:
+        return JsonResponse({"error": "缺少 target"}, status=400)
+    from skill import decompose_agent as _d
+    from skill.decompose_agent import ensure_graph_loaded
+    if not ensure_graph_loaded(sid):
+        return JsonResponse({"error": f"会话 {sid} 尚未分解知识图谱"}, status=404)
+    try:
+        msg, snap = _d.edit_auto_split(sid, target)
+    except Exception as e:
+        return JsonResponse({"error": f"自动拆分出错: {type(e).__name__}: {e}"}, status=500)
+    _persist_decompose_graph(sid, snap)
+    dlog(f"DECOMPOSE AUTO_SPLIT sid={sid} target={target!r}")
+    return JsonResponse({"sid": sid, "message": msg, "graph": snap})
+
+
+def _persist_decompose_graph(sid: str, snapshot: dict):
+    """把编辑后的图快照写回 session.graph + 持久化(供 edit/auto_split 端点复用)。"""
+    s = agent.get_session(sid)
+    if not s:
+        from skill.session_store import load_state
+        st = load_state(sid)
+        if st:
+            agent.restore_session(sid, st)
+            s = agent.get_session(sid)
+    if not s:
+        return
+    old_graph = s.get("graph") or {}
+    s["graph"] = {"question": old_graph.get("question", s.get("question", "")),
+                  "root_title": old_graph.get("root_title", ""), "snapshot": snapshot}
+    agent._persist_state(sid)
+
+
+def _decompose_add_to_topics(sid: str, titles: list[str]) -> tuple[str, dict]:
+    """把选中节点转成学习清单追加到 session.topics(右键"加入至知识清单")。
+    用 graph_to_topic_sequence 生成全图清单,再筛出含选中节点的子序列(简化:直接追加选中节点为一个小 topic)。"""
+    from skill.decompose_agent import graph_to_topic_sequence, ensure_graph_loaded, _snapshot_graph, _GRAPHS
+    if not ensure_graph_loaded(sid):
+        return "图未初始化", _snapshot_graph(sid)
+    G = _GRAPHS[sid]
+    # 收集选中节点(按标题解析 id)
+    sel_ids = []
+    for t in titles:
+        nid = None
+        for nid_, nd in G["nodes"].items():
+            if nd["title"] == t.strip() or t.strip() in nd.get("aliases", []):
+                nid = nid_; break
+        if nid:
+            sel_ids.append(nid)
+    if not sel_ids:
+        return "未找到选中节点", _snapshot_graph(sid)
+    s = agent.get_session(sid)
+    if not s:
+        return "会话不存在", _snapshot_graph(sid)
+    import uuid as _u
+    tid = _u.uuid4().hex[:8]
+    steps = [{"id": f"{tid}-{i+1}", "title": G["nodes"][nid_]["title"], "level": 0, "parent_title": None, "is_summary": False}
+             for i, nid_ in enumerate(sel_ids)]
+    topic = {"id": tid, "title": f"选中节点 · {len(sel_ids)} 项", "summary": "从分解图右键加入的节点", "steps": steps}
+    s.setdefault("topics", []).append(topic)
+    agent._persist_state(sid)
+    return f"已把 {len(sel_ids)} 个节点加入知识清单。", _snapshot_graph(sid)
+
+
+@csrf_exempt
 def decompose_to_topics(request, sid: str):
     """把分解会话的 DAG 转成 Topic 序列(知识清单),写入该主 session 的 topics。
     POST body 可选 {question?(覆盖标题)}。返回 {session_id, topic}。

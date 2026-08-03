@@ -316,12 +316,42 @@ export async function decomposeSplit(
   sid: string, target: string, children: { title: string; mastery?: boolean }[],
   prereqs: { title: string; mastery?: boolean }[] = [], deps: { from: string; to: string }[] = [], prune = true,
 ): Promise<{ sid: string; message: string; graph: any; events: any[] }> {
-  const r = await fetch(`${API_BASE}/api/decompose/${dsid}/split`, {
+  const r = await fetch(`${API_BASE}/api/decompose/${sid}/split`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, children, prereqs, deps, prune }),
   });
   if (!r.ok) {
     const msg = (await r.json().catch(() => ({}))).error || `拆分失败 ${r.status}`;
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** 通用图编辑(右键菜单用):直接调后端 decompose_agent.edit_*,绕过 LLM 即时改图。
+ *  op: remove/add/rename/set_mastered/merge/add_to_topics。params 视 op 而定。
+ *  返回 {sid, message, graph}(graph=新快照,前端 setDecomposeGraph 刷新画布)。 */
+export async function decomposeEdit(
+  sid: string, op: string, params: Record<string, any>,
+): Promise<{ sid: string; message: string; graph: any }> {
+  const r = await fetch(`${API_BASE}/api/decompose/${sid}/edit`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op, ...params }),
+  });
+  if (!r.ok) {
+    const msg = (await r.json().catch(() => ({})).catch(() => ({}))).error || `编辑失败 ${r.status}`;
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** agent 自动拆分(右键"拆分"菜单):后端用 LLM 跑 _split_replace 的自动分解,返回新快照。 */
+export async function decomposeAutoSplit(sid: string, target: string): Promise<{ sid: string; message: string; graph: any }> {
+  const r = await fetch(`${API_BASE}/api/decompose/${sid}/auto_split`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  if (!r.ok) {
+    const msg = (await r.json().catch(() => ({}))).error || `自动拆分失败 ${r.status}`;
     throw new Error(msg);
   }
   return r.json();
