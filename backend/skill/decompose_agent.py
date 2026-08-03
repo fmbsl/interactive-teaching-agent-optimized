@@ -548,10 +548,16 @@ def run_decompose_agent(sid: str, question: str, file_text: Optional[str] = None
 def graph_to_topic_sequence(sid: str, question: str) -> Optional[dict]:
     """把分解 DAG 拓扑排序成 Topic 结构,供主 agent topics list(知识清单)用。
 
+    多级分层 + 融合总结:
+    - 节点的 sets 链(被拆分父节点标题的继承链)决定层级:level = len(sets)。
+      如 sets=["微积分"] 的微分/积分是 level 1;sets=["线性代数","向量"] 是 level 2。
+    - 被拆分消失的父标题(在某个节点 sets 里出现,但已不是任何节点 title)= 融合总结候选。
+      在其所有直接子节点(sets 末位 == 该父标题)学完后,追加一个"总结:父标题"步骤(is_summary=True),
+      让用户学完子知识点后能把它们融合起来,真正懂父知识点。
     过滤 mastery=True(已掌握的高中知识不进学习序列,只在 summary 列出)。
-    Kahn 算法:只在"待学子图"上数入度,入度 0 的先入队,同层按 (depth, 节点创建序) 稳定排序。
-    拓扑序即学习序(前置先学)。断裂/未访问节点兜底补到末尾防丢。
-    返回 {id, title, summary, steps:[{id:"topicid-N", title}]} 或 None(图空)。
+    Kahn 拓扑序(只在"待学子图"上),同层按 (depth, 创建序) 稳定排序。断裂/未访问兜底补末尾。
+    step_id:普通节点 {topicid-N};融合总结节点 {topicid-SN}(S 前缀防冲突)。
+    返回 {id, title, summary, steps:[{id, title, level?, parent_title?, is_summary?}]} 或 None。
     """
     G = _GRAPHS.get(sid)
     if not G or not G["nodes"]:
@@ -572,7 +578,6 @@ def graph_to_topic_sequence(sid: str, question: str) -> Optional[dict]:
     queue = [(nodes[nid]["depth"], learn_ids.index(nid), nid) for nid in learn_ids if in_deg[nid] == 0]
     _hq.heapify(queue)
     order: list[str] = []
-    qi = 0
     while queue:
         _, _, n = _hq.heappop(queue)
         order.append(n)
@@ -585,13 +590,79 @@ def graph_to_topic_sequence(sid: str, question: str) -> Optional[dict]:
     for nid in learn_ids:
         if nid not in visited:
             order.append(nid)
+
+    # 找被拆分消失的父标题(融合总结候选):出现在某节点 sets 里,但不是任何节点 title
+    all_titles = {nd["title"] for nd in nodes.values()}
+    split_parents: set[str] = set()
+    for nd in nodes.values():
+        for s in nd["sets"]:
+            if s not in all_titles:
+                split_parents.add(s)
+
+    # 对每个被拆分父标题 P,收集其后代节点(sets 含 P 任意位置=间接后代),用于判断总结插入时机
+    # 直接子(sets 末位 == P)用于 level 推断;间接后代用于"全部学完"判断
+    descendants_of_parent: dict[str, list[str]] = defaultdict(list)
+    children_of_parent: dict[str, list[str]] = defaultdict(list)
+    for nid in order:
+        s = nodes[nid]["sets"]
+        for i, p in enumerate(s):
+            descendants_of_parent[p].append(nid)
+            if i == len(s) - 1:
+                children_of_parent[p].append(nid)
+
     topic_id = _uuid.uuid4().hex[:8]
-    steps = [{"id": f"{topic_id}-{i + 1}", "title": nodes[nid]["title"]}
-             for i, nid in enumerate(order)]
+    # 主体步骤(普通节点)+ 融合总结步骤,按拓扑序交错插入
+    # 策略:遍历 order,每放完一个节点检查是否有父标题的所有直接子节点都已放完,若是则紧跟插入该父的总结步骤。
+    placed: set[str] = set()
+    steps: list[dict] = []
+    n_counter = [0]
+
+    def next_id(is_summary: bool = False) -> str:
+        n_counter[0] += 1
+        return f"{topic_id}-S{n_counter[0]}" if is_summary else f"{topic_id}-{n_counter[0]}"
+
+    def try_emit_summaries():
+        """所有后代节点(sets 含 P)都已 placed 的父标题 → 发融合总结步骤。
+        用全部后代(不只是直接子)判断,确保总结在整棵子树学完后才出现。"""
+        for p in sorted(split_parents):
+            kids = children_of_parent.get(p, [])
+            if not kids:
+                continue
+            desc = descendants_of_parent.get(p, [])
+            if all(d in placed for d in desc) and p in split_parents:
+                key = f"__SUM__{p}"
+                if key in placed:
+                    continue
+                steps.append({
+                    "id": next_id(is_summary=True),
+                    "title": f"总结:{p}",
+                    "is_summary": True,
+                    "parent_title": p,
+                    # 总结节点层级 = 最浅直接子的层级(收尾节点,与它的直接子同级显示,不因深嵌套子节点而过分缩进)
+                    "level": min((len(nodes[k]["sets"]) - 1) for k in kids) if kids else 0,
+                })
+                placed.add(key)
+
+    for nid in order:
+        nd = nodes[nid]
+        s = nd["sets"]
+        steps.append({
+            "id": next_id(),
+            "title": nd["title"],
+            "level": len(s),            # sets 链长 = 层级深度(0=顶层未被拆分父)
+            "parent_title": s[-1] if s else None,
+        })
+        placed.add(nid)
+        try_emit_summaries()
+    # 末尾再扫一遍(防止依赖顺序导致某些总结没触发)
+    try_emit_summaries()
+
     mastery_titles = [nd["title"] for nd in nodes.values() if nd["mastery"]]
-    summary = "由知识分解生成,按前置依赖拓扑排序"
+    summary = "由知识分解生成,按前置依赖拓扑排序,含多级分层与融合总结节点"
     if mastery_titles:
         summary += f"。已掌握前置:{'、'.join(mastery_titles[:6])}"
+    if split_parents:
+        summary += f"。融合总结:{'、'.join(sorted(split_parents)[:6])}"
     return {
         "id": topic_id,
         "title": (question or "知识分解")[:30],
@@ -650,3 +721,128 @@ def manual_split(sid: str, target_title: str, children: list[dict], prereqs: lis
             return [], f"错误:找不到节点「{target_title}」", _snapshot_graph(sid)
         events, msg = _split_replace(sid, target_id, children or [], prereqs or [], deps or [], prune=prune)
     return events, msg, _snapshot_graph(sid)
+
+
+# ---------------- 图编辑函数(供主 agent 工具直接改图,绕过 LLM) ----------------
+# 每个函数:ensure_graph_loaded → 加锁 → 改 _GRAPHS[sid] → 返回 (消息, 快照)。
+# 调用方(主 agent 工具)负责把快照写回 session.graph + 推 graph 事件给前端。
+# 不在此发事件:主 agent 工具统一用最终快照刷新前端,过程事件无意义。
+
+def edit_remove_node(sid: str, title: str) -> tuple[str, dict]:
+    """删除节点(按标题+别名查)及其所有关联边。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    with _LOCKS[sid]:
+        nid = _resolve_existing(sid, title.strip(), [])
+        if not nid or nid not in G["nodes"]:
+            return f"错误:找不到节点「{title}」", _snapshot_graph(sid)
+        nd = G["nodes"][nid]
+        # 删关联边
+        G["edges"] = {(f, t) for (f, t) in G["edges"] if f != nid and t != nid}
+        # 清 title_index
+        ti = G["title_index"]
+        for name in [nd["title"]] + nd.get("aliases", []):
+            if ti.get(name) == nid:
+                del ti[name]
+        del G["nodes"][nid]
+        if nid in G["frontier"]:
+            G["frontier"].remove(nid)
+    return f"已删除节点「{nd['title']}」及其关联边。", _snapshot_graph(sid)
+
+
+def edit_add_node(sid: str, title: str, mastery: bool = False, aliases: list[str] | None = None) -> tuple[str, dict]:
+    """新增一个孤立节点(不带边)。returns (msg, snapshot)。复用 _add_node 去重合并。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    events: list[dict] = []
+    with _LOCKS[sid]:
+        nid = _add_node(sid, title.strip(), mastery, aliases, [], 0, events)
+        nd = G["nodes"][nid]
+    return f"已添加节点「{nd['title']}」(mastery={'是' if nd['mastery'] else '否'})。", _snapshot_graph(sid)
+
+
+def edit_rename_node(sid: str, title: str, new_title: str) -> tuple[str, dict]:
+    """改节点标题(同步更新 title_index)。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    new_title = new_title.strip()
+    with _LOCKS[sid]:
+        nid = _resolve_existing(sid, title.strip(), [])
+        if not nid or nid not in G["nodes"]:
+            return f"错误:找不到节点「{title}」", _snapshot_graph(sid)
+        if not new_title:
+            return "错误:新标题不能为空", _snapshot_graph(sid)
+        nd = G["nodes"][nid]
+        old = nd["title"]
+        ti = G["title_index"]
+        # 更新 title_index:移旧加新(别名映射保留)
+        if ti.get(old) == nid:
+            del ti[old]
+        ti[new_title] = nid
+        nd["title"] = new_title
+    return f"已将「{old}」重命名为「{new_title}」。", _snapshot_graph(sid)
+
+
+def edit_add_edge(sid: str, from_title: str, to_title: str) -> tuple[str, dict]:
+    """加前置依赖边 from->to(先学 from 才能学 to)。环检测拒成环。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    events: list[dict] = []
+    with _LOCKS[sid]:
+        fid = _resolve_existing(sid, from_title.strip(), [])
+        tid = _resolve_existing(sid, to_title.strip(), [])
+        if not fid:
+            return f"错误:找不到节点「{from_title}」", _snapshot_graph(sid)
+        if not tid:
+            return f"错误:找不到节点「{to_title}」", _snapshot_graph(sid)
+        if _add_edge(sid, fid, tid, events):
+            return f"已加依赖:先学「{from_title}」才能学「{to_title}」。", _snapshot_graph(sid)
+        # _add_edge 返回 False:可能已存在或成环
+        if (fid, tid) in G["edges"]:
+            return f"该依赖已存在:「{from_title}」->「{to_title}」。", _snapshot_graph(sid)
+        return f"错误:加「{from_title}」->「{to_title}」会成环(「{to_title}」已能到「{from_title}」),已拒绝。", _snapshot_graph(sid)
+
+
+def edit_remove_edge(sid: str, from_title: str, to_title: str) -> tuple[str, dict]:
+    """删前置依赖边 from->to。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    with _LOCKS[sid]:
+        fid = _resolve_existing(sid, from_title.strip(), [])
+        tid = _resolve_existing(sid, to_title.strip(), [])
+        if not fid or not tid:
+            return f"错误:找不到节点(「{from_title}」或「{to_title}」)", _snapshot_graph(sid)
+        if (fid, tid) not in G["edges"]:
+            return f"该依赖不存在:「{from_title}」->「{to_title}」", _snapshot_graph(sid)
+        G["edges"].discard((fid, tid))
+    return f"已删除依赖:「{from_title}」->「{to_title}」。", _snapshot_graph(sid)
+
+
+def edit_set_mastered(sid: str, title: str, mastered: bool) -> tuple[str, dict]:
+    """标记节点为已掌握(mastery=True)或取消(mastery=False)。returns (msg, snapshot)。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    with _LOCKS[sid]:
+        nid = _resolve_existing(sid, title.strip(), [])
+        if not nid or nid not in G["nodes"]:
+            return f"错误:找不到节点「{title}」", _snapshot_graph(sid)
+        nd = G["nodes"][nid]
+        nd["mastery"] = bool(mastered)
+        # 标记已掌握后从 frontier 移除(不再展开);取消则不自动加回 frontier(避免误展开)
+        if mastered and nid in G["frontier"]:
+            G["frontier"].remove(nid)
+    return f"已将「{nd['title']}」标记为{'已掌握' if mastered else '未掌握'}。", _snapshot_graph(sid)
+
+
+def edit_list_nodes(sid: str) -> str:
+    """列出当前图所有节点(标题 + mastery + depth),供主 agent 决策用。returns 文本。"""
+    ensure_graph_loaded(sid)
+    G = _GRAPHS[sid]
+    if not G["nodes"]:
+        return "图当前为空(尚未分解)。"
+    lines = []
+    for nid, nd in G["nodes"].items():
+        flag = "✓已掌握" if nd["mastery"] else "待学"
+        sets = f" [集合:{'/'.join(nd.get('sets', []))}]" if nd.get("sets") else ""
+        lines.append(f"  - {nd['title']}({flag}, depth={nd['depth']}){sets}")
+    return f"当前图 {len(G['nodes'])} 节点,{len(G['edges'])} 边:\n" + "\n".join(lines)

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
+import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { uploadFile, decompose, decomposeToTopics, newSession } from "../data/llmClient";
 import { useApp } from "../store";
@@ -24,37 +24,76 @@ const FLOW_CSS = `
 
 type LogItem = { id: string; parentId?: string | null; kind: string; text: string; depth: number };
 
-// 分层布局:按 depth 分行(depth 0=root 最高级在最上,depth 越大越基础越往下),同层节点水平铺开。
-// 列宽随该层节点数自适应,行高固定。返回 {id -> {x,y}} 位置映射。
+// 拓扑分层布局:用 edges 算每个节点的依赖层级,基础(入度 0)在最下层,沿依赖向上递增,
+// 高级目标(被依赖最多的)在最上层。箭头 from(基础,下)->to(高级,上)自然朝上。
+// 不用 depth 字段:depth 是递归拆解深度,children 和 prereqs 共用同一 new_depth,
+// 导致基础和高级混在同一层,无法靠 depth 区分。拓扑层级才是真正的"基础/高级"序。
+// level = 该节点到任意入度 0 基础节点的最长路径长度。入度 0 -> level 0(最下)。
 const LAYER_ROW_H = 130;      // 行高(层间距)
 const LAYER_NODE_W = 200;     // 单节点宽(含间距)
-function layeredLayout(nodes: { id: string; depth: number }[]): Record<string, { x: number; y: number }> {
-  // 按 depth 分组
-  const byDepth = new Map<number, string[]>();
+function layeredLayout(nodes: { id: string }[], edges: { from: string; to: string }[]): Record<string, { x: number; y: number }> {
+  // 拓扑最长路径求 level(DAG)。入度 0 的 level=0(最基础,最下),其余 level = max(前驱 level)+1。
+  const ids = new Set(nodes.map((n) => n.id));
+  const inDeg: Record<string, number> = {};
+  const outAdj: Record<string, string[]> = {};
+  for (const id of ids) { inDeg[id] = 0; outAdj[id] = []; }
+  for (const e of edges) {
+    if (!ids.has(e.from) || !ids.has(e.to) || e.from === e.to) continue;
+    // 防重复边累加入度
+    if (!outAdj[e.from].includes(e.to)) {
+      outAdj[e.from].push(e.to);
+      inDeg[e.to] += 1;
+    }
+  }
+  // Kahn,同时算最长路径 level
+  const level: Record<string, number> = {};
+  let queue: string[] = [];
+  for (const id of ids) if (inDeg[id] === 0) { level[id] = 0; queue.push(id); }
+  let processed = 0;
+  while (queue.length) {
+    const next: string[] = [];
+    for (const n of queue) {
+      processed += 1;
+      for (const m of outAdj[n]) {
+        level[m] = Math.max(level[m] ?? 0, level[n] + 1);
+        inDeg[m] -= 1;
+        if (inDeg[m] === 0) next.push(m);
+      }
+    }
+    queue = next;
+  }
+  // 环或断裂的残留节点(没被 Kahn 处理):兜底 level=已分配的最大 level,放最上层防丢
+  if (processed < ids.size) {
+    const maxL = Object.values(level).reduce((a, b) => Math.max(a, b), 0);
+    for (const id of ids) if (!(id in level)) level[id] = maxL;
+  }
+
+  // 按 level 分组,同层水平居中铺开
+  const byLevel = new Map<number, string[]>();
   for (const n of nodes) {
-    const d = n.depth ?? 0;
-    if (!byDepth.has(d)) byDepth.set(d, []);
-    byDepth.get(d)!.push(n.id);
+    const l = level[n.id] ?? 0;
+    if (!byLevel.has(l)) byLevel.set(l, []);
+    byLevel.get(l)!.push(n.id);
   }
   const pos: Record<string, { x: number; y: number }> = {};
-  const depths = [...byDepth.keys()].sort((a, b) => a - b);
-  for (const d of depths) {
-    const ids = byDepth.get(d)!;
-    const rowW = ids.length * LAYER_NODE_W;
-    // depth 小(高级/目标/root)在上(y 小),depth 大(基础/前置)在下(y 大)。知识从下往上生长,箭头朝上。
-    const y = d * LAYER_ROW_H;
-    ids.forEach((id, i) => {
-      // 同层水平居中铺开:第 i 个节点的 x 让整行以 0 为中心
+  for (const l of byLevel.keys()) {
+    const ids2 = byLevel.get(l)!;
+    const rowW = ids2.length * LAYER_NODE_W;
+    // level 0(基础)在下(y 大),level 大(高级)在上(y 小)。y = -level * 行高,基础在正 y。
+    const y = -l * LAYER_ROW_H;
+    ids2.forEach((id, i) => {
       pos[id] = { x: i * LAYER_NODE_W - rowW / 2, y };
     });
   }
   return pos;
 }
 
-// 分解过程中增量到达的 node 事件用临时位置(等 graph 快照时统一重排)
-const layoutPos = (depth: number, idx: number) => ({ x: (idx % 5) * LAYER_NODE_W - 2 * LAYER_NODE_W, y: depth * LAYER_ROW_H });
+// 分解过程中增量到达的 node 事件用临时位置(按到达序铺一行);每步 expand_node 后会发 graph 快照统一拓扑重排
+const layoutPos = (_depth: number, idx: number) => ({ x: (idx % 5) * LAYER_NODE_W - 2 * LAYER_NODE_W, y: 0 });
 
 // 节点 label(React 节点):标题 + mastery✓ + 别名 + 集合便签
+// 边的出入锚点由节点的 sourcePosition=Top / targetPosition=Bottom 控制(见 snapshotToNodesEdges),
+// 让每条边从下面节点的顶边出、到上面节点的底边入,箭头统一朝上。
 function nodeLabel(title: string, mastery: boolean, sets: string[], aliases: string[]) {
   return (
     <div style={{ padding: "4px 8px", fontSize: 12, maxWidth: 180 }}>
@@ -86,13 +125,17 @@ const edgeLabelBgStyle = { fill: "transparent" };
 
 function snapshotToNodesEdges(snap: any) {
   const raw: any[] = snap?.nodes ?? [];
-  // 最终分层布局:按 depth 分行(root 最上,基础最下),同层水平铺开
-  const pos = layeredLayout(raw.map((n) => ({ id: n.id, depth: n.depth ?? 0 })));
+  const rawEdges: { from: string; to: string }[] = (snap?.edges ?? []).map((e: any) => ({ from: e.from, to: e.to }));
+  // 拓扑分层:按 edges 算依赖层级,基础(入度 0)最下,高级目标最上,箭头自然朝上
+  const pos = layeredLayout(raw.map((n) => ({ id: n.id })), rawEdges);
   const nodes: Node[] = raw.map((n: any) => ({
     id: n.id,
     data: { label: nodeLabel(n.title, !!n.mastery, n.sets ?? [], n.aliases ?? []) },
     position: pos[n.id] ?? { x: 0, y: 0 },
     style: nodeStyle(!!n.mastery, n.depth ?? 0),
+    // source 从顶边出(指向更高级),target 从底边入(来自更基础);边不指定 handle 即用这两个默认 handle
+    sourcePosition: Position.Top,
+    targetPosition: Position.Bottom,
     draggable: true,  // 允许用户拖拽节点调整位置(布局是初始建议,用户可自由重排)
     // 显式宽高:ReactFlow v12 的 minimap 依赖节点 measured 维度画缩略图,而 measured 由
     // ResizeObserver 异步填充。本环境/某些场景 RO 不触发 → measured 空 → minimap 不画节点。

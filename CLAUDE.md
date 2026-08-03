@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-教学智能体大赛项目:用户提问一个 STEM 知识点 → **主 agent**(多轮对话中枢,可问澄清问题、读上传文件、按学习深度拆解)拆成子知识点 list → 逐个用 manim-web 动画 + Markdown 讲解。三栏 UI:左 ChatPanel(对话 + 分层知识点 list + 学习深度 + 文件)/ 中 StagePanel(动画 + 段间暂停 + 断点进度条)/ 右 ExplainPanel(讲解)。差异化:**浏览器实时可交互**(拖滑块调参,非生成视频)+ **对话式局部重生成** + **主 agent 能问问题/读文件/多主题并列**。
+教学智能体大赛项目:用户提问一个 STEM 知识点 → **主 agent**(多轮对话中枢,可问澄清问题、读上传文件、按学习深度拆解、出考题、自选展示方式)拆成子知识点 list → 逐个用 manim-web 动画 + Markdown 讲解。三栏可拖拽 UI:左 ChatPanel(对话 + 分层多级知识点 list + 学习深度 + 文件)/ 中 StagePanel(动画 + 段间暂停 + 断点进度条;可切分解图/mermaid 图示)/ 右 ExplainPanel(讲解 + 考题)。差异化:**浏览器实时可交互**(拖滑块调参,非生成视频)+ **对话式局部重生成** + **主 agent 能问问题/读文件/多主题并列** + **多级分层知识清单 + 融合总结节点**(学完子节点后总结父知识点)+ **考题自测**(主 agent 出选择题,右边栏作答)+ **双展示方式**(manim 动画讲数学/物理,mermaid 图示讲流程/结构/分类/关系,主 agent 自选)。
 
 ## Commands
 
@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 类型检查:`npm run type-check`(注意:`tsc -b` 报的 `Scene`/`ValueTracker` as type、`title unused` 是预先存在的噪音,vite dev 不跑 tsc 不挡)
 - 构建:`npm run build`(tsc + vite build,产出 `dist/` 含 main + standalone 两个入口)
 - 装后端依赖:`pip install -r backend/requirements.txt`(Django/openai/python-dotenv/django-cors-headers)+ langgraph/langchain-openai/langchain-core(已装,未在 requirements.txt)
+- 前端依赖:`npm install`(含 `mermaid`——mermaid 图展示,动态 `import("mermaid")` 加载)
 
 **改后端 .py 必须重启 Django 才生效**(`--noreload` 不自动重载)。重启会清内存 session,但 `backend/sessions/*.state.json` 会自动重建(见下)。
 
@@ -28,8 +29,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `grep(pattern, file_id?)` —— 正则搜文件内容(仿 Claude Code Grep,返回匹配行+行号)。
   - `generate_animation(step_id)` —— 触发 subagent 生成某步的**完整讲解**(动画代码 + 教学意图 + Markdown 讲解 + 公式 + 可调参数)。**interrupt()** 暂停等 subagent 跑完(浏览器在环验证),结果写 step_cache+step_status。已生成过的步直接返回不重跑(查 step_cache)。调一次等于讲完那一步,不要调完又自己讲。
   - `decompose_knowledge(question)` —— 触发知识分解 agent 跑知识图谱(递归分解+找前置,产出 DAG)。**interrupt()** 暂停等分解完。返回图摘要。**调前先 `switch_stage("graph")`** 让用户实时看节点逐个出现。
-  - `switch_stage(stage)` —— 切换中间舞台:`"graph"`(分解图)或 `"animation"`(动画舞台)。工具内往 `_EMIT[sid]`(side-channel)append `stage_switch` 事件,`run_main_agent`/`resume_main_agent` 在每个 ToolMessage 前 drain yield(仿 decompose_agent)。
+  - `switch_stage(stage)` —— 切换中间舞台:`"graph"`(分解图)/`"animation"`(动画舞台)/`"mermaid"`(mermaid 图示)。工具内往 `_EMIT[sid]`(side-channel)append `stage_switch` 事件,`run_main_agent`/`resume_main_agent` 在每个 ToolMessage 前 drain yield(仿 decompose_agent)。
   - `set_depth(level)` —— 调整学习深度(科普/理解/深度理解)。
+  - `generate_quiz(step_title, question, options, answer, explanation)` —— 出选择题考察用户。主 agent 直接产题(题干+4选项+正确答案下标+解析),**interrupt()** 暂停,前端右边栏 ExplainPanel 显示题+选项按钮,用户点选项 → `/api/chat_answer` 带 `answer=idx` resume,工具对比 answer 判对错返回给主 agent,主 agent 据此反馈。answer 传字符串下标,后端 `set_chat_answer(sid, idx)` → `Command(resume=idx)` → 工具 `interrupt()` 返回 idx。
+  - `generate_diagram(step_title, diagram_type, code, explanation)` —— 用 **mermaid 图**展示知识点(补 manim 之短,适合流程/结构/分类/关系/状态/时序类:生物分类、历史脉络、软件架构、状态机)。主 agent 直接产 mermaid 源码(`code` 以 `graph`/`flowchart`/`sequenceDiagram`/`mindmap` 等开头,**不要包```围栏**)+ Markdown 讲解。工具内 `_EMIT` append `stage_switch(mermaid)` + `diagram` 事件(前端 consume setDiagram,MermaidPanel 渲染)。**不走 interrupt**(无需用户交互,主 agent 一次产完)。渲染失败前端显示语法错,主 agent 可改 code 重调。**知识点类型选择**:数学/物理/几何→`generate_animation`(manim);流程/结构/分类/关系→`generate_diagram`(mermaid)。
+  - **分解图编辑(8 工具,复用 `decompose_agent` 的 `edit_*` 核心函数)**:`split_graph_node(target, children, prereqs?)` 拆节点、`remove_graph_node(title)` 删节点(连边一起删)、`add_graph_node(title, mastery?, aliases?)` 加节点、`rename_graph_node(title, new_title)` 改名、`add_graph_dependency(from_title, to_title)` 加依赖边(带环检测)、`remove_graph_dependency(from_title, to_title)` 删边、`set_graph_mastered(title, mastered)` 标记已掌握/取消、`list_graph_nodes()` 列所有节点(改图前先调,防 MemorySaver 上下文记错幻觉)。每个改图工具(除 list)开头先 `switch_stage("graph")` 往 `_EMIT` append stage_switch,再调 `edit_*` 拿快照,最后 `_push_graph(msg, snapshot)`:写回 `session.graph`(持久化)+ 往 `_EMIT` append `graph` 事件(前端 consume 收到刷新画布)。返回工具结果给 LLM。
   - 系统提示词:身份 + **系统认知**(三栏 UI/中间舞台可切换/典型工作流)+ 用户偏好(`backend/user_prefs.json`)+ depth 指引 + 工具说明 + "拆解前必须先问用户(传 options)" + "文件不给全文,用 read/grep 按需读"。
   - **流式回复**:用 `stream(stream_mode=["messages","updates"])` 多模式。messages 模式拿 LLM token 增量,yield `message_delta` 事件(同 id,增量 text);updates 模式拿 tool_call/interrupt,文本不重发(已流式)。前端 consume 收到 message_delta 找同 id 的 message item 追加 text(无则新建)。
 - **step subagent**(`backend/skill/step_agent.py`):设计单个子知识点。工具 `set_title`/`set_intent`/`set_explanation`(md,含 `$...$` 公式)/`set_params`/`update_animation(code, old_str, new_str)`(合并的提交+局部改,见下)/`read_animation`/`finish`。
@@ -52,7 +56,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 
 ### 执行树(前后端共享事件模型)
 
-事件扁平 list + `parentId` 建树:`{id,parentId,sid,ts,kind,agent,stepId,payload}`。kind:session/agent_start/tool_call/tool_result/topic_added/ask/render_request/render_result/explain/step-start/done/error。id 后端 uuid 生成,SSE 带上。
+事件扁平 list + `parentId` 建树:`{id,parentId,sid,ts,kind,agent,stepId,payload}`。kind:session/agent_start/tool_call/tool_result/topic_added/ask/render_request/render_result/explain/step-start/stage_switch/graph/quiz/diagram/done/error。id 后端 uuid 生成,SSE 带上。
 - 落盘:`backend/skill/session_store.py` → `backend/sessions/<sid>.jsonl`(追加事件)+ `<sid>.state.json`(快照,覆盖写,含所有新字段)
 - 重建:`GET /api/sessions/<sid>/trace` 读 jsonl;`session_detail` 内存无则 `load_state`+`restore_session`;Django 启动 `load_sessions_on_startup()` 扫 state.json 重建 `_SESSIONS`
 - 前端 `ChatPanel.renderTree` 按 parentId 建子列表 + 递归渲染 + 缩进;tool_call/render_request 默认折叠(点开看 code/args)
@@ -71,10 +75,12 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 **核心语义(节点替换 + 全连剪枝):**
 - 图里**只有一种边 `prerequisite_of`**(A→B = 先学 A 才能学 B,from=基础前置, to=高级后续),**没有包含关系**。
 - 分解 = 节点替换:概念 X 拆成子概念 {c1,c2,...} 后 X 从图里删除,变**集合标签**贴在子节点身上(`sets` 继承 X.sets + [X.title])。X 的入/出边全连到子节点(Y→X 变 Y→c1,Y→c2,...;X→Z 变 c1→Z,c2→Z,...),再让 LLM 剪掉语义不成立的冗余边(`_prune_edges`,但每个上游/下游至少留 1 条防丢依赖)。原子概念(旋度)不拆,留作叶节点。root 是普通节点,拆则消失变集合,不拆则留作叶。
-- **depth 语义**:`depth 0 = root = 用户问的知识点(最高级目标)`,分解时子节点 `depth = parent+1`,**depth 越大越基础**。布局:depth 小(高级)y 小在上,depth 大(基础)y 大在下,知识从下往上生长,边从基础(下)→高级(上)箭头朝上。
+- **depth 语义**:`depth 0 = root = 用户问的知识点(最高级目标)`,分解时子节点 `depth = parent+1`,**depth 越大越基础**。⚠️ **depth 不可靠用于基础/高级排序**(children 和 prereqs 共用同一 new_depth,基础和高级可能混在同一层)。布局改用**拓扑分层**(见下 `layeredLayout`)。
 - **同物异名**:children/prereqs 带可选 `aliases`,去重按 标题+别名 匹配(`_resolve_existing` 查 `title_index`),合并时 sets/aliases 取并集、mastery 只升不降。
 - **环检测**:每条边加入前 `_has_path(G, to, from)` 检查(to 已能到 from 则成环,拒加),最终图保证 DAG。
 - **手动拆分**:`POST /api/decompose/<sid>/split` body `{target, children, prereqs?, deps?, prune?}`,绕过 LLM 直接调核心函数 `_split_replace`(与 LLM 工具共用)。
+- **图编辑核心函数(`decompose_agent.py` 的 `edit_*`)**:`edit_remove_node`/`edit_add_node`/`edit_rename_node`/`edit_add_edge`/`edit_remove_edge`/`edit_set_mastered`/`edit_list_nodes`。每个 `ensure_graph_loaded(sid)` → `with _LOCKS[sid]:` 改图 → 返回 `(msg, _snapshot_graph(sid))`。**主 agent 的 8 个图编辑工具复用这些**(不重复实现),见主 agent 工具列表。
+- **图转知识清单(多级分层 + 融合总结)**:`graph_to_topic_sequence` 产出多级树 + 融合总结节点。**多级分层**:节点 `sets` 链(被拆分父节点标题继承链)决定层级,`level=len(sets)`(sets=["微积分"]→L1,sets=["线性代数","向量"]→L2),`parent_title=sets[-1]`。**融合总结**:被拆分消失的父标题(在某节点 sets 里出现但已不是任何节点 title)= 融合总结候选,在其**所有后代**(sets 含 P 任意位置)都学完后插入"总结:P"步骤(`is_summary=True`,step_id `{topicid-SN}`),让用户学完子知识点后融合起来懂父知识点。step_id:普通 `{topicid-N}`,融合总结 `{topicid-SN}`(S 前缀防冲突)。TopicStep 加 `level?`/`parent_title?`/`is_summary?` 字段。⚠️ `_resolve_step_info` 要按 id 精确匹配(不能 `int(n)` 强转 SN)。
 
 **图随 session 走(一 session 一图):**
 - 主 session 加 `graph` 字段 = `{question, root_title, snapshot:{nodes,edges}} | None`,进 `save_state`/`restore_session`/`session_detail` 返回 → state.json 持久化。
@@ -95,7 +101,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 **文件:**
 - 后端核心:`backend/skill/decompose_agent.py`。模块级 `_GRAPHS`/`_EMIT`/`_LOCKS`。工具 `expand_node`/`finish`。`_split_replace` 共用。`MAX_DEPTH=4`、`MAX_NODES=80`。`thread_id=f"decompose#{sid}"`。`ensure_graph_loaded` 从快照重建。
 - 后端端点(`backend/api/views.py`):`decompose`(POST,接收主 sid)、`decompose_trace`(GET)、`decompose_split`(POST)、`decompose_to_topics`(POST,用主 sid 不新建)。路由 `backend/backend/urls.py`。
-- 前端:`src/graph/GraphApp.tsx`(用 `@xyflow/react` ReactFlow 画图,嵌入中间区时 `embedded` prop:去掉 minWidth/aside 执行流、顶栏紧凑)。`layeredLayout` 按 depth 分层(y=d*LAYER_ROW_H,高级在上基础在下)。`depthColor` 色阶(深蓝→浅青,mastery 绿)。边 `type:"bezier"` + `markerEnd` 箭头。节点 `width:180,height:54` 显式给(ReactFlow v12 minimap 依赖 measured,RO 在 preview 不触发 → 显式尺寸不依赖 RO)。
+- 前端:`src/graph/GraphApp.tsx`(用 `@xyflow/react` ReactFlow 画图,嵌入中间区时 `embedded` prop:去掉 minWidth/aside 执行流、顶栏紧凑)。`layeredLayout` **按 edges 拓扑分层**(Kahn + 最长路径,不用 depth 字段——depth 是递归拆解深度,children/prereqs 共用 new_depth 导致基础和高级混层):入度 0 的节点 level=0(最基础,最下 y=0),沿依赖向上 level 递增,高级目标(被依赖最多)在最上(y=-level*LAYER_ROW_H)。同层水平居中铺开。基础(下)→高级(上),边自然朝上。`depthColor` 色阶(深蓝→浅青,mastery 绿)。边 `type:"bezier"` + `markerEnd` 箭头;**边锚点**:节点 `sourcePosition: Position.Top`(从顶边出,指向更高级)/ `targetPosition: Position.Bottom`(从底边入,来自更基础),边不指定 handle 即用这两个默认 handle。节点 `width:180,height:54` 显式给(ReactFlow v12 minimap 依赖 measured,RO 在 preview 不触发 → 显式尺寸不依赖 RO)。
 - jsonl 子目录隔离:事件落 `backend/sessions/decompose/<sid>.jsonl`(`sub_dir="decompose"`),与主 agent 的 `backend/sessions/<sid>.jsonl` 分开。**不写 `_SESSIONS`、不调 `save_state`**(轻量 session,但 graph 快照写主 session 的 state.json)。
 - 前端 SSE:`src/data/llmClient.ts` 的 `streamRawSSE`(原始 dict)。`decompose(sid, question, fileText?)` 加 sid 参数。
 
@@ -109,20 +115,24 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 
 **动画段间暂停**:主舞台 `runSceneCode` 包装 `scene.play`/`scene.wait`,每个动画段后调 `waitIfPaused()`。`pauseCtrl` ref(`{paused, resume, stepOnce}`):播放=解除暂停连播;暂停=下个段末停;⏭下一段=`stepOnce` 走一段再停;⏮=回开头(bumpStageReset)。**断点进度条**:预扫 `await scene.play/wait` 个数 = 断点数,`currentBp` 在 waitIfPaused 递增,UI 横条(已过亮/当前发光/未到暗)+ "X/总数"。
 
-`src/components/ExplainPanel.tsx`:用 `react-markdown`+`remark-math`+`rehype-katex` 渲染 `explanation`(md,文字+`$...$`/`$$...$$`公式),`.md-prose` 容器(手写 CSS,无 typography 插件)。
+`src/components/ExplainPanel.tsx`:用 `react-markdown`+`remark-math`+`rehype-katex` 渲染 `explanation`(md,文字+`$...$`/`$$...$$`公式),`.md-prose` 容器(手写 CSS,无 typography 插件)。**考题区**:底部渲染 `store.pendingQuiz`(主 agent 出的选择题)——题干+4 选项按钮,用户点选项 → 本地判对错(正确绿框✓/错误红框✗)+ 显示解析 + `setPendingResume({answer})` 触发 ChatPanel resume。已作答禁用重复点。无论有无 step 都显示考题区(step null 时只显示考题)。
 
 `src/components/ChatPanel.tsx`:**对话气泡 + 流式 + 工具折叠**。
 - 消息渲染:用户消息右气泡(蓝边)、agent 左气泡(灰边),agent 回复用 `react-markdown`+`remark-math`+`remark-gfm`+`rehype-katex` 渲染(支持公式/表格/列表)。
 - 流式:`consume` 收 `message_delta` 事件(同 id 增量)找同 id 的 message item 追加 text(无则新建带 id 的 message)。parseSSE 有 `message_delta` case(streamSSE 用)。
 - ask_user 选项:收到 `ask` 事件(带 `options?`)记 `pendingAsk={question,options}`,输入框上方渲染可点击选项按钮(点击即发送该选项文本,`answerWithOption`),也可自定义输入。
-- 分层 topics list:`TopicNode` 可折叠,子知识点按 `explanation||sceneCode` 判断已缓存(✓ 蓝底 + "已生成"标记)vs 未生成(数字灰边)。点击 → `handleTopicStep` → `/api/explain`(已缓存 HIT cache 不重跑,后端缓存命中时不发 step-start 不重复加卡片)。
+- 分层 topics list:`TopicNode` 可折叠,子知识点按 `explanation||sceneCode` 判断已缓存(✓ 蓝底 + "已生成"标记)vs 未生成(数字灰边)。**多级缩进**:`step.level`(sets 链长)控制 paddingLeft(level 0=4px,每级 +14px)。**融合总结节点**(`is_summary`):badge 显示 `Σ`,标题"总结:XXX",上方分隔线,"融合"标记,蓝边样式。点击 → `handleTopicStep` → `/api/explain`(已缓存 HIT cache 不重跑,后端缓存命中时不发 step-start 不重复加卡片)。
 - 工具调用折叠:`makeItem` 对 subagent 的 `agent_start` 默认折叠(藏其下 tool_call 组),主 agent 的不折叠。tool_call collapsed 只显 `🔧 工具名`(藏 argSummary,展开看 args)。连续 tool_call 用 `ToolGroup` 聚合成一行"🔧 t1 → t2 · N 个工具"。step subagent 段(agent_start + set_title/.../update_animation/渲染结果/finish)整体折叠成一行"🤖 设计第 X 步",点开看工具过程。
-- `consume` 处理 `stage_switch`(setView)、`decompose_request`(调 `/api/explain` 跑 step subagent,每个 graph 事件实时 setDecomposeGraph,跑完 chatAnswer resume)、`animation_request`(调 `explainStep` 跑 step subagent,流正常结束即 ok=true resume)。`consumeRunIdRef` 防 session 串台。
+- `consume` 处理 `stage_switch`(setView,支持 graph/animation/mermaid)、`graph`(主 agent 图编辑工具改图后推的快照,调 `setDecomposeGraph` 刷新画布,不进对话栏)、`quiz`(主 agent 出题,`setPendingQuiz` 存 store,右边栏显示)、`diagram`(主 agent 产 mermaid 图,`setDiagram` 存 store,MermaidPanel 渲染)、`decompose_request`(调 `/api/decompose` 跑分解 agent,每个 graph 事件实时 setDecomposeGraph,跑完 chatAnswer resume)、`animation_request`(调 `explainStep` 跑 step subagent,流正常结束即 ok=true resume)。`consumeRunIdRef` 防 session 串台。
+- ⚠️ **非 ChatPanel 发起的 resume(右边栏考题作答)经 `store.pendingResume`**:ExplainPanel 点选项 → `setQuizResult`(本地判对错)+ `setPendingResume({answer})`;ChatPanel useEffect 监听 pendingResume → `consume(chatAnswer(sid, answer))`(主 agent 反馈才进对话栏)→ 清空。不能在 ExplainPanel 直接 consume(事件不进 ChatPanel 对话栏)。
+- ⚠️ **graph 事件分支必须在 `consume` 里(不是 `handleEvent`)**:`consume` 是主 agent `/api/chat` 流的消费者,主 agent 图编辑工具推的 `graph` 事件走这里。`handleEvent` 只处理子流递归(render_request/decompose_request/animation_request 的回传流),里面的 graph 分支轮不到。曾误加在 handleEvent 导致画布不刷新。`consume` 用独立 `if (ev.kind === "graph")`(在 stage_switch 之后,和 session/plan/ask 等同级),非 `else if`。
 - 学习深度下拉 + 文件 chip + 内联渲染。
 
-`src/store.tsx`:React Context + useState(无 zustand),`useApp()` 消费。state 平铺,`useMemo` 依赖数组控制 context 重建。关键字段:`view`("animation"|"graph",中间舞台,主 agent switch_stage + 用户手动按钮都设)、`decomposeGraph`({question,root_title,snapshot}|null,当前 session 分解图快照,ChatPanel 切会话从 session_detail.graph 写入,GraphApp effect 监听重建画布)、`topics`/`pendingFiles`/`depth` 等。`switchSession` 兜底 `info.lesson?.steps ?? []`/`lesson?.params ?? []`(空 lesson session 不崩)。
+`src/store.tsx`:React Context + useState(无 zustand),`useApp()` 消费。state 平铺,`useMemo` 依赖数组控制 context 重建。关键字段:`view`("animation"|"graph"|"mermaid",中间舞台,主 agent switch_stage + 用户手动按钮都设)、`decomposeGraph`({question,root_title,snapshot}|null,当前 session 分解图快照,ChatPanel 切会话从 session_detail.graph 写入,GraphApp effect 监听重建画布)、`pendingQuiz`(主 agent 出的当前选择题|null,ExplainPanel 渲染)、`quizResult`(用户作答结果|null,显示对错+解析)、`pendingResume`(非 ChatPanel 发起的 resume 如考题作答|null,ChatPanel useEffect 监听 consume chatAnswer)、`diagram`(mermaid 图快照|null,MermaidPanel 渲染)、`topics`/`pendingFiles`/`depth` 等。`switchSession` 兜底 `info.lesson?.steps ?? []`/`lesson?.params ?? []`(空 lesson session 不崩)。
 
-`src/App.tsx`:三栏常驻(左 ChatPanel / 中舞台 / 右 ExplainPanel)。中间 section `{view==="graph" ? <GraphApp embedded /> : <StagePanel />}`,外包 `<div key={view} className="stage-transition">`(CSS `stageFadeIn` 0.32s 淡入过渡)。header 有"舞台:动画/分解"手动按钮 + 显示当前舞台状态。
+`src/App.tsx`:三栏常驻(左 ChatPanel / 中舞台 / 右 ExplainPanel)。**三栏可拖拽**:`leftWidth`/`rightWidth` state(localStorage 持久化 `panel-widths`,clamp 220-560/240-620),grid `gridTemplateColumns` 用 state,左/右两根 splitter(`onPointerDown` → window `pointermove`/`pointerup` 监听改宽度)。中间 section `{view==="graph" ? <GraphApp embedded /> : view==="mermaid" ? <MermaidPanel /> : <StagePanel />}`,外包 `<div key={view} className="stage-transition">`(CSS `stageFadeIn` 0.32s 淡入过渡)。header 有"舞台:动画/分解/图示"手动按钮 + 显示当前舞台状态。`panel-anim` CSS 类给三栏内容淡入。
+
+`src/components/MermaidPanel.tsx`:mermaid 图展示(补 manim 之短)。`import("mermaid")` 动态加载(`initialize({theme:"dark",securityLevel:"loose"})`),`mermaid.render(id, code)` 产 SVG `dangerouslySetInnerHTML`。监听 `store.diagram.code` 变化重渲染(seq ref 防竞态)。渲染失败显示语法错。下方讲解区(`explanation`,react-markdown)+ 可折叠 mermaid 源码。无图时显示提示。**不走浏览器在环验证**(mermaid 渲染失败前端直接显错,主 agent 改 code 重调)。
 
 ### 后端编排(`backend/api/views.py`)
 
@@ -157,6 +167,8 @@ agent 生成器不再直接接到 SSE:每个视图构造 `gen_factory`(yield 事
 - **step_id 字符串**:`add_topic` 返回值含各 step 的 id(形如 `topicid-N`),主 agent 调 `generate_animation` 用这个 id。曾因返回值只说"N 步"主 agent 编 `1-1` 导致缓存 MISS 重生成。`generate_animation` 工具内查 step_cache,已生成直接返回不重跑。
 - **ReactFlow v12 嵌入**:GraphApp 嵌入中间区用 `embedded` prop(去 minWidth/aside)。节点给显式 `width:180,height:54`(minimap 依赖 measured,RO 在 preview 不触发 → 显式尺寸不依赖 RO)。常驻 hidden 容器初始化会导致 RO 不触发 → 边/minimap 不画,**条件渲染**(view=graph 才挂载)而非 hidden 常驻。
 - **step-start 重复加卡片**:`explain`/`goto` 端点 gen_factory 里**缓存命中(已生成)时不 yield step-start**(查 step_cache),只有 MISS 才发。重复点已生成的子知识点不在对话栏堆叠 step-start 卡片。
+- **graph 事件分支位置**:`consume`(主 agent `/api/chat` 流消费者)和 `handleEvent`(子流递归)是**两个独立函数**,各有自己的 if/else if 链。主 agent 图编辑工具推的 `graph` 事件走 `consume`,**必须在 `consume` 的独立 `if` 链加分支**(和 stage_switch/session/ask 同级,在 130 行的 explain/message_delta 主链之后)。曾误加在 `handleEvent` 的 else if 链里,导致 126 行调试 log 打了 `ev.kind= graph` 但画布不刷新(事件在 consume 里被忽略,没到 handleEvent)。改图后画布实时刷新 = consume graph 分支 → `setDecomposeGraph` → GraphApp effect 监听 `decomposeGraph` 重建画布。
+- **改图前先 list_graph_nodes**:主 agent 的 MemorySaver 上下文会"记住"旧图状态,直接让它删/改节点可能幻觉(回复"已删除"但没调工具,因为上下文里图是空的)。系统提示词要求改图前先调 `list_graph_nodes()` 拿当前真实图,再操作。
 
 ## 验证规则
 

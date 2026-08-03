@@ -8,7 +8,7 @@ export type AgentRole = "user" | "orchestrator" | "animator" | "verifier" | "nar
 
 export type Depth = "popular" | "understand" | "deep";
 
-export interface TopicStep { id: string; title: string; explanation?: string; intent?: string; narration?: string; formula?: string; paramsUsed?: string[]; params?: any[]; sceneCode?: string }
+export interface TopicStep { id: string; title: string; explanation?: string; intent?: string; narration?: string; formula?: string; paramsUsed?: string[]; params?: any[]; sceneCode?: string; level?: number; parent_title?: string | null; is_summary?: boolean }
 export interface Topic { id: string; title: string; summary: string; steps: TopicStep[] }
 
 export type ChatEvent = {
@@ -29,6 +29,9 @@ export type ChatEvent = {
   | { kind: "ask"; question: string; options?: string[] }
   | { kind: "animation_request"; stepId: string; step_id: string }
   | { kind: "stage_switch"; stage: "graph" | "animation" }  // 主 agent 切换中间舞台:graph=分解图,animation=动画
+  | { kind: "graph"; payload: any }  // 主 agent 图编辑工具改图后推的分解图快照,前端刷新画布
+  | { kind: "quiz"; step_title: string; question: string; options: string[]; answer: number; explanation: string }  // 主 agent 出的选择题,右边栏显示,用户作答后 resume
+  | { kind: "diagram"; step_title: string; diagram_type: string; code: string; explanation: string }  // 主 agent 产的 mermaid 图,中间舞台 MermaidPanel 渲染
   | { kind: "decompose_request"; question: string }
   | { kind: "done"; message: string }
   | { kind: "error"; message: string }
@@ -181,6 +184,9 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
       case "ask": return { ...base, kind: "ask", question: p.question || "", options: p.options };
       case "animation_request": return { ...base, kind: "animation_request", stepId: p.step_id || "", step_id: p.step_id || "" };
     case "stage_switch": return { ...base, kind: "stage_switch", stage: p.stage || "animation" };
+      case "graph": return { ...base, kind: "graph", payload: p };
+      case "quiz": return { ...base, kind: "quiz", step_title: p.step_title || "", question: p.question || "", options: p.options || [], answer: p.answer ?? 0, explanation: p.explanation || "" };
+    case "diagram": return { ...base, kind: "diagram", step_title: p.step_title || "", diagram_type: p.diagram_type || "", code: p.code || "", explanation: p.explanation || "" };
       case "decompose_request": return { ...base, kind: "decompose_request", question: p.question || "" };
       case "error": return { ...base, kind: "error", message: p.message };
       default: return null;
@@ -439,6 +445,9 @@ function parseSSE(raw: string): ChatEvent | null {
     case "ask": return { ...base, kind: "ask", question: p.question || "", options: p.options };
     case "animation_request": return { ...base, kind: "animation_request", stepId: p.step_id || "", step_id: p.step_id || "" };
     case "stage_switch": return { ...base, kind: "stage_switch", stage: p.stage || "animation" };
+    case "graph": return { ...base, kind: "graph", payload: p };
+    case "quiz": return { ...base, kind: "quiz", step_title: p.step_title || "", question: p.question || "", options: p.options || [], answer: p.answer ?? 0, explanation: p.explanation || "" };
+    case "diagram": return { ...base, kind: "diagram", step_title: p.step_title || "", diagram_type: p.diagram_type || "", code: p.code || "", explanation: p.explanation || "" };
     case "decompose_request": return { ...base, kind: "decompose_request", question: p.question || "" };
     case "done": return { kind: "done", message: obj.message };
     case "error": return tree ? { ...base, kind: "error", message: p.message } : { kind: "error", message: obj.message };

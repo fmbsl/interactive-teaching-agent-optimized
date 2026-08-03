@@ -146,3 +146,10 @@ input[type="range"]::-moz-range-thumb {
   to { opacity: 1; transform: translateY(0); }
 }
 .stage-transition { animation: stageFadeIn 0.32s ease-out; }
+
+/* 三栏面板内容淡入:切会话/换内容时轻微淡入,过渡更流畅 */
+@keyframes panelFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.panel-anim { animation: panelFadeIn 0.28s ease-out; }

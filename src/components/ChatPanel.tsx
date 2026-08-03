@@ -56,11 +56,17 @@ export default function ChatPanel() {
     sessionList, setSessionList, switchSession, resetToEmpty,
     navRequest,
     requestVerify, verifyResultHandler,
-    depth, setDepth, topics, addTopic, setTopics, setDecomposeGraph, setView,
+    depth, setDepth, topics, addTopic, setTopics, decomposeGraph, setDecomposeGraph, setView,
+    setPendingQuiz, setQuizResult,
+    pendingResume, setPendingResume,
+    setDiagram,
     pendingFiles, addPendingFile, removePendingFile, clearPendingFiles,
   } = useApp();
   // 同步 sessionId 到 ref,供 consume/handleEvent 异步循环里取最新值(避免闭包陈旧)
   sessionIdRef.current = sessionId;
+  // decomposeGraph ref:主 agent 图编辑工具推 graph 事件时,question/root_title 从最新值继承(避免闭包陈旧)
+  const decomposeGraphRef = useRef(decomposeGraph);
+  decomposeGraphRef.current = decomposeGraph;
 
   useEffect(() => {
     refreshSessions();
@@ -92,6 +98,26 @@ export default function ChatPanel() {
     else handleGoto(navRequest.target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navRequest?.nonce]);
+
+  // 右边栏考题作答(等非 ChatPanel 发起的 resume)经 store.pendingResume 触发,这里 consume chatAnswer
+  // (必须走 ChatPanel consume,主 agent 对作答的反馈才进对话栏)
+  useEffect(() => {
+    if (!pendingResume || !sessionIdRef.current) return;
+    const sid = sessionIdRef.current;
+    consumeRunIdRef.current++;
+    const myRun = consumeRunIdRef.current;
+    (async () => {
+      try {
+        const gen = pendingResume.result !== undefined
+          ? chatAnswer(sid, "", pendingResume.result)
+          : chatAnswer(sid, pendingResume.answer || "");
+        await consume(gen);
+      } finally {
+        if (consumeRunIdRef.current === myRun) setPendingResume(null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingResume]);
 
   async function refreshSessions() {
     try { setSessionList(await listSessions()); } catch { /* 忽略 */ }
@@ -158,8 +184,41 @@ export default function ChatPanel() {
         addTopic(ev.topic);
       }
       if (ev.kind === "stage_switch") {
-        // 主 agent 切换中间舞台:graph=分解图,animation=动画
-        setView((ev as any).stage === "graph" ? "graph" : "animation");
+        // 主 agent 切换中间舞台:graph=分解图,animation=动画,mermaid=图示
+        const st = (ev as any).stage;
+        setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
+      }
+      if (ev.kind === "graph") {
+        // 主 agent 图编辑工具(split_graph_node/remove_graph_node/...)改图后推的快照:刷新分解图画布(不进对话栏)
+        const snap = (ev as any).payload || (ev as any).snapshot;
+        if (snap) {
+          const prev = decomposeGraphRef.current;
+          setDecomposeGraph({
+            question: prev?.question || "",
+            root_title: prev?.root_title || "",
+            snapshot: snap,
+          });
+        }
+      }
+      if (ev.kind === "quiz") {
+        // 主 agent 出的选择题:存 store.pendingQuiz,右边栏 ExplainPanel 显示题+选项。清空旧结果。
+        setPendingQuiz({
+          step_title: (ev as any).step_title || "",
+          question: (ev as any).question || "",
+          options: (ev as any).options || [],
+          answer: (ev as any).answer ?? 0,
+          explanation: (ev as any).explanation || "",
+        });
+        setQuizResult(null);
+      }
+      if (ev.kind === "diagram") {
+        // 主 agent 产的 mermaid 图:存 store.diagram,中间舞台 MermaidPanel 渲染(stage_switch 已切 mermaid 舞台)
+        setDiagram({
+          step_title: (ev as any).step_title || "",
+          diagram_type: (ev as any).diagram_type || "",
+          code: (ev as any).code || "",
+          explanation: (ev as any).explanation || "",
+        });
       }
       if (ev.kind === "ask") {
         // 主 agent 问用户:记下问题(+可选预设选项),发送按钮变为"回答"(answerAsk)
@@ -324,7 +383,8 @@ export default function ChatPanel() {
       addTopic(ev.topic);
     } else if (ev.kind === "stage_switch") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
-      setView((ev as any).stage === "graph" ? "graph" : "animation");
+      const st = (ev as any).stage;
+      setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
     } else if (ev.kind === "ask") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       setPendingAsk(ev.question);
@@ -649,18 +709,22 @@ function TopicNode({ topic, onStepClick, loading }: { topic: Topic; onStepClick:
         <span className="ml-auto chip">{topic.steps.length} 步</span>
       </button>
       {open && (
-        <ol className="px-2 pb-1.5 pl-6 space-y-0.5">
+        <ol className="px-2 pb-1.5 pl-3 space-y-0.5">
           {topic.steps.map((s, i) => {
             const generated = !!(s as any).explanation || !!(s as any).sceneCode;  // 已缓存(跑过 step agent)
+            const lvl = (s as any).level ?? 0;            // 层级深度(0=顶层)
+            const isSum = !!(s as any).is_summary;        // 融合总结节点
             return (
               <li
                 key={s.id}
                 onClick={() => onStepClick(s.id)}
-                className={`flex items-center gap-2 text-[10.5px] py-0.5 px-1 rounded cursor-pointer hover:bg-[#161f2e] ${loading ? "opacity-50 pointer-events-none" : ""}`}
+                style={{ paddingLeft: 4 + lvl * 14 }}
+                className={`flex items-center gap-2 text-[10.5px] py-0.5 px-1 rounded cursor-pointer hover:bg-[#161f2e] transition-colors ${loading ? "opacity-50 pointer-events-none" : ""} ${isSum ? "border-t border-[#1e293b] mt-1 pt-1.5" : ""}`}
               >
-                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum ${generated ? "bg-[#4a9eff] text-[#070a12]" : "text-[#4a5365] border border-[#1e293b]"}`}>{generated ? "✓" : i + 1}</span>
-                <span className={`truncate ${generated ? "text-[#9aa6b8]" : "text-[#7a8696]"}`}>{s.title}</span>
+                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum ${generated ? "bg-[#4a9eff] text-[#070a12]" : isSum ? "bg-[#2b6cb0]/30 text-[#9ec5ff] border border-[#2b6cb0]" : "text-[#4a5365] border border-[#1e293b]"}`}>{generated ? "✓" : isSum ? "Σ" : i + 1}</span>
+                <span className={`truncate ${generated ? "text-[#9aa6b8]" : isSum ? "text-[#9ec5ff] font-medium" : "text-[#7a8696]"}`}>{s.title}</span>
                 {generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">已生成</span>}
+                {isSum && !generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">融合</span>}
               </li>
             );
           })}

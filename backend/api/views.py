@@ -276,17 +276,26 @@ def _resolve_step_info(session: dict, step_id) -> tuple[str, list[str], object]:
     新 topic step 从 session.topics 找;旧 lesson step 从 lesson.steps 找。"""
     sid = session.get("sid") if isinstance(session, dict) else None
     if isinstance(step_id, str) and "-" in step_id:
-        # 新 topic step:在 session.topics 里定位
-        topic_id, n = step_id.rsplit("-", 1)
-        try: n = int(n)
-        except: n = 0
+        # 新 topic step:在 session.topics 里定位。step_id 形如 {topicid}-{N} 或 {topicid}-S{N}(融合总结)
+        topic_id, n_part = step_id.rsplit("-", 1)
+        is_summary = n_part.startswith("S")
+        try:
+            n = int(n_part[1:]) if is_summary else int(n_part)
+        except Exception:
+            n = 0
         for tp in session.get("topics", []):
             if tp.get("id") == topic_id:
                 steps = tp.get("steps", [])
+                # 按 id 精确匹配(融合总结 id 含 S,普通 id 是纯数字后缀,顺序索引不可靠)
+                for s in steps:
+                    if s.get("id") == step_id:
+                        title = s.get("title", "")
+                        outline_titles = [x.get("title", "") for x in steps]
+                        return title, outline_titles, step_id
+                # 兜底:按数字索引
                 title = steps[n - 1].get("title", "") if 1 <= n <= len(steps) else f"第 {n} 步"
                 outline_titles = [s.get("title", "") for s in steps]
-                prev_id = f"{topic_id}-{n-1}" if n > 1 else None
-                return title, outline_titles, prev_id
+                return title, outline_titles, step_id
         return f"第 {step_id} 步", [], None
     # 旧 lesson step(int)
     lesson = session.get("lesson") or {}
@@ -988,6 +997,13 @@ def decompose_to_topics(request, sid: str):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
     s = agent.get_session(sid)
+    if not s:
+        # 内存无(重启后):从 state.json 重建,这样图的 ensure_graph_loaded 也能从快照恢复
+        from skill.session_store import load_state
+        st = load_state(sid)
+        if st:
+            agent.restore_session(sid, st)
+            s = agent.get_session(sid)
     if not s:
         return JsonResponse({"error": f"会话 {sid} 不存在"}, status=404)
     from skill.decompose_agent import graph_to_topic_sequence, ensure_graph_loaded

@@ -60,12 +60,23 @@ interface AppState {
   removePendingFile: (file_id: string) => void;
   clearPendingFiles: () => void;
   // 视图模式:教学(三栏) / 分解(知识谱系图)。GraphApp 转出学习清单后切回 teach。
-  view: "animation" | "graph";  // 中间舞台展示什么:动画(StagePanel) 或 分解图(GraphApp)。主 agent 可切换
-  setView: (v: "animation" | "graph") => void;
+  view: "animation" | "graph" | "mermaid";  // 中间舞台:动画(StagePanel)/分解图(GraphApp)/mermaid 图(MermaidPanel)。主 agent 可切换
+  setView: (v: "animation" | "graph" | "mermaid") => void;
   // 当前 session 的知识分解图快照(随 session 走):{question, root_title, snapshot:{nodes,edges}} | null。
   // ChatPanel 切会话时从 detail.graph 写入,GraphApp 挂载/变化时据此重建画布。
   decomposeGraph: { question: string; root_title: string; snapshot: any } | null;
   setDecomposeGraph: (g: { question: string; root_title: string; snapshot: any } | null) => void;
+  // 主 agent 出的当前考题(选择题):null 表示无题。右边栏 ExplainPanel 显示,用户作答后 resume 主 agent。
+  pendingQuiz: { step_title: string; question: string; options: string[]; answer: number; explanation: string } | null;
+  setPendingQuiz: (q: { step_title: string; question: string; options: string[]; answer: number; explanation: string } | null) => void;
+  quizResult: { choice: number; correct: boolean; explanation: string } | null;  // 用户作答结果(显示对错+解析)
+  setQuizResult: (r: { choice: number; correct: boolean; explanation: string } | null) => void;
+  // 待处理的 resume 请求(右边栏考题作答等非 ChatPanel 发起的 resume):ChatPanel useEffect 监听并 consume chatAnswer
+  pendingResume: { answer?: string; result?: any } | null;
+  setPendingResume: (r: { answer?: string; result?: any } | null) => void;
+  // mermaid 图展示(非数学/物理类知识点):{step_title, diagram_type, code, explanation} | null
+  diagram: { step_title: string; diagram_type: string; code: string; explanation: string } | null;
+  setDiagram: (d: { step_title: string; diagram_type: string; code: string; explanation: string } | null) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -84,8 +95,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [topics, setTopics] = useState<import("./data/llmClient").Topic[]>([]);
   const [pendingFiles, setPendingFiles] = useState<{ file_id: string; name: string }[]>([]);
   const [visionCheckEnabled, setVisionCheckEnabled] = useState(false); // 视觉检查开关(截图给 LLM)
-  const [view, setView] = useState<"animation" | "graph">("animation");
+  const [view, setView] = useState<"animation" | "graph" | "mermaid">("animation");
   const [decomposeGraph, setDecomposeGraph] = useState<{ question: string; root_title: string; snapshot: any } | null>(null);
+  const [pendingQuiz, setPendingQuiz] = useState<{ step_title: string; question: string; options: string[]; answer: number; explanation: string } | null>(null);
+  const [quizResult, setQuizResult] = useState<{ choice: number; correct: boolean; explanation: string } | null>(null);
+  const [pendingResume, setPendingResume] = useState<{ answer?: string; result?: any } | null>(null);
+  const [diagram, setDiagram] = useState<{ step_title: string; diagram_type: string; code: string; explanation: string } | null>(null);
   const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number } | null>(null);
   const verifyResultHandler = useRef<((ok: boolean, error: string, frame: string) => void) | null>(null);
   const requestVerify = (stepId: number, code: string) => setVerifyRequest({ stepId, code, nonce: Date.now() });
@@ -238,8 +253,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearPendingFiles: () => setPendingFiles([]),
       view, setView,
       decomposeGraph, setDecomposeGraph,
+      pendingQuiz, setPendingQuiz,
+      quizResult, setQuizResult,
+      pendingResume, setPendingResume,
+      diagram, setDiagram,
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, view, decomposeGraph]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, view, decomposeGraph, pendingQuiz, quizResult, pendingResume, diagram]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

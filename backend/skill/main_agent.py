@@ -23,6 +23,7 @@ from langchain_openai import ChatOpenAI
 from .manim_lesson import _get_runtime_cfg
 from .file_tools import read_file, grep_file
 from . import user_prefs
+from . import decompose_agent as _decomp  # 图编辑工具复用其核心函数
 # agent.py 在模块顶层 import skill.*,为避免循环导入,这里用延迟导入(函数内 import agent)
 # 见 _agent() 辅助函数。
 
@@ -98,9 +99,22 @@ def _build_system_prompt(depth: str = "understand") -> str:
 - read(file_id, offset?, limit?):读用户上传文件片段(带行号)。**文件不要假设内容,用此工具按需读。**
 - grep(pattern, file_id?):在文件里正则搜索,返回匹配行+行号。
 - generate_animation(step_id):触发某步的**完整讲解生成**(交 subagent 浏览器验证):含动画代码、教学意图、Markdown 讲解(文字+公式)、可调参数。会暂停等生成完。**当用户想学/看某步时调**(如"讲一下第一步""第3步""我想看X"),step_id 用 add_topic 返回的 id。已生成过的步会直接返回不重跑。**调这个等于讲完那一步(动画+讲解都在里头),不要调完又自己再讲一遍**。
+- generate_quiz(step_title, question, options, answer, explanation):对某知识点出一道**选择题考察用户是否学懂**。你(主 agent)直接产题:step_title=对应知识点标题;question=题干;options=4 个选项(字符串数组);answer=正确选项下标(0-3);explanation=答案解析。会暂停等用户在右边栏作答,作答后自动判对错并把结果返回给你,你再据此鼓励用户或针对错点补讲。**用户学完某步想自测、或你说"来考你一题"时调**。一次一道题。
+- generate_diagram(step_title, diagram_type, code, explanation):用 **mermaid 图**展示知识点(补 manim 之短)。你直接产 mermaid 源码。step_title=标题;diagram_type=类型(flowchart/sequenceDiagram/classDiagram/stateDiagram/mindmap/gantt);code=mermaid 源码(以 graph/flowchart/sequenceDiagram 等开头,**不要包```围栏**);explanation=Markdown 讲解。调用后自动切到图示舞台渲染。**知识点类型选择**:数学/物理/几何/动画演示→generate_animation(manim);流程/结构/分类/关系/状态/时序(生物分类、历史脉络、软件架构、状态机、协议交互、组织结构)→generate_diagram(mermaid)。两者都行时优先选更能帮用户理解的。
 - decompose_knowledge(question):触发知识分解 agent 跑知识图谱(递归分解+找前置依赖,产出 DAG)。会暂停等分解完(几十秒~几分钟)。返回图摘要(节点数/知识点/已掌握前置)。**适用于复杂体系**(线性代数/傅里叶变换这种成体系、有先后依赖的),先理清结构再 add_topic。简单单一概念(勾股定理/向量加法)不必分解,直接 add_topic。**调这个前先 `switch_stage("graph")` 切到分解图**,让用户实时看节点逐个出现(分解过程可视化)。
 - set_depth(level):调整学习深度("popular"/"understand"/"deep")。
 - switch_stage(stage):切换中间舞台:"graph"(知识分解图)或"animation"(动画舞台)。decompose_knowledge 跑完切 graph 让用户看图;开始 generate_animation 讲解前切 animation;用户想看结构时也可主动切。
+
+**分解图编辑(重要能力)**:分解图生成后不是只读的,你可以在对话里直接改图。用户说"把X拆细""去掉X""加个Y""X是Y的前置""X我会了"等时,用对应工具改图(会自动切到分解图并实时刷新):
+- split_graph_node(target, children, prereqs?, deps?):拆分节点。target 拆成 children 后消失变集合标签,依赖自动改接+剪枝。
+- remove_graph_node(title):删节点及其关联边。
+- add_graph_node(title, mastery?, aliases?):加孤立节点(再用 add_graph_dependency 连边)。
+- rename_graph_node(title, new_title):改节点标题。
+- add_graph_dependency(from, to):加前置依赖(先学 from 才能学 to),成环自动拒绝。
+- remove_graph_dependency(from, to):删依赖边。
+- set_graph_mastered(title, mastered):标记/取消已掌握。
+- list_graph_nodes():列当前图所有节点(改图前或不确定图内容时先调它看清楚)。
+改图工具按标题匹配节点(支持别名)。改完自动刷新前端画布,无需额外操作。
 
 **拆解前必须先问用户(重要)**:收到用户要学的知识点后,**不要直接调 add_topic 或 decompose_knowledge**。先用 ask_user 问用户确认拆解方式(传 options),再据回答行动。例如:
 - 复杂体系:ask_user("「线性代数」成体系、有先后依赖。你希望我怎么帮你学?", options=["A. 直接拆成循序渐进的学习清单(向量→矩阵→线性变换→特征值),逐个讲,快但结构可能不够系统","B. 先跑一遍知识图谱理清依赖关系,再按依赖顺序拆学习清单,更系统但慢一些(几十秒~几分钟)","C. 我只是想快速了解核心概念,不用系统拆"]).
@@ -152,6 +166,47 @@ def _build_tools(sid: str):
         result = interrupt(iv)
         # result = 用户回答的文本(点选项即选项文本,自定义即输入文本)
         return f"用户回答:{result}" if result else "用户未回答(跳过)"
+
+    @tool
+    def generate_quiz(step_title: str, question: str, options: list[str], answer: int, explanation: str) -> str:
+        """对某知识点出一道选择题考察用户是否学懂。会暂停等用户作答,作答后自动判对错并返回结果。
+        用户学完某步、或想自测时调。一次出一道题。
+        step_title=该题对应的知识点标题;question=题干;options=4 个选项文本(数组);answer=正确选项的下标(0-3);explanation=答案解析(讲为什么对、其他为什么错)。
+        前端在右边栏显示题+选项按钮,用户点选项后返回,工具自动对比 answer 判对错。"""
+        iv = {"kind": "quiz", "step_title": step_title, "question": question,
+              "options": list(options), "answer": int(answer), "explanation": explanation}
+        result = interrupt(iv)
+        # result = 用户选的选项下标(int)或 {"choice": idx}
+        if isinstance(result, dict):
+            choice = result.get("choice")
+        else:
+            choice = result
+        try:
+            choice = int(choice) if choice is not None else -1
+        except (TypeError, ValueError):
+            choice = -1
+        correct = (choice == int(answer))
+        if choice < 0:
+            return f"用户未作答(跳过)。正确答案:{chr(65+int(answer))}. {options[int(answer)]}"
+        if correct:
+            return f"用户答对啦!选了 {chr(65+choice)}。解析:{explanation}"
+        return f"用户答错。选了 {chr(65+choice)},正确答案是 {chr(65+int(answer))}. {options[int(answer)]}。解析:{explanation}"
+
+    @tool
+    def generate_diagram(step_title: str, diagram_type: str, code: str, explanation: str) -> str:
+        """用 mermaid 图展示某知识点(补 manim 之短,适合流程/结构/关系类)。你(主 agent)直接产 mermaid 代码。
+        step_title=知识点标题;diagram_type=图类型(flowchart/sequenceDiagram/classDiagram/stateDiagram/mindmap/gantt 等,描述用即可);
+        code=mermaid 源码(纯文本,以 graph/flowchart/sequenceDiagram 等开头,不要包```mermaid围栏);
+        explanation=Markdown 讲解(配合图说明,可含 $...$ 公式)。
+        调用后自动切到 mermaid 舞台并渲染图,前端渲染失败会提示,你可改 code 重调。
+        **知识点类型判断**:数学/物理/几何/动画演示类用 generate_animation(manim);流程/结构/分类/关系/状态/时序类(生物分类、历史脉络、软件架构、状态机、协议交互)用本工具。"""
+        # 先切舞台,再推 diagram 事件(前端 consume 收到 setDiagram + setView mermaid)
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "mermaid"}})
+        _EMIT[sid].append({"kind": "diagram", "payload": {
+            "step_title": step_title, "diagram_type": diagram_type,
+            "code": code, "explanation": explanation,
+        }})
+        return f"已生成 mermaid 图「{step_title}」({diagram_type}),中间舞台已切到图示。前端会渲染,若渲染失败会提示语法错,你可修正 code 后重调本工具。"
 
     @tool
     def read(file_id: str, offset: int = 0, limit: int = 100) -> str:
@@ -238,16 +293,100 @@ def _build_tools(sid: str):
 
     @tool
     def switch_stage(stage: str) -> str:
-        """切换中间舞台展示的内容:"graph"(知识分解图) 或 "animation"(动画舞台)。
+        """切换中间舞台展示的内容:"graph"(知识分解图) / "animation"(动画舞台) / "mermaid"(mermaid 图示)。
         - 调 decompose_knowledge 跑完分解后,调 switch_stage("graph") 让用户看知识图谱。
         - 要开始逐个讲解(调 generate_animation 生成动画)前,调 switch_stage("animation") 切回动画舞台。
-        - 用户想看分解图时也可主动切。"""
-        if stage not in ("graph", "animation"):
-            return f"无效 stage {stage},可选:graph/animation"
+        - 调 generate_diagram 产 mermaid 图后,调 switch_stage("mermaid") 让用户看图示。
+        - 用户想看分解图/图示时也可主动切。"""
+        if stage not in ("graph", "animation", "mermaid"):
+            return f"无效 stage {stage},可选:graph/animation/mermaid"
         _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": stage}})
-        return f"中间舞台已切换为:{'知识分解图' if stage == 'graph' else '动画舞台'}"
+        names = {"graph": "知识分解图", "animation": "动画舞台", "mermaid": "mermaid 图示"}
+        return f"中间舞台已切换为:{names.get(stage, stage)}"
 
-    return [add_topic, ask_user, read, grep, generate_animation, decompose_knowledge, set_depth, switch_stage]
+    # ---------- 分解图编辑工具(直接改图,绕过 LLM;改完自动刷新前端画布) ----------
+    # 改图后调 _push_graph 把快照写回 session.graph 并推 graph 事件,前端 consume 收到刷新画布。
+
+    def _push_graph(msg: str, snapshot: dict) -> str:
+        """把图快照写回 session.graph(持久化)+ 往 _EMIT 推 graph 事件(前端刷新画布)。返回 msg。"""
+        from .debug_log import dlog
+        s = _agent().get_session(sid)
+        # 从现有 session.graph 取 question/root_title(图编辑不改这些),无则用 question 占位
+        old_graph = (s or {}).get("graph") or {}
+        graph_obj = {
+            "question": old_graph.get("question", s.get("question", "") if s else ""),
+            "root_title": old_graph.get("root_title", ""),
+            "snapshot": snapshot,
+        }
+        _agent().set_graph(sid, graph_obj)
+        _EMIT[sid].append({"kind": "graph", "payload": snapshot})
+        dlog(f"PUSH_GRAPH sid={sid} nodes={len(snapshot.get('nodes',[]))} edges={len(snapshot.get('edges',[]))} emit_len={len(_EMIT[sid])}")
+        return msg
+
+    @tool
+    def split_graph_node(target: str, children: list[dict], prereqs: list[dict] = None, deps: list[dict] = None) -> str:
+        """拆分当前分解图里的一个节点 target(标题)。target 拆成 children 后从图里消失(变集合标签贴在子节点上),
+        其依赖自动改接到子节点并剪枝。用于用户说"把X拆细一点""X还能再分"时。
+        - children:target 拆出的子概念。每项 {"title": str, "mastery": bool, "aliases": [str,...](可选)}。原子概念给 []。
+        - prereqs:外部前置知识(不在 children 里)。每项同上。可省略。
+        - deps:前置依赖。每项 {"from":"先学标题","to":"后学标题"}。可省略。
+        会切换中间舞台到分解图并刷新。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        events, msg, snapshot = _decomp.manual_split(sid, target, children or [], prereqs or [], deps or [], prune=True)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def remove_graph_node(title: str) -> str:
+        """从分解图删除节点 title(及其所有关联边)。用于用户说"去掉X""X不用学"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = _decomp.edit_remove_node(sid, title)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def add_graph_node(title: str, mastery: bool = False, aliases: list[str] = None) -> str:
+        """往分解图新增一个孤立节点 title(暂不连边,后续用 add_graph_dependency 连)。用于用户说"加个X""漏了X"时。
+        mastery=是否已掌握(默认否);aliases=别名数组(可选)。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = _decomp.edit_add_node(sid, title, mastery, aliases)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def rename_graph_node(title: str, new_title: str) -> str:
+        """把分解图里的节点 title 改名为 new_title。用于用户说"X应该叫Y""名字不对"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = _decomp.edit_rename_node(sid, title, new_title)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def add_graph_dependency(from_title: str, to_title: str) -> str:
+        """加一条前置依赖边:先学 from_title 才能学 to_title(from 是基础,to 是高级)。用于用户说"X是Y的前置""学Y得先学X"时。
+        自动环检测,成环会拒绝。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = _decomp.edit_add_edge(sid, from_title, to_title)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def remove_graph_dependency(from_title: str, to_title: str) -> str:
+        """删除一条前置依赖边 from_title->to_title。用于用户说"X不是Y的前置""这条依赖不对"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = _decomp.edit_remove_edge(sid, from_title, to_title)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def set_graph_mastered(title: str, mastered: bool) -> str:
+        """把分解图里的节点 title 标记为已掌握(mastered=true)或取消(mastered=false)。用于用户说"X我会了""X不用学了"(mastered=true)或"X其实我没学过"(mastered=false)时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = _decomp.edit_set_mastered(sid, title, mastered)
+        return _push_graph(msg, snapshot)
+
+    @tool
+    def list_graph_nodes() -> str:
+        """列出当前分解图所有节点(标题 + 是否已掌握 + depth + 集合标签)。改图前或用户问"图里有哪些知识点"时调,据实决策。不切换舞台。"""
+        return _decomp.edit_list_nodes(sid)
+
+    return [add_topic, ask_user, read, grep, generate_animation, generate_quiz, generate_diagram, decompose_knowledge, set_depth, switch_stage,
+            split_graph_node, remove_graph_node, add_graph_node, rename_graph_node,
+            add_graph_dependency, remove_graph_dependency, set_graph_mastered, list_graph_nodes]
 
 
 # ---------- agent 构造 ----------
@@ -386,6 +525,24 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
                    "agent": "main", "stepId": None,
                    "payload": {"question": interrupt_value.get("question", "")}}
             return
+        if k == "quiz":
+            yield {"kind": "quiz", "id": _new_id(sid), "parentId": agent_evt_id,
+                   "agent": "main", "stepId": None,
+                   "payload": {"step_title": interrupt_value.get("step_title", ""),
+                               "question": interrupt_value.get("question", ""),
+                               "options": interrupt_value.get("options", []),
+                               "answer": interrupt_value.get("answer", 0),
+                               "explanation": interrupt_value.get("explanation", "")}}
+            return
+        if k == "quiz":
+            yield {"kind": "quiz", "id": _new_id(sid), "parentId": agent_evt_id,
+                   "agent": "main", "stepId": None,
+                   "payload": {"step_title": interrupt_value.get("step_title", ""),
+                               "question": interrupt_value.get("question", ""),
+                               "options": interrupt_value.get("options", []),
+                               "answer": interrupt_value.get("answer", 0),
+                               "explanation": interrupt_value.get("explanation", "")}}
+            return
 
     # 无 interrupt:本轮对话跑完。把草稿里新增的 topic 推 topic_added 事件(前端 list 增量)
     for topic in _DRAFTS[sid].get("topics", []):
@@ -492,6 +649,15 @@ def resume_main_agent(sid: str, cfg=None):
             yield {"kind": "decompose_request", "id": _new_id(sid), "parentId": agent_evt_id,
                    "agent": "main", "stepId": None,
                    "payload": {"question": interrupt_value.get("question", "")}}
+            return
+        if k == "quiz":
+            yield {"kind": "quiz", "id": _new_id(sid), "parentId": agent_evt_id,
+                   "agent": "main", "stepId": None,
+                   "payload": {"step_title": interrupt_value.get("step_title", ""),
+                               "question": interrupt_value.get("question", ""),
+                               "options": interrupt_value.get("options", []),
+                               "answer": interrupt_value.get("answer", 0),
+                               "explanation": interrupt_value.get("explanation", "")}}
             return
 
     for topic in _DRAFTS[sid].get("topics", []):
