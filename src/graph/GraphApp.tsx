@@ -211,6 +211,8 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
   const selectedNodesRef = useRef<Set<string>>(new Set());  // 框选多选(右键菜单用)
   // 右键框选:右键按下拖动画矩形,松开时选中矩形内节点 + 弹多选菜单。左键仍平移画布(panOnDrag 默认)。
   const rightDragRef = useRef<{ startX: number; startY: number; moved: boolean }>({ startX: 0, startY: 0, moved: false });
+  // 框选松开弹多选菜单后,紧接的 contextmenu 事件要跳过(否则 onPaneContextMenu 会用空白菜单覆盖)
+  const justBoxedRef = useRef(false);
   const [selRect, setSelRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const { sessionId, setSessionId, setTopics, setView, decomposeGraph, setDecomposeGraph } = useApp();
@@ -251,7 +253,8 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
       if (e.button !== 2) return;  // 只右键
       // 只在点空白(pane)开始框选;点节点上右键由 onNodeContextMenu 处理
       const tgt = e.target as HTMLElement;
-      if (tgt.closest(".react-flow__node") || tgt.closest(".react-flow__edge")) return;
+      const onNode = !!(tgt.closest(".react-flow__node") || tgt.closest(".react-flow__edge"));
+      if (onNode) return;
       rightDragRef.current = { startX: e.clientX, startY: e.clientY, moved: false };
     };
     const onMove = (e: MouseEvent) => {
@@ -287,7 +290,10 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
       selectedNodesRef.current = new Set(selIds.filter(Boolean));
       rightDragRef.current = { startX: 0, startY: 0, moved: false };
       setSelRect(null);
-      if (selIds.filter(Boolean).length > 0) setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: selIds.filter(Boolean) });
+      if (selIds.filter(Boolean).length > 0) {
+        setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: selIds.filter(Boolean) });
+        justBoxedRef.current = true;  // 标记:紧接的 contextmenu 事件跳过(防 onPaneContextMenu 覆盖多选菜单)
+      }
     };
     el.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
@@ -473,15 +479,17 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
             onPaneClick={() => setSelectedId(null)}
             onNodeContextMenu={(e, node) => {
               e.preventDefault();
-              // 右键节点:若刚框选了多节点且含本节点,用多选;否则单选。框选拖动时不弹(由 mouseup 处理)
+              if (justBoxedRef.current) { justBoxedRef.current = false; return; }  // 框选刚弹菜单,跳过
               if (rightDragRef.current.moved) return;
+              // 右键节点:若刚框选了多节点且含本节点,用多选;否则单选。框选拖动时不弹(由 mouseup 处理)
               const ids = selectedNodesRef.current.has(node.id) && selectedNodesRef.current.size > 1
                 ? [...selectedNodesRef.current] : [node.id];
               setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: ids });
             }}
             onPaneContextMenu={(e) => {
               e.preventDefault();
-              // 空白右键:若刚框选拖动了,由 mouseup 弹多选菜单(不在此弹);未拖动则弹添加菜单
+              // 框选拖动刚弹了多选菜单:跳过本次 contextmenu(防覆盖),清标记
+              if (justBoxedRef.current) { justBoxedRef.current = false; return; }
               if (rightDragRef.current.moved) return;
               setContextMenu({ x: e.clientX, y: e.clientY, nodeIds: [] });
             }}
