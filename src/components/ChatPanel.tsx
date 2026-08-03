@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
+import rehypeKatex from "rehype-katex";
 import {
   startLesson, nextStep, prevStep, gotoStep, updateQuestion, uploadFile,
   postRenderResult, getTrace,
-  chat, chatAnswer, uploadForSession,
+  chat, chatAnswer, uploadForSession, decompose,
   listSessions, newSession, getSession, exportSession, importSessionFromFile,
+  explainStep,
   type ChatEvent, type AgentRole, type Topic,
 } from "../data/llmClient";
 import { useApp, type StepStatus } from "../store";
@@ -13,7 +18,12 @@ interface RenderedItem { key: string; event: ChatEvent; collapsed: boolean; }
 const COLLAPSED_BY_DEFAULT = new Set(["tool_call", "tool_result", "render_request", "render_result"]);
 
 function makeItem(ev: ChatEvent, key: string): RenderedItem {
-  return { key, event: ev, collapsed: COLLAPSED_BY_DEFAULT.has(ev.kind) };
+  // agent_start:只 subagent 的默认折叠(藏其下工具调用过程);主 agent 的 agent_start 不折叠(子节点正常显)
+  let collapsed = COLLAPSED_BY_DEFAULT.has(ev.kind);
+  if (ev.kind === "agent_start") {
+    collapsed = ev.agent !== "main";
+  }
+  return { key, event: ev, collapsed };
 }
 
 const roleStyle: Record<AgentRole, { name: string; color: string; dot: string; icon: string }> = {
@@ -28,7 +38,7 @@ export default function ChatPanel() {
   const [items, setItems] = useState<RenderedItem[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [pendingAsk, setPendingAsk] = useState<string | null>(null); // 主 agent 问的问题;非 null 时发送=回答该问题
+  const [pendingAsk, setPendingAsk] = useState<{ question: string; options?: string[] } | null>(null); // 主 agent 问的问题(+可选预设选项);非 null 时发送=回答该问题
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileText, setFileText] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
@@ -42,11 +52,11 @@ export default function ChatPanel() {
   const {
     lesson, setLesson, currentStep, setCurrentStep,
     stepStatus, markStepActive, markStepDone,
-    sessionId, setSessionId, setSceneCode, mergeStepParams, updateStepContent,
+    sessionId, setSessionId, setSceneCode, mergeStepParams, updateStepContent, updateTopicStep,
     sessionList, setSessionList, switchSession, resetToEmpty,
     navRequest,
     requestVerify, verifyResultHandler,
-    depth, setDepth, topics, addTopic, setTopics,
+    depth, setDepth, topics, addTopic, setTopics, setDecomposeGraph, setView,
     pendingFiles, addPendingFile, removePendingFile, clearPendingFiles,
   } = useApp();
   // 同步 sessionId 到 ref,供 consume/handleEvent 异步循环里取最新值(避免闭包陈旧)
@@ -123,6 +133,19 @@ export default function ChatPanel() {
           }
           return [...prev, makeItem(ev, String(key++))];
         });
+      } else if (ev.kind === "message_delta") {
+        // 流式增量:找同 id 的 message item 追加 text;无则新建一条 message(用该 id,后续增量继续追加)
+        setItems((prev) => {
+          const idx = prev.findIndex((x) => x.event.id === ev.id && x.event.kind === "message");
+          if (idx >= 0) {
+            const copy = [...prev];
+            const old = copy[idx].event as any;
+            copy[idx] = { ...copy[idx], event: { ...old, text: (old.text || "") + ev.text } };
+            return copy;
+          }
+          // 首个增量:建成完整 message 事件(带 id,后续增量按 id 找到它)
+          return [...prev, makeItem({ kind: "message", id: ev.id, role: ev.role, text: ev.text, ts: Date.now() } as any, String(key++))];
+        });
       } else {
         setItems((prev) => [...prev, makeItem(ev, String(key++))]);
       }
@@ -134,19 +157,26 @@ export default function ChatPanel() {
       if (ev.kind === "topic_added") {
         addTopic(ev.topic);
       }
+      if (ev.kind === "stage_switch") {
+        // 主 agent 切换中间舞台:graph=分解图,animation=动画
+        setView((ev as any).stage === "graph" ? "graph" : "animation");
+      }
       if (ev.kind === "ask") {
-        // 主 agent 问用户:记下问题,发送按钮变为"回答"(answerAsk)
-        setPendingAsk(ev.question);
+        // 主 agent 问用户:记下问题(+可选预设选项),发送按钮变为"回答"(answerAsk)
+        setPendingAsk({ question: ev.question, options: (ev as any).options });
       }
       if (ev.kind === "explain") {
-        setCurrentStep(ev.stepId);
-        markStepActive(ev.stepId);
+        setCurrentStep(ev.stepId as any);
+        markStepActive(ev.stepId as any);
         setSceneCode(ev.sceneCode);
         if (ev.params) mergeStepParams(ev.params);
-        updateStepContent(ev.stepId, {
+        const content = {
           title: ev.title, narration: ev.narration, formula: ev.formula, explanation: (ev as any).explanation,
-          intent: ev.intent, paramsUsed: ev.paramsUsed,
-        });
+          intent: ev.intent, paramsUsed: ev.paramsUsed, params: (ev as any).params,
+        };
+        // 字符串 stepId(新 topic 流程)写 topics;数字 stepId(旧 lesson)写 lesson.steps
+        if (typeof ev.stepId === "string") updateTopicStep(ev.stepId, content);
+        else updateStepContent(ev.stepId, content);
       }
       if (ev.kind === "render_request") {
         // 浏览器在环验证:让 StagePanel 跑这段 code,拿结果(含可选最后一帧 frame)回传后端,继续 consume 回传流
@@ -160,6 +190,55 @@ export default function ChatPanel() {
         for await (const sub of subStream) {
           if (consumeRunIdRef.current !== myRun) return;
           await handleEvent(sub, myRun);
+        }
+      }
+      if (ev.kind === "decompose_request") {
+        // 主 agent 要分解知识图谱:调 /api/decompose 跑分解 agent。每个 graph 事件实时更新分解图(用户看到节点逐个出现),
+        // 跑完收最后一个 graph 快照,再 chatAnswer resume
+        const sid = sessionIdRef.current || "";
+        let graph: any = null, ok = false, errMsg = "";
+        try {
+          for await (const dev of decompose(sid, ev.question)) {
+            if (consumeRunIdRef.current !== myRun) return;
+            if (dev?.kind === "graph") {
+              graph = dev?.payload;  // 保留最后一个 graph 快照
+              // 实时更新 store.decomposeGraph:GraphApp effect 监听变化,每次 split 末尾重建画布(节点逐步增加)
+              setDecomposeGraph({ question: ev.question, root_title: `知识分解 · ${ev.question}`, snapshot: graph });
+            }
+            if (dev?.kind === "error") errMsg = dev?.message || dev?.payload?.message || "";
+          }
+          ok = !!graph;
+        } catch (e: any) { errMsg = e.message; }
+        if (consumeRunIdRef.current !== myRun) return;
+        // resume 主 agent:传 result={ok, graph, error?}
+        const subStream = chatAnswer(sid, "", { ok, graph: ok ? graph : null, error: errMsg });
+        for await (const sub of subStream) {
+          if (consumeRunIdRef.current !== myRun) return;
+          await handleEvent(sub, myRun);  // resume 后可能再来 ask/decompose_request/topic_added
+        }
+      }
+      if (ev.kind === "animation_request") {
+        // 主 agent 要生成某步动画:调 /api/explain 跑 step subagent(浏览器在环),跑完 resume 主 agent 传 {ok, step_id}
+        const sid = sessionIdRef.current || "";
+        const stepId = (ev as any).step_id || ev.stepId || "";
+        let ok = false, errMsg = "";
+        try {
+          for await (const sev of explainStep(sid, stepId)) {
+            if (consumeRunIdRef.current !== myRun) return;
+            // render_request 走 handleEvent(浏览器在环验证 + postRenderResult 递归);explain 写 store;error 记录
+            await handleEvent(sev, myRun);
+            if (sev.kind === "explain") ok = true;
+            if (sev.kind === "error") errMsg = sev.message || "";
+          }
+          // 流正常结束且无 error → 视为成功(explain 可能在 handleEvent 递归的 postRenderResult 流里,外层 sev 检测不到)
+          if (!errMsg) ok = true;
+        } catch (e: any) { errMsg = e.message; }
+        if (consumeRunIdRef.current !== myRun) return;
+        // resume 主 agent:传 result={ok, step_id, error?}
+        const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });
+        for await (const sub of subStream) {
+          if (consumeRunIdRef.current !== myRun) return;
+          await handleEvent(sub, myRun);  // resume 后可能再来 ask/animation_request/topic_added
         }
       }
     }
@@ -176,11 +255,13 @@ export default function ChatPanel() {
         if (idx >= 0) { const copy = [...prev]; copy[idx] = { ...copy[idx], event: ev }; return copy; }
         return [...prev, makeItem(ev, `e-${Date.now()}`)];
       });
-      setCurrentStep(ev.stepId);
-      markStepActive(ev.stepId);
+      setCurrentStep(ev.stepId as any);
+      markStepActive(ev.stepId as any);
       setSceneCode(ev.sceneCode);
       if (ev.params) mergeStepParams(ev.params);
-      updateStepContent(ev.stepId, { title: ev.title, narration: ev.narration, formula: ev.formula, explanation: (ev as any).explanation, intent: ev.intent, paramsUsed: ev.paramsUsed });
+      const content = { title: ev.title, narration: ev.narration, formula: ev.formula, explanation: (ev as any).explanation, intent: ev.intent, paramsUsed: ev.paramsUsed, params: (ev as any).params, sceneCode: ev.sceneCode };
+      if (typeof ev.stepId === "string") updateTopicStep(ev.stepId, content);
+      else updateStepContent(ev.stepId, content);
     } else if (ev.kind === "render_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
@@ -193,9 +274,61 @@ export default function ChatPanel() {
         if (consumeRunIdRef.current !== myRun) return;
         await handleEvent(sub, myRun);
       }
+    } else if (ev.kind === "decompose_request") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      const sid = sessionIdRef.current || "";
+      let graph: any = null, ok = false, errMsg = "";
+      try {
+        for await (const dev of decompose(sid, ev.question)) {
+          if (consumeRunIdRef.current !== myRun) return;
+          if (dev?.kind === "graph") {
+            graph = dev?.payload;
+            setDecomposeGraph({ question: ev.question, root_title: `知识分解 · ${ev.question}`, snapshot: graph });  // 实时更新
+          }
+          if (dev?.kind === "error") errMsg = dev?.message || dev?.payload?.message || "";
+        }
+        ok = !!graph;
+      } catch (e: any) { errMsg = e.message; }
+      if (consumeRunIdRef.current !== myRun) return;
+      const subStream = chatAnswer(sid, "", { ok, graph: ok ? graph : null, error: errMsg });
+      for await (const sub of subStream) {
+        if (consumeRunIdRef.current !== myRun) return;
+        await handleEvent(sub, myRun);
+      }
+    } else if (ev.kind === "animation_request") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      const sid = sessionIdRef.current || "";
+      const stepId = (ev as any).step_id || ev.stepId || "";
+      let ok = false, errMsg = "";
+      try {
+        for await (const sev of explainStep(sid, stepId)) {
+          if (consumeRunIdRef.current !== myRun) return;
+          await handleEvent(sev, myRun);
+          if (sev.kind === "explain") ok = true;
+          if (sev.kind === "error") errMsg = sev.message || "";
+        }
+        if (!errMsg) ok = true;  // 流正常结束且无 error → 成功(explain 可能在递归流里,外层检测不到)
+      } catch (e: any) { errMsg = e.message; }
+      if (consumeRunIdRef.current !== myRun) return;
+      const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });
+      for await (const sub of subStream) {
+        if (consumeRunIdRef.current !== myRun) return;
+        await handleEvent(sub, myRun);
+      }
     } else if (ev.kind === "error") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
     } else if (ev.kind === "agent_start" || ev.kind === "tool_call" || ev.kind === "tool_result" || ev.kind === "render_result") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+    } else if (ev.kind === "topic_added") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      addTopic(ev.topic);
+    } else if (ev.kind === "stage_switch") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      setView((ev as any).stage === "graph" ? "graph" : "animation");
+    } else if (ev.kind === "ask") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      setPendingAsk(ev.question);
+    } else if (ev.kind === "done" || ev.kind === "plan" || ev.kind === "step-start") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
     }
   }
@@ -205,11 +338,10 @@ export default function ChatPanel() {
     if (!q || loading) return;
     setInput("");
     setLoading(true);
-    setItems((prev) => [...prev, makeItem({ kind: "message", role: "user", text: q } as ChatEvent, `u-${Date.now()}`)]);
+    setItems((prev) => [...prev, makeItem({ kind: "message", role: "user", text: q, ts: Date.now() } as ChatEvent, `u-${Date.now()}`)]);
     try {
       // 若有 pendingAsk(主 agent 问了问题),发送=回答该问题;否则正常对话
       if (pendingAsk) {
-        const ask = pendingAsk;
         setPendingAsk(null);
         await consume(chatAnswer(sessionIdRef.current || "", q));
         void ask;
@@ -218,6 +350,19 @@ export default function ChatPanel() {
         clearPendingFiles();
         await consume(chat(sessionIdRef.current || "", q, depth, fileIds));
       }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // 点预设选项按钮:直接用选项文本回答主 agent(不经输入框),点击即发送
+  async function answerWithOption(text: string) {
+    if (loading || !pendingAsk) return;
+    setLoading(true);
+    setItems((prev) => [...prev, makeItem({ kind: "message", role: "user", text, ts: Date.now() } as ChatEvent, `u-${Date.now()}`)]);
+    try {
+      setPendingAsk(null);
+      await consume(chatAnswer(sessionIdRef.current || "", text));
     } finally {
       setLoading(false);
     }
@@ -244,6 +389,13 @@ export default function ChatPanel() {
     try { await consume(gotoStep(sessionId, stepId)); } finally { setLoading(false); }
   }
 
+  // 点 topic 子知识点(字符串 step_id 'topicid-N'):直触发 step_agent 生成,不经主 agent
+  async function handleTopicStep(stepId: string) {
+    if (!sessionId || loading) return;
+    setLoading(true);
+    try { await consume(explainStep(sessionId, stepId)); } finally { setLoading(false); }
+  }
+
   async function handleNewSession() {
     consumeRunIdRef.current++; // 作废旧 session 的 consume
     try {
@@ -255,6 +407,7 @@ export default function ChatPanel() {
       setInput("");
       setPendingAsk(null);
       setTopics([]);
+      setDecomposeGraph(null);
       clearPendingFiles();
       setFileName(null);
       setFileText(null);
@@ -287,6 +440,7 @@ export default function ChatPanel() {
         setItems([]);
       }
       setTopics((detail as any).topics || []);
+      setDecomposeGraph((detail as any).graph || null);
       setPendingAsk(null);
       clearPendingFiles();
       setFileName(null);
@@ -383,7 +537,7 @@ export default function ChatPanel() {
           </div>
           <div className="space-y-1 max-h-56 overflow-y-auto">
             {topics.map((tp) => (
-              <TopicNode key={tp.id} topic={tp} />
+              <TopicNode key={tp.id} topic={tp} onStepClick={handleTopicStep} loading={loading} />
             ))}
           </div>
         </div>
@@ -445,6 +599,23 @@ export default function ChatPanel() {
             </span>
           ))}
         </div>
+        {/* 主 agent 提问的预设选项按钮(ask_user 带 options 时):点击即发送该选项文本作回答 */}
+        {pendingAsk?.options && pendingAsk.options.length > 0 && (
+          <div className="flex flex-col gap-1 py-1">
+            {pendingAsk.options.map((opt, i) => (
+              <button
+                key={i}
+                onClick={() => answerWithOption(opt)}
+                disabled={loading}
+                className="text-left text-[11px] px-2.5 py-1.5 rounded-md bg-[#0d121c] border border-[#1e293b] hover:border-[#4a9eff]/50 hover:bg-[#4a9eff]/10 text-[#9aa6b8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="点击即发送此选项作回答"
+              >
+                {opt}
+              </button>
+            ))}
+            <span className="text-[9px] text-[#4a5365] px-1">点选项发送,或在下方输入框自定义回答</span>
+          </div>
+        )}
         <div className="flex items-end gap-2 rounded-lg bg-[#161f2e] border border-[#1e293b] px-2.5 py-1.5 focus-within:border-[#4a9eff]/50 transition-colors">
           <textarea
             placeholder={pendingAsk ? "回答主 agent 的问题…" : sessionId ? "追问或更新问题…" : "输入要学的知识点,如:梯度下降、傅里叶变换…"}
@@ -467,8 +638,8 @@ function StepBadge({ status, id }: { status: StepStatus; id: number }) {
   return <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[#4a5365] border border-[#1e293b] tnum">{id}</span>;
 }
 
-// 分层知识点主题节点:可折叠,展开显示子知识点(只读;点击导航待 step_id 字符串化后做)
-function TopicNode({ topic }: { topic: Topic }) {
+// 分层知识点主题节点:可折叠,展开显示子知识点(点子知识点触发生成动画)
+function TopicNode({ topic, onStepClick, loading }: { topic: Topic; onStepClick: (stepId: string) => void; loading: boolean }) {
   const [open, setOpen] = useState(true);
   return (
     <div className="rounded-md border border-[#162032] bg-[#0d121c]/60">
@@ -479,12 +650,20 @@ function TopicNode({ topic }: { topic: Topic }) {
       </button>
       {open && (
         <ol className="px-2 pb-1.5 pl-6 space-y-0.5">
-          {topic.steps.map((s, i) => (
-            <li key={s.id} className="flex items-center gap-2 text-[10.5px] text-[#9aa6b8] py-0.5">
-              <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[#4a5365] border border-[#1e293b] tnum shrink-0">{i + 1}</span>
-              <span className="truncate">{s.title}</span>
-            </li>
-          ))}
+          {topic.steps.map((s, i) => {
+            const generated = !!(s as any).explanation || !!(s as any).sceneCode;  // 已缓存(跑过 step agent)
+            return (
+              <li
+                key={s.id}
+                onClick={() => onStepClick(s.id)}
+                className={`flex items-center gap-2 text-[10.5px] py-0.5 px-1 rounded cursor-pointer hover:bg-[#161f2e] ${loading ? "opacity-50 pointer-events-none" : ""}`}
+              >
+                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum ${generated ? "bg-[#4a9eff] text-[#070a12]" : "text-[#4a5365] border border-[#1e293b]"}`}>{generated ? "✓" : i + 1}</span>
+                <span className={`truncate ${generated ? "text-[#9aa6b8]" : "text-[#7a8696]"}`}>{s.title}</span>
+                {generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">已生成</span>}
+              </li>
+            );
+          })}
         </ol>
       )}
     </div>
@@ -509,11 +688,50 @@ function renderTree(items: RenderedItem[], setItems: Dispatch<SetStateAction<Ren
     return (
       <div key={it.key} style={{ paddingLeft: depth * 14 }}>
         <EventCard event={it.event} collapsed={it.collapsed} onToggle={() => toggle(it.key)} />
-        {!it.collapsed && kids.map((k) => renderNode(k, depth + 1))}
+        {!it.collapsed && renderKids(kids, depth + 1, toggle)}
       </div>
     );
   };
+  // 渲染一组 children:把连续的 tool_call 聚合成 ToolGroup(一行"🔧 t1 → t2 · N 个",点开逐个展开)
+  const renderKids = (kids: RenderedItem[], depth: number, toggle: (k: string) => void): ReactNode => {
+    const out: ReactNode[] = [];
+    let group: RenderedItem[] = [];
+    const flush = () => {
+      if (group.length === 0) return;
+      if (group.length === 1) {
+        out.push(renderNode(group[0], depth));
+      } else {
+        out.push(<ToolGroup key={`tg-${group[0].key}`} items={group} depth={depth} renderNode={renderNode} />);
+      }
+      group = [];
+    };
+    for (const k of kids) {
+      if (k.event.kind === "tool_call") {
+        group.push(k);
+      } else {
+        flush();
+        out.push(renderNode(k, depth));
+      }
+    }
+    flush();
+    return <>{out}</>;
+  };
   return <>{roots.map((it) => renderNode(it, 0))}</>;
+}
+
+// 连续多个 tool_call 的聚合视图:一行"🔧 t1 → t2 → ... · N 个工具",点开逐个展开(每个 tool_call 再点开看 args)
+function ToolGroup({ items, depth, renderNode }: { items: RenderedItem[]; depth: number; renderNode: (it: RenderedItem, d: number) => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const names = items.map((it) => (it.event as any).name).join(" → ");
+  return (
+    <div style={{ paddingLeft: depth * 0 }}>
+      <div onClick={() => setOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] text-[#6b7686]">
+        <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
+        <span>🔧</span> <span className="font-mono">{names}</span> <span className="text-[#4a5365]">· {items.length} 个工具</span>
+      </div>
+      {open && items.map((it) => renderNode(it, depth))}
+    </div>
+  );
 }
 
 function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed?: boolean; onToggle?: () => void; }) {
@@ -522,12 +740,18 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
   switch (event.kind) {
     case "message": {
       const r = roleStyle[event.role];
+      const isUser = event.role === "user";
       return (
-        <div className="flex gap-2">
-          <span className="mt-0.5 text-[10px] w-4 text-center shrink-0" style={{ color: r.dot }}>{r.icon}</span>
-          <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-medium mb-0.5" style={{ color: r.color }}>{r.name}</div>
-            <div className="text-[12px] leading-[1.55] text-[#9aa6b8]">{event.text}</div>
+        <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-0.5`}>
+          <div className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[12px] leading-[1.55] ${
+            isUser
+              ? "bg-[#4a9eff]/15 border border-[#4a9eff]/30 text-[#dfe6f0]"
+              : "bg-[#0d121c] border border-[#1e293b] text-[#9aa6b8]"
+          }`}>
+            {!isUser && <div className="text-[10px] font-medium mb-0.5" style={{ color: r.color }}>{r.name}</div>}
+            {isUser
+              ? <div className="whitespace-pre-wrap">{event.text}</div>
+              : <div className="md-prose"><ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>{event.text}</ReactMarkdown></div>}
           </div>
         </div>
       );
@@ -545,7 +769,16 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "step-start":
       return <div className="flex items-center gap-1.5 text-[11px] text-[#5fb0ff] py-0.5"><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 第 {event.stepId} 步 · {event.title}</div>;
     case "agent_start":
-      return <div className="flex items-center gap-1.5 text-[10.5px] text-[#6b7686] py-0.5"><span>🤖</span> {event.agent === "main" ? "主 agent · 知识点拆解" : `subagent · 设计第 ${event.stepId} 步`}</div>;
+      // 主 agent 的 agent_start 不显示(文本消息已带"主 Agent"名,这里冗余);
+      // subagent(设计某步动画)的默认折叠,只显一行摘要,点开看工具调用过程(set_title/.../update_animation/渲染结果)
+      if (event.agent === "main") return null;
+      return (
+        <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] text-[#6b7686] py-0.5 cursor-pointer hover:text-[#9aa6b8]">
+          {collapsible && <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${collapsed ? "" : "rotate-90"}`}>▶</span>}
+          <span>🤖</span> <span>{`设计第 ${event.stepId} 步`}</span>
+          <span className="text-[#4a5365] text-[9px]">{collapsed ? "点击展开工具过程" : ""}</span>
+        </div>
+      );
     case "tool_call": {
       const a = event.args as any;
       let argSummary: string;
@@ -567,12 +800,15 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       return (
         <div className="my-0.5">
           <div onClick={onToggle} className={`flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] ${collapsed ? "text-[#6b7686]" : "text-[#9aa6b8]"}`}>
-            {collapsible && <Twist />} <span>🔧</span> <span className="font-mono">{event.name}</span> <span className="text-[#4a5365]">{argSummary}</span>
+            {collapsible && <Twist />} <span>🔧</span> <span className="font-mono">{event.name}</span>
           </div>
           {!collapsed && (
-            <pre className="mt-0.5 ml-5 text-[10px] text-[#7a8696] bg-[#0a0f1a] border border-[#162032] rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
-              {body}
-            </pre>
+            <div className="mt-0.5 ml-5">
+              <div className="text-[10px] text-[#4a5365] mb-0.5">{argSummary}</div>
+              <pre className="text-[10px] text-[#7a8696] bg-[#0a0f1a] border border-[#162032] rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                {body}
+              </pre>
+            </div>
           )}
         </div>
       );
@@ -618,8 +854,8 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       return (
         <div className="rounded-md border border-[#4a9eff]/40 bg-[#4a9eff]/5 px-2.5 py-1.5 my-0.5">
           <div className="text-[10px] text-[#5fb0ff] mb-0.5">❓ 主 agent 想确认</div>
-          <div className="text-[11.5px] text-[#dfe6f0] leading-relaxed">{event.question}</div>
-          <div className="text-[9px] text-[#4a5365] mt-1">在下方输入框回答后发送</div>
+          <div className="text-[11.5px] text-[#dfe6f0] leading-relaxed whitespace-pre-wrap">{event.question}</div>
+          <div className="text-[9px] text-[#4a5365] mt-1">{event.options?.length ? "点下方选项按钮或自定义回答" : "在下方输入框回答后发送"}</div>
         </div>
       );
     case "topic_added":
@@ -629,8 +865,28 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
           <div className="text-[10.5px] text-[#6b7686]">{event.topic.steps.length} 步:{event.topic.steps.map((s) => s.title).join(" / ")}</div>
         </div>
       );
+    case "decompose_request":
+      return (
+        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
+          <div className="text-[10px] text-[#5fb0ff] mb-0.5">🧩 分解知识图谱 · {event.question}</div>
+          <div className="text-[9px] text-[#4a5365]">主 agent 触发分解 agent,正在跑…</div>
+        </div>
+      );
+    case "animation_request":
+      return (
+        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
+          <div className="text-[10px] text-[#5fb0ff]">▶ 生成动画 · 第 {(event as any).step_id || event.stepId} 步</div>
+          <div className="text-[9px] text-[#4a5365]">主 agent 触发 subagent,浏览器在环验证中…</div>
+        </div>
+      );
+    case "stage_switch":
+      return (
+        <div className="text-[10px] text-[#6b7686] py-0.5 pl-1">
+          🔄 切换中间舞台 → {(event as any).stage === "graph" ? "知识分解图" : "动画舞台"}
+        </div>
+      );
     case "done":
-      return <div className="text-[11px] text-[#5fb0ff] pl-5 py-0.5">✓ {event.message}</div>;
+      return null;
     case "error":
       return <div className="rounded-md border border-[#2b3a52] bg-[#0f1828] px-2.5 py-1.5 text-[11px] text-[#9aa6b8]"><span className="text-[#5fb0ff]">!</span> {event.message}</div>;
     default:

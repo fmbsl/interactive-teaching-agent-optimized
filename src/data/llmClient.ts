@@ -8,13 +8,14 @@ export type AgentRole = "user" | "orchestrator" | "animator" | "verifier" | "nar
 
 export type Depth = "popular" | "understand" | "deep";
 
-export interface TopicStep { id: string; title: string }
+export interface TopicStep { id: string; title: string; explanation?: string; intent?: string; narration?: string; formula?: string; paramsUsed?: string[]; params?: any[]; sceneCode?: string }
 export interface Topic { id: string; title: string; summary: string; steps: TopicStep[] }
 
 export type ChatEvent = {
   id?: string; parentId?: string | null; ts?: number; agent?: string;
 } & (
   | { kind: "message"; role: AgentRole; text: string }
+  | { kind: "message_delta"; id: string; role: AgentRole; text: string }  // 流式增量:同 id 追加,前端往同一条 message 累加文本
   | { kind: "session"; sessionId: string }
   | { kind: "plan"; title: string; summary: string; params: LessonParam[]; steps: LessonStep[] }
   | { kind: "step-start"; stepId: number; title: string }
@@ -25,8 +26,10 @@ export type ChatEvent = {
   | { kind: "render_result"; stepId: number; ok: boolean; error: string }
   | { kind: "explain"; stepId: number; title: string; intent: string; formula: string; narration: string; explanation?: string; paramsUsed: string[]; params: { name: string; label: string; min: number; max: number; step: number; default: number }[]; sceneCode: string }
   | { kind: "topic_added"; topic: Topic }
-  | { kind: "ask"; question: string }
+  | { kind: "ask"; question: string; options?: string[] }
   | { kind: "animation_request"; stepId: string; step_id: string }
+  | { kind: "stage_switch"; stage: "graph" | "animation" }  // 主 agent 切换中间舞台:graph=分解图,animation=动画
+  | { kind: "decompose_request"; question: string }
   | { kind: "done"; message: string }
   | { kind: "error"; message: string }
 );
@@ -100,6 +103,11 @@ export async function* gotoStep(sessionId: string, stepId: number): AsyncGenerat
   yield* streamSSE(`${API_BASE}/api/goto`, { session_id: sessionId, step_id: stepId });
 }
 
+/** 生成某步动画(点 list 触发,step_id 可为字符串 'topicid-N'):SSE 流。 */
+export async function* explainStep(sessionId: string, stepId: number | string): AsyncGenerator<ChatEvent> {
+  yield* streamSSE(`${API_BASE}/api/explain`, { session_id: sessionId, step_id: stepId });
+}
+
 /** 更新问题(重新拆解):SSE 流。 */
 export async function* updateQuestion(sessionId: string, question: string, fileText?: string): AsyncGenerator<ChatEvent> {
   yield { kind: "message", role: "orchestrator", text: "已更新问题,重新拆解…" };
@@ -159,6 +167,8 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
     const p = e.payload || {};
     const base = { id: e.id, parentId: e.parentId, ts: e.ts, agent: e.agent };
     switch (e.kind) {
+      case "message": return { ...base, kind: "message", role: p.role || "orchestrator", text: p.text || "" };
+      case "message_delta": return { ...base, kind: "message_delta", id: tree?.id || p.id || "", role: p.role || "orchestrator", text: p.text || "" };
       case "plan": return { ...base, kind: "plan", title: p.title, summary: p.summary, params: p.params, steps: p.steps };
       case "step-start": return { ...base, kind: "step-start", stepId: (p.stepId ?? e.stepId), title: p.title };
       case "agent_start": return { ...base, kind: "agent_start", stepId: (p.stepId ?? e.stepId), title: p.title };
@@ -168,8 +178,10 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
       case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? e.stepId), ok: !!p.ok, error: p.error || "" };
       case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? e.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
       case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
-      case "ask": return { ...base, kind: "ask", question: p.question || "" };
+      case "ask": return { ...base, kind: "ask", question: p.question || "", options: p.options };
       case "animation_request": return { ...base, kind: "animation_request", stepId: p.step_id || "", step_id: p.step_id || "" };
+    case "stage_switch": return { ...base, kind: "stage_switch", stage: p.stage || "animation" };
+      case "decompose_request": return { ...base, kind: "decompose_request", question: p.question || "" };
       case "error": return { ...base, kind: "error", message: p.message };
       default: return null;
     }
@@ -270,6 +282,42 @@ export async function setActiveLlmConfig(id: string): Promise<LlmConfigState> {
     body: JSON.stringify({ action: "setActive", id }),
   });
   if (!r.ok) throw new Error(`切换接入点失败 ${r.status}`);
+  return r.json();
+}
+
+// ---------- 知识分解 ----------
+
+/** 知识分解 agent:SSE 流(原始 dict,不经 parseSSE)。sid 给则用主 session(图挂其上),不给后端自建。
+ *  事件 kind:session/decompose_start/node/edge/graph/tool_call/tool_result/error/done。 */
+export async function* decompose(sid: string, question: string, fileText?: string): AsyncGenerator<any> {
+  yield* streamRawSSE(`${API_BASE}/api/decompose`, { sid, question, file_text: fileText ?? null });
+}
+
+/** 把分解 DAG 转成 Topic 学习清单,写入该 session 的 topics。sid 为主 session id(图已挂其上)。返回 {session_id, topic}。 */
+export async function decomposeToTopics(sid: string, question: string = ""): Promise<{ session_id: string; topic: Topic }> {
+  const r = await fetch(`${API_BASE}/api/decompose/${sid}/to_topics`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }),
+  });
+  if (!r.ok) {
+    const msg = (await r.json().catch(() => ({}))).error || `转换失败 ${r.status}`;
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+/** 手动拆分分解图里的节点(双击节点触发)。sid 为主 session id(图挂其上)。返回 {sid, message, graph, events}。 */
+export async function decomposeSplit(
+  sid: string, target: string, children: { title: string; mastery?: boolean }[],
+  prereqs: { title: string; mastery?: boolean }[] = [], deps: { from: string; to: string }[] = [], prune = true,
+): Promise<{ sid: string; message: string; graph: any; events: any[] }> {
+  const r = await fetch(`${API_BASE}/api/decompose/${dsid}/split`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target, children, prereqs, deps, prune }),
+  });
+  if (!r.ok) {
+    const msg = (await r.json().catch(() => ({}))).error || `拆分失败 ${r.status}`;
+    throw new Error(msg);
+  }
   return r.json();
 }
 
@@ -377,6 +425,8 @@ function parseSSE(raw: string): ChatEvent | null {
   const base = tree ? { id: tree.id, parentId: tree.parentId, ts: tree.ts, agent: tree.agent } : {};
   switch (event) {
     case "session": return { kind: "session", sessionId: obj.session_id };
+    case "message": return { ...base, kind: "message", role: p.role || "orchestrator", text: p.text || "" };
+    case "message_delta": return { ...base, kind: "message_delta", id: tree?.id || p.id || "", role: p.role || "orchestrator", text: p.text || "" };
     case "plan": return { ...base, kind: "plan", title: p.title, summary: p.summary, params: p.params, steps: p.steps };
     case "step-start": return { ...base, kind: "step-start", stepId: (p.stepId ?? tree?.stepId), title: p.title };
     case "agent_start": return { ...base, kind: "agent_start", stepId: (p.stepId ?? tree?.stepId), title: p.title };
@@ -386,8 +436,10 @@ function parseSSE(raw: string): ChatEvent | null {
     case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? tree?.stepId), ok: !!p.ok, error: p.error || "" };
     case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? tree?.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
     case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
-    case "ask": return { ...base, kind: "ask", question: p.question || "" };
+    case "ask": return { ...base, kind: "ask", question: p.question || "", options: p.options };
     case "animation_request": return { ...base, kind: "animation_request", stepId: p.step_id || "", step_id: p.step_id || "" };
+    case "stage_switch": return { ...base, kind: "stage_switch", stage: p.stage || "animation" };
+    case "decompose_request": return { ...base, kind: "decompose_request", question: p.question || "" };
     case "done": return { kind: "done", message: obj.message };
     case "error": return tree ? { ...base, kind: "error", message: p.message } : { kind: "error", message: obj.message };
     default: return null;

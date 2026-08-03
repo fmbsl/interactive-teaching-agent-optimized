@@ -54,10 +54,18 @@ interface AppState {
   topics: import("./data/llmClient").Topic[];
   addTopic: (t: import("./data/llmClient").Topic) => void;
   setTopics: (t: import("./data/llmClient").Topic[]) => void;
+  updateTopicStep: (stepId: string, content: Partial<import("./data/llmClient").TopicStep>) => void;
   pendingFiles: { file_id: string; name: string }[];   // 输入框待发送的文件 chip
   addPendingFile: (f: { file_id: string; name: string }) => void;
   removePendingFile: (file_id: string) => void;
   clearPendingFiles: () => void;
+  // 视图模式:教学(三栏) / 分解(知识谱系图)。GraphApp 转出学习清单后切回 teach。
+  view: "animation" | "graph";  // 中间舞台展示什么:动画(StagePanel) 或 分解图(GraphApp)。主 agent 可切换
+  setView: (v: "animation" | "graph") => void;
+  // 当前 session 的知识分解图快照(随 session 走):{question, root_title, snapshot:{nodes,edges}} | null。
+  // ChatPanel 切会话时从 detail.graph 写入,GraphApp 挂载/变化时据此重建画布。
+  decomposeGraph: { question: string; root_title: string; snapshot: any } | null;
+  setDecomposeGraph: (g: { question: string; root_title: string; snapshot: any } | null) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -76,6 +84,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [topics, setTopics] = useState<import("./data/llmClient").Topic[]>([]);
   const [pendingFiles, setPendingFiles] = useState<{ file_id: string; name: string }[]>([]);
   const [visionCheckEnabled, setVisionCheckEnabled] = useState(false); // 视觉检查开关(截图给 LLM)
+  const [view, setView] = useState<"animation" | "graph">("animation");
+  const [decomposeGraph, setDecomposeGraph] = useState<{ question: string; root_title: string; snapshot: any } | null>(null);
   const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number } | null>(null);
   const verifyResultHandler = useRef<((ok: boolean, error: string, frame: string) => void) | null>(null);
   const requestVerify = (stepId: number, code: string) => setVerifyRequest({ stepId, code, nonce: Date.now() });
@@ -142,19 +152,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }));
   };
 
+  // 新流程:按字符串 stepId(topicid-N)更新 topic 子知识点的讲解/参数等
+  const updateTopicStep = (stepId: string, content: Partial<import("./data/llmClient").TopicStep>) => {
+    setTopics((prev) => prev.map((tp) => ({
+      ...tp,
+      steps: tp.steps.map((s) => (s.id === stepId ? { ...s, ...content } : s)),
+    })));
+  };
+
   const switchSession = (info: { sessionId: string; lesson: Lesson | null; currentStep: number; sceneCode: string }) => {
     setSessionId(info.sessionId);
     setCurrentStep(info.currentStep);
     setSceneCode(info.sceneCode);
     if (info.lesson) {
-      const steps = info.lesson.steps.map((s) => ({
+      const steps = (info.lesson.steps ?? []).map((s) => ({
         paramsUsed: [] as string[], intent: "", formula: "", narration: "", explanation: "",
         ...s,
       }));
       const lesson = { ...info.lesson, steps };
       setLessonState(lesson);
       const init: ParamValues = {};
-      for (const p of lesson.params) init[p.name] = p.default;
+      for (const p of (lesson.params ?? [])) init[p.name] = p.default;
       setParamValues(init);
       const st: Record<number, StepStatus> = {};
       for (const s of lesson.steps) st[s.id] = s.id === info.currentStep ? "active" : (s.id < info.currentStep ? "done" : "pending");
@@ -171,6 +189,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setStepStatus({ 1: "active" });
     setParamValues({});
     setStageResetKey((k) => k + 1);
+    setDecomposeGraph(null);
   };
 
   // 步骤导航请求:舞台栏按钮调 requestNav,ChatPanel useEffect 监听 navRequest.nonce 变化执行
@@ -212,13 +231,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       navRequest, requestNav,
       llmEndpoints, activeEndpointId, visionEndpoint, reloadLlmConfigs,
       depth, setDepth,
-      topics, addTopic: (t) => setTopics((prev) => (prev.some((x) => x.id === t.id) ? prev : [...prev, t])), setTopics,
+      topics, addTopic: (t) => setTopics((prev) => (prev.some((x) => x.id === t.id) ? prev : [...prev, t])), setTopics, updateTopicStep,
       pendingFiles,
       addPendingFile: (f) => setPendingFiles((prev) => (prev.some((x) => x.file_id === f.file_id) ? prev : [...prev, f])),
       removePendingFile: (fid) => setPendingFiles((prev) => prev.filter((x) => x.file_id !== fid)),
       clearPendingFiles: () => setPendingFiles([]),
+      view, setView,
+      decomposeGraph, setDecomposeGraph,
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, view, decomposeGraph]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

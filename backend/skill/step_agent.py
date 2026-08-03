@@ -65,8 +65,14 @@ STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知�
 
 工具调用顺序自由发挥,不强制先设哪个。但动画 code 必须经 update_animation 验证通过(ok=true)才能 finish。
 
-sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`),
-用到的 `params.xxx` 必须把 `params` 加进解构。用 `await scene.play(...)` / `scene.add(...)` 驱动。
+sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`)。用 `await scene.play(...)` / `scene.add(...)` 驱动。
+
+⚠️ **params 解构铁律(高频错,务必遵守)**:
+- 只要你调了 `set_params`,代码里就一定会用 `params.<name>` 读参数。**解构行的 `{{ }}` 里必须显式列出 `params`**,否则运行时报 `params is not defined`。
+- 正确:`const {{ scene, Axes, Dot, Text, Create, params }} = ctx;` 然后 `const x = params.x;`
+- 错误:解构行写了 `scene, Axes, Dot` 却漏 `params`,代码里又用 `params.x` → 报错。
+- 反过来:**没调 set_params(无参数)就完全不要在代码里引用 `params`**,解构行也别写它。
+- 这条是 `params is not defined` 的唯一根因,渲染失败一次就要立刻检查解构行有没有 `params`。
 
 {API_REF_BLOCK}
 
@@ -210,6 +216,9 @@ def _build_tools(sid: str, step_id: int):
                         f"如发现文字重叠、动画没真正实现(关键对象没进场景/没动)、或效果差,**可再调 update_animation 修改**(局部改用 old_str/new_str);否则可 finish。")
             return "渲染通过,动画已定稿。可以继续设其它字段或 finish。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
+        # waitForRender 错误常是 manim-web 内部抛的(非你代码直接调),给针对性指引
+        if "waitForRender" in err:
+            err += "。这是 manim-web 内部渲染错,常见原因:(1)对 Text/Dot/Arrow 等非公式对象调了 waitForRender(只有 MathTexImage/MathTex/Variable 有此方法,删掉该调用);(2)MathTexImage/MathTex 构造失败(检查 latex 字符串是否合法、解构行是否含 MathTexImage);(3)mobject 构造后状态异常。尝试简化:去掉可疑的 waitForRender 调用,或减少当步 mobject 数。"
         return f"渲染失败:{err}。**下一步必须先用 old_str/new_str 局部改**(只发改动片段,从当前代码原样复制 old_str),不要整段重写;除非改动超 1/3 或 old_str 两次匹配不上才用整段提交(只给 code)。"
 
     @tool

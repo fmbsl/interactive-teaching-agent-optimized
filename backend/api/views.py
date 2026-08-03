@@ -54,7 +54,7 @@ def _new_evt(sid: str, kind: str, payload: dict, parentId: str | None = None,
         "id": _uuid.uuid4().hex[:12],
         "parentId": parentId,
         "sid": sid,
-        "ts": time.time(),
+        "ts": time.time() * 1000,  # 毫秒,与前端 Date.now() 对齐(否则排序错乱)
         "kind": kind,
         "agent": agent_name,
         "stepId": stepId,
@@ -131,8 +131,15 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
       - agent 完成 → yield explain + done
       - 失败 → 回退旧 generate_step(一次性 JSON);仍失败 yield error
     """
-    outline_step = _step(lesson, step_id) or {}
-    step_title = outline_step.get("title", f"第 {step_id} 步")
+    outline_step = _step(lesson, step_id) if not isinstance(step_id, str) else {}
+    session = agent.get_session(session_id) if session_id else None
+    if isinstance(step_id, str) and session:
+        # 新 topic step:从 session.topics 解析标题/上一步/outline
+        step_title, outline_titles, prev_step_id = _resolve_step_info(session, step_id)
+    else:
+        step_title = outline_step.get("title", f"第 {step_id} 步")
+        prev_step_id = step_id - 1 if (not isinstance(step_id, str) and step_id > 1) else None
+        outline_titles = [st.get("title", "") for st in lesson.get("steps", [])]
 
     # 先查缓存
     if session_id and not prev_error:
@@ -154,12 +161,11 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
 
     dlog(f"explain sid={session_id} step={step_id} MISS cache prev_error={prev_error}")
     prev_step = None
-    if session_id and step_id > 1:
-        prev_step = agent.get_step_cache(session_id, step_id - 1)
+    if session_id and prev_step_id is not None:
+        prev_step = agent.get_step_cache(session_id, prev_step_id)
     dlog(f"explain sid={session_id} step={step_id} prev_step={'yes' if prev_step else 'no'}")
 
-    outline_titles = [st.get("title", "") for st in lesson.get("steps", [])]
-    question = agent.get_session(session_id).get("question", "") if session_id else ""
+    question = (session or {}).get("question", "") if session_id else ""
     prev_ctx = "（这是第一个子知识点,无上文）"
     if prev_step:
         prev_code = prev_step.get("sceneCode") or prev_step.get("pythonCode") or ""
@@ -260,9 +266,36 @@ def _step(lesson: dict, step_id: int) -> dict | None:
     return None
 
 
-def _step_title(lesson: dict, step_id: int) -> str:
+def _step_title(lesson: dict, step_id) -> str:
     s = _step(lesson, step_id)
     return s.get("title", "") if s else ""
+
+
+def _resolve_step_info(session: dict, step_id) -> tuple[str, list[str], object]:
+    """按 step_id(旧:int 数字;新:字符串 'topicid-N')解析出 (step_title, outline_titles, prev_step_id)。
+    新 topic step 从 session.topics 找;旧 lesson step 从 lesson.steps 找。"""
+    sid = session.get("sid") if isinstance(session, dict) else None
+    if isinstance(step_id, str) and "-" in step_id:
+        # 新 topic step:在 session.topics 里定位
+        topic_id, n = step_id.rsplit("-", 1)
+        try: n = int(n)
+        except: n = 0
+        for tp in session.get("topics", []):
+            if tp.get("id") == topic_id:
+                steps = tp.get("steps", [])
+                title = steps[n - 1].get("title", "") if 1 <= n <= len(steps) else f"第 {n} 步"
+                outline_titles = [s.get("title", "") for s in steps]
+                prev_id = f"{topic_id}-{n-1}" if n > 1 else None
+                return title, outline_titles, prev_id
+        return f"第 {step_id} 步", [], None
+    # 旧 lesson step(int)
+    lesson = session.get("lesson") or {}
+    n = int(step_id)
+    title = _step_title(lesson, n) or f"第 {n} 步"
+    outline_titles = [st.get("title", "") for st in lesson.get("steps", [])]
+    prev_id = n - 1 if n > 1 else None
+    return title, outline_titles, prev_id
+
 
 
 @csrf_exempt
@@ -389,7 +422,9 @@ def goto_step(request):
     try:
         body = json.loads(request.body or b"{}")
         sid = body.get("session_id", "")
-        step_id = int(body.get("step_id", 1))
+        raw = body.get("step_id", 1)
+        # step_id:字符串(新 topic)原样;数字(旧 lesson)转 int
+        step_id = raw if isinstance(raw, str) else int(raw)
     except Exception:
         sid, step_id = "", 1
     session = agent.get_session(sid)
@@ -397,17 +432,56 @@ def goto_step(request):
         return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
 
     lesson = session["lesson"]
-    if step_id < 1 or step_id > len(lesson["steps"]):
-        return _streaming_response(iter([_sse("error", {"message": "step_id 越界"})]))
+    # 旧 lesson step 做边界检查;新 topic step 由 _explain_event 内部解析,这里跳过数值校验
+    if not isinstance(step_id, str):
+        if step_id < 1 or step_id > len(lesson["steps"]):
+            return _streaming_response(iter([_sse("error", {"message": "step_id 越界"})]))
     session["current_step"] = step_id
     dlog(f"GOTO sid={sid} -> step={step_id}")
 
     def gen_factory():
-        yield _new_evt(sid, "step-start", {"stepId": step_id, "title": _step_title(lesson, step_id)},
-                       agent_name="main", stepId=step_id)
+        # 缓存命中(已生成过)时不发 step-start:重复跳同一已生成步不再加卡片
+        cached = agent.get_step_cache(sid, step_id) if sid else None
+        if not (cached and cached.get("sceneCode")):
+            yield _new_evt(sid, "step-start", {"stepId": step_id, "title": _step_title(lesson, step_id)},
+                           agent_name="main", stepId=step_id)
         yield from _explain_event(lesson, step_id, session_id=sid)
 
     run = start_run(sid, f"goto-{step_id}", gen_factory)
+    return _streaming_response(_stream_run(sid, run.run_id))
+
+
+@csrf_exempt
+def explain(request):
+    """生成某步动画(点 list 触发,不经主 agent)。step_id 可为 int(旧 lesson)或 str 'topicid-N'(新 topic)。
+    走 _explain_event:缓存命中直接回 explain;否则跑 step_agent(浏览器在环)。结果写 step_cache+step_status。"""
+    if request.method != "POST":
+        return _streaming_response(iter([_sse("error", {"message": "POST only"})]))
+    try:
+        body = json.loads(request.body or b"{}")
+        sid = body.get("session_id", "")
+        raw = body.get("step_id", 1)
+        # step_id:字符串(新 topic)原样保留;数字(旧 lesson)转 int
+        step_id = raw if isinstance(raw, str) else int(raw)
+    except Exception:
+        sid, step_id = "", 1
+    session = agent.get_session(sid)
+    if not session:
+        return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
+    lesson = session.get("lesson") or {}
+    session["current_step"] = step_id
+    dlog(f"EXPLAIN sid={sid} step={step_id}")
+
+    def gen_factory():
+        step_title, _, _ = _resolve_step_info(session, step_id)
+        # 缓存命中(已生成过)时不发 step-start:首次点 list 已加过该卡片,重复点不再加(避免对话栏堆叠)
+        cached = agent.get_step_cache(sid, step_id) if sid else None
+        if not (cached and cached.get("sceneCode")):
+            yield _new_evt(sid, "step-start", {"stepId": step_id, "title": step_title},
+                           agent_name="main", stepId=step_id)
+        yield from _explain_event(lesson, step_id, session_id=sid)
+
+    run = start_run(sid, f"explain-{step_id}", gen_factory)
     return _streaming_response(_stream_run(sid, run.run_id))
 
 
@@ -467,11 +541,13 @@ def regenerate(request):
     def gen_factory():
         try:
             # 手动重生成:清该步缓存,重跑 step agent(浏览器在环自修)
+            # step_id 可能是 int(旧)或 str 'topicid-N'(新),统一 str(step_id) 作 cache 键
+            sid_step = str(step_id)
             if sid:
-                agent.set_step_cache(sid, int(step_id), {"sceneCode": "", "title": "", "intent": "", "formula": "", "narration": "", "params": []})
-            yield from _explain_event(lesson, int(step_id), prev_error=error, session_id=sid)
+                agent.set_step_cache(sid, sid_step, {"sceneCode": "", "title": "", "intent": "", "formula": "", "narration": "", "params": []})
+            yield from _explain_event(lesson, sid_step, prev_error=error, session_id=sid)
         except Exception as e:
-            yield _new_evt(sid, "error", {"message": f"重生成失败: {e}"}, agent_name="step", stepId=int(step_id))
+            yield _new_evt(sid, "error", {"message": f"重生成失败: {e}"}, agent_name="step", stepId=str(step_id))
 
     run = start_run(sid, f"regen-{step_id}", gen_factory)
     return _streaming_response(_stream_run(sid, run.run_id))
@@ -488,7 +564,7 @@ def render_result(request):
     try:
         body = json.loads(request.body or b"{}")
         sid = body.get("session_id", "")
-        step_id = int(body.get("step_id", 0))
+        step_id = body.get("step_id", 0)  # 可能是 int(旧)或 str(新分层 topic step_id,如 "3af9a407-1")
         ok = bool(body.get("ok", False))
         error = body.get("error", "") or ""
         frame = body.get("frame", "") or ""  # base64 PNG(无 data:image/png;base64, 前缀)
@@ -496,6 +572,8 @@ def render_result(request):
         return _streaming_response(iter([_sse("error", {"message": "参数解析失败"})]))
     if not sid or not step_id:
         return _streaming_response(iter([_sse("error", {"message": "session_id/step_id 缺失"})]))
+    # step_id 统一转字符串(set_render_result/resume_step_agent/step_cache 都按字符串键存)
+    step_id = str(step_id)
     # ok=True 且带了 frame → 存盘,路径传给 step agent 做视觉检查
     frame_path = ""
     if ok and frame:
@@ -590,6 +668,23 @@ def session_detail(request, sid: str):
             "intent": sc.get("intent", st.get("intent", "")),
             "paramsUsed": sc.get("paramsUsed", st.get("paramsUsed", [])),
         })
+    # topics 的每个子知识点合并 step_cache(按字符串 step_id),前端据此判断已缓存(有 explanation/sceneCode)
+    raw_topics = s.get("topics", []) or []
+    merged_topics = []
+    for tp in raw_topics:
+        msteps = []
+        for st in tp.get("steps", []):
+            sc = step_cache.get(str(st.get("id")), {})
+            msteps.append({
+                **st,
+                "explanation": sc.get("explanation", st.get("explanation", "")),
+                "intent": sc.get("intent", st.get("intent", "")),
+                "narration": sc.get("narration", st.get("narration", "")),
+                "formula": sc.get("formula", st.get("formula", "")),
+                "paramsUsed": sc.get("paramsUsed", st.get("paramsUsed", [])),
+                "sceneCode": sc.get("sceneCode", ""),
+            })
+        merged_topics.append({**tp, "steps": msteps})
     return JsonResponse({
         "session_id": sid,
         "question": s.get("question", ""),
@@ -597,8 +692,9 @@ def session_detail(request, sid: str):
         "current_step": s.get("current_step", 1),
         "lesson": {**lesson, "steps": merged_steps},
         "scene_codes": s.get("scene_codes", {}),
-        "topics": s.get("topics", []),
+        "topics": merged_topics,
         "depth": s.get("depth", "understand"),
+        "graph": s.get("graph"),
     })
 
 
@@ -775,33 +871,68 @@ def user_preferences(request):
 
 @csrf_exempt
 def decompose(request):
-    """知识点分解 agent:POST {question, file_text?} -> SSE 流式知识谱系图。
+    """知识点分解 agent:POST {sid?, question, file_text?} -> SSE 流式知识谱系图。
     事件 kind:session / decompose_start / tool_call / tool_result / node / edge / graph / error / done。
-    轻量 session:不写 _SESSIONS,落盘走 sessions/decompose/ 子目录(sub_dir="decompose")。
+    sid 给则用主 session(图挂到该 session);不给则先建主 session(用户答"先建 session 再分解")。
+    分解事件 jsonl 落 sessions/decompose/ 子目录(与主 session 执行树 jsonl 分开)。
+    每次 graph 事件(split 末尾/finish)把快照写回主 session 的 graph 字段并持久化。
     """
     if request.method != "POST":
         return _streaming_response(iter([_sse("error", {"message": "POST only"})]))
     try:
         body = json.loads(request.body or b"{}")
+        sid = body.get("sid", "") or ""
         question = body.get("question", "").strip()
         file_text = body.get("file_text")
     except Exception:
-        question, file_text = "", None
+        sid, question, file_text = "", "", None
     if not question:
         return _streaming_response(iter([_sse("error", {"message": "缺少 question"})]))
 
-    dlog(f"DECOMPOSE question={question!r} has_file={bool(file_text)}")
-    sid = str(__import__("uuid").uuid4())[:8]
+    # 无 sid 先建主 session(图要挂到 session 上)。
+    # 用 lesson=None 的空 session(同 /api/sessions POST),不用 create_session_with_lesson
+    # —— 那个给 outline 用,会建 steps 空的 lesson,前端切回时某处假设 steps 非空会崩。
+    if not sid or not agent.get_session(sid):
+        sid = str(__import__("uuid").uuid4())[:8]
+        agent._SESSIONS[sid] = {
+            "question": question, "file_text": None, "lesson": None,
+            "current_step": 1, "finished": False, "scene_codes": {},
+            "title": question[:20] or "知识分解",
+            "conversation": [], "files": [], "depth": "understand",
+            "topics": [], "step_status": {}, "graph": None,
+        }
+        agent._persist_state(sid)
+    else:
+        # session 已存在(GraphApp 先 newSession 建了空 session):补上 question/title,供会话列表识别
+        s = agent.get_session(sid)
+        if question and not s.get("question"):
+            s["question"] = question
+            s["title"] = question[:20]
+            agent._persist_state(sid)
+
+    dlog(f"DECOMPOSE sid={sid} question={question!r} has_file={bool(file_text)}")
+    final_sid = sid
 
     def gen_factory():
         try:
-            yield {"kind": "session", "session_id": sid}
-            from skill.decompose_agent import run_decompose_agent
-            for ev in run_decompose_agent(sid, question, file_text):
+            yield {"kind": "session", "session_id": final_sid}
+            from skill.decompose_agent import run_decompose_agent, _snapshot_graph, _GRAPHS
+            for ev in run_decompose_agent(final_sid, question, file_text):
                 yield ev  # decompose_agent 已构造好 id/parentId/agent/stepId/payload
+                # 每次 graph 事件把快照写回主 session(随 session 走,刷新/重启可恢复)
+                if ev.get("kind") == "graph":
+                    try:
+                        if final_sid in _GRAPHS and _GRAPHS[final_sid].get("nodes"):
+                            agent.set_graph(final_sid, {
+                                "question": question,
+                                "root_title": f"知识分解 · {question[:40]}",
+                                "snapshot": _snapshot_graph(final_sid),
+                            })
+                    except Exception as e:
+                        dlog(f"DECOMPOSE set_graph fail: {e!r}")
         except Exception as e:
             dlog(f"DECOMPOSE EXCEPTION: {type(e).__name__}: {e}")
-            yield _new_evt(sid, "error", {"message": f"分解失败: {e}"}, agent_name="decompose")
+            yield _new_evt(final_sid, "error", {"message": f"分解失败: {e}"}, agent_name="decompose")
 
     run = start_run(sid, "decompose", gen_factory, sub_dir="decompose")
     return _streaming_response(_stream_run(sid, run.run_id))
@@ -813,3 +944,64 @@ def decompose_trace(request, sid: str):
     from skill.session_store import read_trace
     events = read_trace(sid, sub_dir="decompose")
     return JsonResponse({"sid": sid, "events": events})
+
+
+@csrf_exempt
+def decompose_split(request, sid: str):
+    """手动拆分某分解会话图里的一个节点。POST {target, children, prereqs?, deps?, prune?}。
+    绕过 LLM 直接调 _split_replace(同样跑改接全连+剪枝+环检测)。返回更新后的 graph 快照 + 事件。
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        body = json.loads(request.body or b"{}")
+        target = (body.get("target") or "").strip()
+        children = body.get("children", []) or []
+        prereqs = body.get("prereqs", []) or []
+        deps = body.get("deps", []) or []
+        prune = bool(body.get("prune", True))
+    except Exception as e:
+        return JsonResponse({"error": f"bad body: {e}"}, status=400)
+    if not target:
+        return JsonResponse({"error": "缺少 target"}, status=400)
+    dlog(f"DECOMPOSE SPLIT sid={sid} target={target!r} children={len(children)} prune={prune}")
+    from skill.decompose_agent import manual_split, _GRAPHS
+    if sid not in _GRAPHS or not _GRAPHS[sid].get("nodes"):
+        return JsonResponse({"error": f"会话 {sid} 不存在或未初始化(先跑一次分解)"}, status=404)
+    events, msg, snapshot = manual_split(sid, target, children, prereqs, deps, prune=prune)
+    # 落盘拆分事件到 decompose jsonl(供 trace 重放)
+    from skill.session_store import append_event
+    import uuid as _u
+    for ev in events:
+        evt = {"id": _u.uuid4().hex[:12], "parentId": None, "sid": sid,
+               "kind": ev["kind"], "agent": "decompose", "stepId": None, "payload": ev["payload"]}
+        append_event(sid, evt, sub_dir="decompose")
+    return JsonResponse({"sid": sid, "message": msg, "graph": snapshot, "events": events})
+
+
+@csrf_exempt
+def decompose_to_topics(request, sid: str):
+    """把分解会话的 DAG 转成 Topic 序列(知识清单),写入该主 session 的 topics。
+    POST body 可选 {question?(覆盖标题)}。返回 {session_id, topic}。
+    路由参数 sid 即主 session id(分解图已挂在该 session 上)。复用字符串 step_id 通路。
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    s = agent.get_session(sid)
+    if not s:
+        return JsonResponse({"error": f"会话 {sid} 不存在"}, status=404)
+    from skill.decompose_agent import graph_to_topic_sequence, ensure_graph_loaded
+    if not ensure_graph_loaded(sid):
+        return JsonResponse({"error": "该会话尚未分解知识图谱(先在分解 tab 跑一次)"}, status=404)
+    try:
+        body = json.loads(request.body or b"{}") if request.body else {}
+    except json.JSONDecodeError:
+        body = {}
+    question = body.get("question", "") or (s.get("graph") or {}).get("question", "") or s.get("question", "")
+    topic = graph_to_topic_sequence(sid, question)
+    if not topic or not topic.get("steps"):
+        return JsonResponse({"error": "图为空或全部已掌握,无可学节点"}, status=400)
+    s["topics"] = [topic]
+    agent._persist_state(sid)
+    dlog(f"DECOMPOSE_TO_TOPICS sid={sid} steps={len(topic['steps'])}")
+    return JsonResponse({"session_id": sid, "topic": topic})

@@ -12,13 +12,6 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["backend/manage.py", "runserver", "--noreload", "8000"],
       "port": 8000
-    },
-    {
-      "name": "graph-frontend",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "preview", "--port", "5175", "--strictPort"],
-      "port": 5175,
-      "env": { "VITE_API_BASE": "http://localhost:8000" }
     }
   ]
 }

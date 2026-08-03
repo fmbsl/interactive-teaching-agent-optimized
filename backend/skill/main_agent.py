@@ -29,6 +29,8 @@ from . import user_prefs
 
 # 每会话一份草稿(topics 在此累积,写回 session)
 _DRAFTS: dict[str, dict] = defaultdict(lambda: {"topics": []})
+# side-channel 事件队列:工具内不能 yield,往这里 append 事件,run_main_agent 在每个 ToolMessage 前 drain yield(仿 decompose_agent)
+_EMIT: dict[str, list[dict]] = defaultdict(list)
 import uuid as _uuid
 
 
@@ -65,9 +67,22 @@ def _build_system_prompt(depth: str = "understand") -> str:
     prefs = _load_prefs()
     return f"""你是教学智能体的主 agent,职责是帮用户学会 STEM 知识点。
 
+**你对整个系统的认知(重要)**:
+- 界面是三栏:左对话栏(你和用户聊天 + 知识点清单 list)、中间舞台、右讲解栏。
+- **中间舞台可切换**:展示"知识分解图"(DAG,节点是知识点、箭头是前置依赖)或"动画舞台"(manim-web 实时可交互动画 + 段间暂停 + 断点进度)。你用 `switch_stage` 工具控制中间舞台展示什么。
+- 知识点清单(list)在左栏:你调 `add_topic` 拆出的子知识点会进 list,用户点击某步 → 触发 `generate_animation` 生成该步动画+讲解。
+- 讲解在右栏:每步的 Markdown 讲解(文字+公式)由 `generate_animation` 的 subagent 产出,自动显示。
+- 你的对话回复会**流式**显示在左栏(气泡形式,Markdown 渲染)。
+
+**典型工作流**:
+1. 用户问一个知识点 → 你先 `ask_user`(带 options)确认拆解方式。
+2. 若用户选"先理清结构"(复杂体系)→ **先 `switch_stage("graph")` 切到分解图**(让用户实时看节点逐个出现)→ `decompose_knowledge` 跑知识图谱(分解过程中图实时生长)→ 拿到摘要后 `add_topic` 按依赖顺序拆学习清单 → `switch_stage("animation")` 切回动画舞台 → 逐个 `generate_animation` 讲解。
+3. 若用户选"直接拆清单"(简单/单一)→ `add_topic` 拆 list → `switch_stage("animation")` → 逐个 `generate_animation`。
+4. 讲解某步时中间舞台是动画,用户看动画+右栏讲解;用户想看整体结构时你 `switch_stage("graph")` 切回分解图。
+
 **身份与工作方式**:
-- 你和用户多轮对话。每收到用户消息,判断该做什么:问澄清问题 / 拆解知识点 / 调整深度 / 读用户上传的文件后再拆 / 触发某步动画生成。
-- 通过调用工具行动,不要输出 JSON。可以输出简短自然语言和用户沟通(如"我来帮你拆解X"),但实质动作都靠工具。
+- 你和用户多轮对话。每收到用户消息,判断该做什么:问澄清问题 / 拆解知识点 / 调整深度 / 读文件 / 触发某步生成 / 切换舞台。
+- 通过调用工具行动,不要输出 JSON。可以输出简短自然语言和用户沟通(如"我来帮你拆解X,先看下整体结构"),但实质动作都靠工具。
 
 **用户偏好(全局记忆)**:
 {prefs or "(用户尚未设置偏好)"}
@@ -77,13 +92,21 @@ def _build_system_prompt(depth: str = "understand") -> str:
 若用户在对话中表现出深度不合适(嫌太细/太浅),可调 set_depth 自动调整。
 
 **核心工具**:
-- add_topic(title, summary, steps):拆解一个主题为子知识点列表。每次调用追加一个主题到知识点 list。用户学新东西就调它;一个主题拆完可继续拆下一个(多主题并列)。
-  - steps:子知识点标题字符串数组(10-20 字),顺序即讲解顺序。数量按深度与复杂度定。
-- ask_user(question):当知识点有歧义(如"卷积"是信号系统的还是 CNN 的)或需要明确用户意图时,调此工具问用户。会暂停等用户回答。
-- read(file_id, offset?, limit?):读用户上传文件的片段(带行号),offset=起始行(1-based),limit=行数(默认100)。大文件分片读。**用户上传的文件不要假设内容,用此工具按需读。**
-- grep(pattern, file_id?):在文件里正则搜索,返回匹配行+行号。快速定位文件里的关键词。
-- generate_animation(step_id):触发某步动画的生成(交给 subagent 在浏览器验证)。会暂停等生成完。生成结果会写共享状态,你下次被唤醒时也能从 step_status 看到各步是否已生成。
+- add_topic(title, summary, steps):拆解一个主题为子知识点列表,追加到左栏 list。用户学新东西就调它;一个主题拆完可继续拆下一个(多主题并列)。
+  - steps:子知识点标题字符串数组(10-20 字),顺序即讲解顺序。数量按深度与复杂度定。返回值含各 step 的 id(形如 topicid-N),调 generate_animation 时用这个 id。
+- ask_user(question, options?):向用户提一个澄清问题(歧义、确认拆解方式/粒度时)。会暂停等用户回答。**有候选选项务必传 options**(字符串数组,前端渲染成可点击按钮,用户点击即发送,降低回答成本)。例:ask_user("「卷积」你指信号系统还是 CNN?", options=["A. 信号系统的卷积","B. CNN 的卷积运算"])。
+- read(file_id, offset?, limit?):读用户上传文件片段(带行号)。**文件不要假设内容,用此工具按需读。**
+- grep(pattern, file_id?):在文件里正则搜索,返回匹配行+行号。
+- generate_animation(step_id):触发某步的**完整讲解生成**(交 subagent 浏览器验证):含动画代码、教学意图、Markdown 讲解(文字+公式)、可调参数。会暂停等生成完。**当用户想学/看某步时调**(如"讲一下第一步""第3步""我想看X"),step_id 用 add_topic 返回的 id。已生成过的步会直接返回不重跑。**调这个等于讲完那一步(动画+讲解都在里头),不要调完又自己再讲一遍**。
+- decompose_knowledge(question):触发知识分解 agent 跑知识图谱(递归分解+找前置依赖,产出 DAG)。会暂停等分解完(几十秒~几分钟)。返回图摘要(节点数/知识点/已掌握前置)。**适用于复杂体系**(线性代数/傅里叶变换这种成体系、有先后依赖的),先理清结构再 add_topic。简单单一概念(勾股定理/向量加法)不必分解,直接 add_topic。**调这个前先 `switch_stage("graph")` 切到分解图**,让用户实时看节点逐个出现(分解过程可视化)。
 - set_depth(level):调整学习深度("popular"/"understand"/"deep")。
+- switch_stage(stage):切换中间舞台:"graph"(知识分解图)或"animation"(动画舞台)。decompose_knowledge 跑完切 graph 让用户看图;开始 generate_animation 讲解前切 animation;用户想看结构时也可主动切。
+
+**拆解前必须先问用户(重要)**:收到用户要学的知识点后,**不要直接调 add_topic 或 decompose_knowledge**。先用 ask_user 问用户确认拆解方式(传 options),再据回答行动。例如:
+- 复杂体系:ask_user("「线性代数」成体系、有先后依赖。你希望我怎么帮你学?", options=["A. 直接拆成循序渐进的学习清单(向量→矩阵→线性变换→特征值),逐个讲,快但结构可能不够系统","B. 先跑一遍知识图谱理清依赖关系,再按依赖顺序拆学习清单,更系统但慢一些(几十秒~几分钟)","C. 我只是想快速了解核心概念,不用系统拆"]).
+- 歧义:ask_user("「卷积」你指信号系统还是 CNN?", options=["A. 信号系统的卷积","B. CNN 的卷积运算"]).
+- 简单单一概念可少问,但仍建议简短确认粒度:ask_user("我打算拆 3 步:定义→证明→应用,可以吗?", options=["可以,就这样拆","再细一点","再粗一点"]).
+- 用户回答后再调对应工具。**绝不未经询问直接拆解**。
 
 **文件处理**:用户上传文件后,你只在消息里看到文件名和 file_id,**不是全文**。要了解内容必须调 read/grep。不要凭文件名猜测内容。
 
@@ -113,14 +136,21 @@ def _build_tools(sid: str):
             s.setdefault("topics", []).append(topic)
             _agent()._persist_state(sid)
         draft.setdefault("topics", []).append(topic)
-        return f"已添加主题:{title} · {len(steps or [])} 步"
+        # 返回各 step 的 id(形如 topicid-N)+ 标题,供主 agent 调 generate_animation(step_id) 时用
+        steps_info = "; ".join(f"{st['id']}={st['title']}" for st in topic["steps"])
+        return f"已添加主题「{title}」· {len(steps or [])} 步。子知识点 id(调 generate_animation 时传这个 step_id):{steps_info}"
 
     @tool
-    def ask_user(question: str) -> str:
-        """向用户提一个澄清问题(如知识点有歧义、需明确意图时)。会暂停等用户回答,回答作为返回值。
-        一次只问一个明确的问题,不要一次问多个。"""
-        result = interrupt({"kind": "ask", "question": question})
-        # result = 用户回答的文本
+    def ask_user(question: str, options: list[str] = None) -> str:
+        """向用户提一个澄清问题(如知识点有歧义、需明确意图、确认拆解方式时)。会暂停等用户回答,回答作为返回值。
+        一次只问一个明确的问题,不要一次问多个。
+        options:可选,给用户几个预设选项(如 ["A. 直接拆学习清单","B. 先跑知识图谱"]),
+                 前端会渲染成可点击按钮(点击即发送该选项文本),用户也可自定义输入。能显著降低回答成本,有选项时尽量传。"""
+        iv = {"kind": "ask", "question": question}
+        if options:
+            iv["options"] = list(options)
+        result = interrupt(iv)
+        # result = 用户回答的文本(点选项即选项文本,自定义即输入文本)
         return f"用户回答:{result}" if result else "用户未回答(跳过)"
 
     @tool
@@ -150,16 +180,50 @@ def _build_tools(sid: str):
 
     @tool
     def generate_animation(step_id: str) -> str:
-        """触发某步动画生成(交给 subagent 在浏览器验证)。会暂停等生成完。
-        step_id 是 add_topic 返回的子知识点 id(形如 topicid-N)。生成结果写共享状态 step_status。
-        通常在用户明确想看某步动画、或你想基于动画讲解时调用。"""
+        """触发某步的完整讲解生成(动画+讲解+公式+参数,交 subagent 浏览器验证)。会暂停等生成完。
+        step_id 是 add_topic 返回的子知识点 id(形如 topicid-N)。结果写共享状态 step_status。
+        用户想学/看某步时调。调一次等于讲完那步,不要调完又自己再讲。"""
+        # 已生成过(缓存命中):不重复跑,直接告知主 agent 该步已就绪
+        sc = _agent().get_step_cache(sid, step_id)
+        if sc and sc.get("sceneCode"):
+            return f"第 {step_id} 步「{sc.get('title','')}」已生成过(动画+讲解就绪),无需重复生成。可直接让用户看,或问是否继续下一步。"
         # 暂停,等视图层跑 subagent 后 resume。interrupt value 传 step_id,视图层据此调 step_agent。
         result = interrupt({"kind": "generate", "step_id": step_id})
         # result 形如 {"ok":true, "step_id":...} 或 {"ok":false, "error":...}
         if isinstance(result, dict) and result.get("ok"):
-            return f"第 {step_id} 步动画已生成。"
+            return f"第 {step_id} 步讲解(动画+讲解)已生成。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
-        return f"第 {step_id} 步动画生成失败:{err}"
+        return f"第 {step_id} 步生成失败:{err}"
+
+    @tool
+    def decompose_knowledge(question: str) -> str:
+        """触发知识分解 agent 跑知识图谱(递归分解+找前置,产出有向无环图 DAG)。会暂停等分解完。
+        question=要分解的知识点。分解结果(节点+前置依赖边)写共享状态 session.graph,
+        你下次被唤醒时可从 session.graph 看到。返回图的文字摘要(节点数/边数/知识点列表)供你决策。
+        通常在用户问较复杂的知识体系(如"线性代数""傅里叶变换")、需要先理清知识结构再拆学习清单时调用。
+        拿到摘要后可据此调 add_topic 按依赖顺序拆学习清单。"""
+        # 暂停,等视图层跑分解 agent 后 resume。interrupt value 传 question,视图层据此调 /api/decompose。
+        result = interrupt({"kind": "decompose", "question": question})
+        # result 形如 {"ok":true, "graph":{question,root_title,snapshot:{nodes,edges}}} 或 {"ok":false,"error":...}
+        if isinstance(result, dict) and result.get("ok"):
+            graph = result.get("graph") or {}
+            # graph 可能是 {question,root_title,snapshot:{nodes,edges}}(session.graph 结构)
+            # 或直接 {nodes,edges}(decompose 流 graph 事件的 payload)。兼容两种。
+            snap = graph.get("snapshot") if "snapshot" in graph else graph
+            nodes = (snap or {}).get("nodes", [])
+            edges = (snap or {}).get("edges", [])
+            root = graph.get("root_title", "") or graph.get("question", "") or question
+            node_titles = [n.get("title", "") for n in nodes]
+            mastery = [n.get("title") for n in nodes if n.get("mastery")]
+            summary = f"已分解「{root}」:{len(nodes)} 节点,{len(edges)} 前置依赖边。"
+            if node_titles:
+                summary += f"知识点:{'、'.join(node_titles[:15])}{'…' if len(node_titles) > 15 else ''}。"
+            if mastery:
+                summary += f"已掌握前置:{'、'.join(mastery[:6])}。"
+            summary += " 可据此调 add_topic 按依赖顺序拆学习清单,或继续对话。"
+            return summary
+        err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
+        return f"分解失败:{err}"
 
     @tool
     def set_depth(level: str) -> str:
@@ -172,7 +236,18 @@ def _build_tools(sid: str):
             _agent()._persist_state(sid)
         return f"学习深度已设为:{level}"
 
-    return [add_topic, ask_user, read, grep, generate_animation, set_depth]
+    @tool
+    def switch_stage(stage: str) -> str:
+        """切换中间舞台展示的内容:"graph"(知识分解图) 或 "animation"(动画舞台)。
+        - 调 decompose_knowledge 跑完分解后,调 switch_stage("graph") 让用户看知识图谱。
+        - 要开始逐个讲解(调 generate_animation 生成动画)前,调 switch_stage("animation") 切回动画舞台。
+        - 用户想看分解图时也可主动切。"""
+        if stage not in ("graph", "animation"):
+            return f"无效 stage {stage},可选:graph/animation"
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": stage}})
+        return f"中间舞台已切换为:{'知识分解图' if stage == 'graph' else '动画舞台'}"
+
+    return [add_topic, ask_user, read, grep, generate_animation, decompose_knowledge, set_depth, switch_stage]
 
 
 # ---------- agent 构造 ----------
@@ -224,12 +299,33 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
     tcid_to_evt: dict = {}
     current_parent = agent_evt_id
     interrupt_value = None
+    # 流式输出:用 messages 模式拿 LLM token 增量(纯文本回复边产边推),updates 模式拿 tool_call/interrupt。
+    # 多 stream_mode 时 chunk 是 (mode, data) 元组。messages data 是 (AIMessageChunk, metadata)。
+    streaming_msg_id = None  # 当前正在流式的 message id(同 id 增量追加,前端不重复建项)
     try:
-        for chunk in agent_obj.stream(
+        for mode, data in agent_obj.stream(
             {"messages": [{"role": "user", "content": user_text}]},
-            config, stream_mode="updates",
+            config, stream_mode=["messages", "updates"],
         ):
-            for node, state in chunk.items():
+            if mode == "messages":
+                # LLM token 增量:只推纯文本 content,工具调用 chunk 跳过(updates 模式拿完整 tool_call)
+                msg_chunk, _meta = data if isinstance(data, tuple) and len(data) == 2 else (data, {})
+                # 只处理 AIMessageChunk(跳过 HumanMessage 等);且无 tool_call_chunks 的才推文本
+                if type(msg_chunk).__name__ != "AIMessageChunk":
+                    continue
+                if getattr(msg_chunk, "tool_call_chunks", None):
+                    continue  # 工具调用增量,updates 模式拿完整 tool_call,这里跳过
+                delta = str(getattr(msg_chunk, "content", "") or "")
+                if not delta:
+                    continue
+                if streaming_msg_id is None:
+                    streaming_msg_id = _new_id(sid)
+                yield {"kind": "message_delta", "id": streaming_msg_id, "parentId": None,
+                       "agent": "main", "stepId": None,
+                       "payload": {"role": "orchestrator", "text": delta}}
+                continue
+            # mode == "updates"
+            for node, state in data.items():
                 if node == "__interrupt__":
                     ivs = state if isinstance(state, (list, tuple)) else [state]
                     for iv in ivs:
@@ -241,13 +337,24 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
                 for m in msgs:
                     nm = type(m).__name__
                     if nm == "AIMessage" and getattr(m, "tool_calls", None):
+                        # 有工具调用:文本(若有)已由 messages 模式流式推过,这里只发 tool_call
+                        # 重置流式 id:下一轮 LLM 文本用新 id(避免和工具调用前的文本混)
+                        streaming_msg_id = None
                         for tc in m.tool_calls:
                             eid = _new_id(sid)
                             tcid_to_evt[tc.get("id")] = eid
                             yield {"kind": "tool_call", "id": eid, "parentId": current_parent,
                                    "agent": "main", "stepId": None,
                                    "payload": {"name": tc.get("name"), "args": tc.get("args", {})}}
+                    elif nm == "AIMessage":
+                        # 纯文本回复:已由 messages 模式流式推过,这里不重发。仅重置流式 id
+                        streaming_msg_id = None
                     elif nm == "ToolMessage":
+                        # 先 drain _EMIT:把工具执行期间产生的事件(如 switch_stage 的 stage_switch)挂到当前 tool_call 下
+                        while _EMIT[sid]:
+                            ev = _EMIT[sid].pop(0)
+                            yield {"kind": ev["kind"], "id": _new_id(sid), "parentId": current_parent,
+                                   "agent": "main", "stepId": None, "payload": ev["payload"]}
                         tcid = getattr(m, "tool_call_id", None)
                         parent = tcid_to_evt.get(tcid, current_parent)
                         out = str(getattr(m, "content", ""))[:2000]
@@ -263,13 +370,21 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
     if interrupt_value:
         k = interrupt_value.get("kind")
         if k == "ask":
-            yield {"kind": "ask", "id": _new_id(sid), "parentId": agent_evt_id, "agent": "main",
-                   "stepId": None, "payload": {"question": interrupt_value.get("question", "")}}
+            ask_payload = {"question": interrupt_value.get("question", "")}
+            if interrupt_value.get("options"):
+                ask_payload["options"] = interrupt_value.get("options")
+            yield {"kind": "ask", "id": _new_id(sid), "parentId": None, "agent": "main",
+                   "stepId": None, "payload": ask_payload}
             return
         if k == "generate":
             yield {"kind": "animation_request", "id": _new_id(sid), "parentId": agent_evt_id,
                    "agent": "main", "stepId": interrupt_value.get("step_id"),
                    "payload": {"step_id": interrupt_value.get("step_id", "")}}
+            return
+        if k == "decompose":
+            yield {"kind": "decompose_request", "id": _new_id(sid), "parentId": agent_evt_id,
+                   "agent": "main", "stepId": None,
+                   "payload": {"question": interrupt_value.get("question", "")}}
             return
 
     # 无 interrupt:本轮对话跑完。把草稿里新增的 topic 推 topic_added 事件(前端 list 增量)
@@ -305,9 +420,25 @@ def resume_main_agent(sid: str, cfg=None):
     tcid_to_evt: dict = {}
     current_parent = agent_evt_id
     interrupt_value = None
+    streaming_msg_id = None
     try:
-        for chunk in agent_obj.stream(Command(resume=resume_val), config, stream_mode="updates"):
-            for node, state in chunk.items():
+        for mode, data in agent_obj.stream(Command(resume=resume_val), config, stream_mode=["messages", "updates"]):
+            if mode == "messages":
+                msg_chunk, _meta = data if isinstance(data, tuple) and len(data) == 2 else (data, {})
+                if type(msg_chunk).__name__ != "AIMessageChunk":
+                    continue
+                if getattr(msg_chunk, "tool_call_chunks", None):
+                    continue
+                delta = str(getattr(msg_chunk, "content", "") or "")
+                if not delta:
+                    continue
+                if streaming_msg_id is None:
+                    streaming_msg_id = _new_id(sid)
+                yield {"kind": "message_delta", "id": streaming_msg_id, "parentId": None,
+                       "agent": "main", "stepId": None,
+                       "payload": {"role": "orchestrator", "text": delta}}
+                continue
+            for node, state in data.items():
                 if node == "__interrupt__":
                     ivs = state if isinstance(state, (list, tuple)) else [state]
                     for iv in ivs:
@@ -319,13 +450,20 @@ def resume_main_agent(sid: str, cfg=None):
                 for m in msgs:
                     nm = type(m).__name__
                     if nm == "AIMessage" and getattr(m, "tool_calls", None):
+                        streaming_msg_id = None
                         for tc in m.tool_calls:
                             eid = _new_id(sid)
                             tcid_to_evt[tc.get("id")] = eid
                             yield {"kind": "tool_call", "id": eid, "parentId": current_parent,
                                    "agent": "main", "stepId": None,
                                    "payload": {"name": tc.get("name"), "args": tc.get("args", {})}}
+                    elif nm == "AIMessage":
+                        streaming_msg_id = None  # 已由 messages 模式流式推过
                     elif nm == "ToolMessage":
+                        while _EMIT[sid]:
+                            ev = _EMIT[sid].pop(0)
+                            yield {"kind": ev["kind"], "id": _new_id(sid), "parentId": current_parent,
+                                   "agent": "main", "stepId": None, "payload": ev["payload"]}
                         tcid = getattr(m, "tool_call_id", None)
                         parent = tcid_to_evt.get(tcid, current_parent)
                         yield {"kind": "tool_result", "id": _new_id(sid), "parentId": parent,
@@ -339,13 +477,21 @@ def resume_main_agent(sid: str, cfg=None):
     if interrupt_value:
         k = interrupt_value.get("kind")
         if k == "ask":
-            yield {"kind": "ask", "id": _new_id(sid), "parentId": agent_evt_id, "agent": "main",
-                   "stepId": None, "payload": {"question": interrupt_value.get("question", "")}}
+            ask_payload = {"question": interrupt_value.get("question", "")}
+            if interrupt_value.get("options"):
+                ask_payload["options"] = interrupt_value.get("options")
+            yield {"kind": "ask", "id": _new_id(sid), "parentId": None, "agent": "main",
+                   "stepId": None, "payload": ask_payload}
             return
         if k == "generate":
             yield {"kind": "animation_request", "id": _new_id(sid), "parentId": agent_evt_id,
                    "agent": "main", "stepId": interrupt_value.get("step_id"),
                    "payload": {"step_id": interrupt_value.get("step_id", "")}}
+            return
+        if k == "decompose":
+            yield {"kind": "decompose_request", "id": _new_id(sid), "parentId": agent_evt_id,
+                   "agent": "main", "stepId": None,
+                   "payload": {"question": interrupt_value.get("question", "")}}
             return
 
     for topic in _DRAFTS[sid].get("topics", []):

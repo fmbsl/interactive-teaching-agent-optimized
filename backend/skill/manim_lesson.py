@@ -424,6 +424,7 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 11. **构图用相对定位,不要手算 `shift` 坐标**:文字/标签/矩阵用 `mob.nextTo(ref, dir, buff)` 相对参照物定位(`dir` 用 `UP/DOWN/LEFT/RIGHT/UL..`,`buff` 用 `SMALL_BUFF`/`MED_SMALL_BUFF` 或 0.1-0.3);整组用 `new Group(a, b, c)` 或 `new VGroup(...)` 包起来再整体 `moveTo`/`toEdge`。**禁止靠 `toEdge(UP).shift([4.4, -0.55, 0])` 这种硬算偏移凑位置**——画面会拥挤错位、易重叠(触发 BB 检测打回)。
 12. **三区分明 + 公式独占行**:画面分顶部标题、中部主体、底部说明三区,**同一区不要堆 3 个以上文字**;公式块(MathTex)单独占一行、用 `toEdge` 或 `nextTo` 与图形分开,**不要和图形/标签挤在同一位置**。临时说明文字(caption)切阶段时先 `await scene.play(new FadeOut(old))` 再进新的,不要同位叠放。
 13. **动画前对象必须先在场景里**:`ApplyFunction`/`Transform`/`.animate` 等动画只对**已在场景中的 mobject** 有效。`const x = obj.copy()` 复制出的副本若没 `scene.add(x)`(或经 `FadeIn`/`Create`/`GrowArrow` 进场),对其做动画**屏幕上看不到**——点会变但画面不变。**每次 `copy()` 出副本要立刻想着"它怎么进场景"**(`scene.add` 或进场动画),否则白做。典型坑:用副本演示"原图 → 变换后",原图和副本都要进场景,只进原图、对副本 ApplyFunction 就只看到原图不动。
+14. **`waitForRender()` 只用于公式对象**:只有 `MathTexImage`/`MathTex`/`Tex`/`Variable` 有此方法(异步 LaTeX 渲染需等待)。**`Text`/`Dot`/`Arrow`/`Line`/`Circle`/`VGroup` 等普通 mobject 没有 `waitForRender`**,对它们调会报 `Cannot read properties of undefined (reading 'waitForRender')`。公式才 `await eq.waitForRender()` 后再 `scene.add`/`play`;Text 等直接 `scene.add`,不要 waitForRender。
 
 ═══════════════════════════════════════════
 四、FEW SHOT(实测可运行的写法,照此模板)

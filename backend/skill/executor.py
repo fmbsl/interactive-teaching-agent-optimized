@@ -67,7 +67,7 @@ def _emit_persisted(sid: str, evt: dict, sub_dir: str = "") -> dict:
     if "sid" not in evt:
         evt["sid"] = sid
     if "ts" not in evt:
-        evt["ts"] = time.time()
+        evt["ts"] = time.time() * 1000  # 毫秒,与前端 Date.now() 对齐(否则跨前后端事件排序错乱)
     append_event(sid, evt, sub_dir=sub_dir)
     return evt
 

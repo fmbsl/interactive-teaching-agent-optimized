@@ -64,6 +64,13 @@ def save_state(sid: str, state: dict) -> None:
             "finished": state.get("finished", False),
             "title": state.get("title", ""),
             "step_cache": state.get("step_cache", {}),
+            # 新字段(主 agent 升级):多主题 list / 对话历史 / 文件 / 深度 / 步骤状态黑板
+            "topics": state.get("topics", []),
+            "conversation": state.get("conversation", []),
+            "files": state.get("files", []),
+            "depth": state.get("depth", "understand"),
+            "step_status": state.get("step_status", {}),
+            "graph": state.get("graph"),
         }
         tmp = _state_path(sid) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

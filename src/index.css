@@ -139,3 +139,10 @@ input[type="range"]::-moz-range-thumb {
 /* KaTeX 公式:块级 $$ 居中,行内 $ 不换行 */
 .md-prose .katex-display { margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; }
 .md-prose .katex { font-size: 1.05em; }
+
+/* 中间舞台切换过渡:动画 ↔ 分解图 切换时淡入 + 轻微上移 */
+@keyframes stageFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stage-transition { animation: stageFadeIn 0.32s ease-out; }

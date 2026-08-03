@@ -6,8 +6,13 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 
 export default function ExplainPanel() {
-  const { lesson, currentStep } = useApp();
-  const step = lesson.steps[currentStep - 1];
+  const { lesson, currentStep, topics } = useApp();
+  // 新流程:currentStep 是字符串 topicid-N,从 topics 找;旧流程:数字,从 lesson.steps 找
+  // lesson 可能为 null(分解建的空 session),用空数组兜底
+  const lessonSteps = lesson?.steps ?? [];
+  const step = typeof currentStep === "string"
+    ? topics.flatMap((t) => t.steps).find((s) => s.id === currentStep)
+    : lessonSteps[currentStep - 1];
 
   if (!step) {
     return (
@@ -33,7 +38,7 @@ export default function ExplainPanel() {
       <div className="px-4 h-9 border-b border-[#1e293b] flex items-center shrink-0">
         <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">Explain</span>
         <span className="ml-2 text-[12px] text-[#9aa6b8]">{step.title}</span>
-        <span className="ml-auto text-[10px] text-[#4a5365] tnum">{step.id} / {lesson.steps.length}</span>
+        <span className="ml-auto text-[10px] text-[#4a5365] tnum">{step.id} / {lessonSteps.length}</span>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-5">
@@ -58,7 +63,7 @@ export default function ExplainPanel() {
           <Section label="可调参数">
             <div className="flex flex-wrap gap-1.5">
               {(step.paramsUsed ?? []).map((name) => {
-                const p = lesson.params.find((x) => x.name === name);
+                const p = (lesson?.params ?? []).find((x) => x.name === name);
                 return (
                   <span key={name} className="text-[10px] px-2 py-0.5 rounded-md bg-[#4a9eff]/10 text-[#5fb0ff] border border-[#4a9eff]/20">
                     {p?.label ?? name}

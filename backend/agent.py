@@ -114,6 +114,7 @@ def create_session_with_lesson(sid: str, question: str, file_text: Optional[str]
         "depth": "understand",    # popular | understand | deep
         "topics": [],             # [{id,title,summary,steps:[{id,title}]}] 分层知识点(多主题并列)
         "step_status": {},        # step_id(全局唯一) -> pending|generating|done|error 共享黑板
+        "graph": None,            # 知识分解图快照 {question,root_title,snapshot} 或 None(该 session 未跑分解)
     }
     _persist_state(sid)
 
@@ -146,6 +147,7 @@ def restore_session(sid: str, state: dict) -> None:
         "depth": state.get("depth", "understand"),
         "topics": state.get("topics", []),
         "step_status": state.get("step_status", {}),
+        "graph": state.get("graph"),
     }
     # 重建 scene_codes(兼容),键统一 int
     for k, v in _SESSIONS[sid]["step_cache"].items():
@@ -304,6 +306,16 @@ def set_step_status(sid: str, step_id: int, status: str) -> None:
     if not s:
         return
     s.setdefault("step_status", {})[str(step_id)] = status
+    _persist_state(sid)
+
+
+def set_graph(sid: str, graph: dict | None) -> None:
+    """保存该 session 的知识分解图快照(随 session 走)。供 decompose 流写回用。
+    graph 形如 {question, root_title, snapshot:{nodes,edges}};None 表示清除。"""
+    s = _SESSIONS.get(sid)
+    if not s:
+        return
+    s["graph"] = graph
     _persist_state(sid)
 
 

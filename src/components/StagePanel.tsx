@@ -125,7 +125,18 @@ export default function StagePanel() {
   // 断点进度:breakpoints=该步动画的断点总数(预扫 await scene.play/wait 估);currentBp=已到达的断点序号(1-based)
   const [breakpoints, setBreakpoints] = useState(0);
   const [currentBp, setCurrentBp] = useState(0);
-  const { lesson, currentStep, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled } = useApp();
+  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled } = useApp();
+
+  // 当前步骤标题/序号标签:字符串 stepId(topicid-N,新流程)从 topics 找;数字从 lesson.steps 找
+  // lesson 可能为 null(分解建的空 session),此时用空数组兜底
+  const lessonSteps = lesson?.steps ?? [];
+  const stageStep = typeof currentStep === "string"
+    ? topics.flatMap((t) => t.steps).find((s) => s.id === currentStep)
+    : lessonSteps[currentStep - 1];
+  const stageStepTitle = stageStep?.title || "";
+  const stageStepLabel = typeof currentStep === "string"
+    ? (() => { const tp = topics.find((t) => t.steps.some((s) => s.id === currentStep)); const n = tp ? tp.steps.findIndex((s) => s.id === currentStep) + 1 : 0; return `${n} / ${tp?.steps.length || 0}`; })()
+    : `${currentStep} / ${lessonSteps.length}`;
 
   // 测量容器尺寸(铺满 + resize 自适应)
   useEffect(() => {
@@ -404,6 +415,7 @@ export default function StagePanel() {
       // 暂停态时阻塞(停在该段末尾),按"播放"resume 才继续下一段。LLM 代码不用改。
       // (验证离屏跑的是它自己的 makeManimCtx,不走这里,不受暂停影响。)
       pauseCtrl.current.paused = true; // 每次 build 重置:首段播完即停
+      setIsPlaying(false);             // 重置/回到最初:按钮回到"▶ 播放"态(pauseCtrl 暂停但 isPlaying 之前可能 true)
       // 断点进度:重置已到达序号 + 预扫断点数(每个 await scene.play/wait 算一个断点)
       setCurrentBp(0);
       const bpCount = (code.match(/\bawait\s+scene\.(play|wait)\s*\(/g) || []).length;
@@ -456,12 +468,12 @@ export default function StagePanel() {
   }, [isPlaying, setIsPlaying]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col stage-transition">
       {/* 舞台上方加一行步骤标题,让中栏有"标题感" */}
       <div className="flex items-center px-4 h-9 border-b border-[#1e293b] shrink-0">
         <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">Stage</span>
-        <span className="ml-2 text-[12px] text-[#9aa6b8]">{lesson.steps[currentStep - 1]?.title || "等待提问…"}</span>
-        <span className="ml-auto text-[10px] text-[#4a5365] tnum">{currentStep} / {lesson.steps.length}</span>
+        <span className="ml-2 text-[12px] text-[#9aa6b8]">{stageStepTitle || "等待提问…"}</span>
+        <span className="ml-auto text-[10px] text-[#4a5365] tnum">{stageStepLabel}</span>
       </div>
       <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden" />
       <div className="border-t border-[#1e293b] px-4 py-3 space-y-3 shrink-0">
@@ -474,7 +486,7 @@ export default function StagePanel() {
           >← 上一步</button>
           <button
             className="btn-ghost px-3 py-1.5 rounded-md text-[12px] disabled:opacity-30"
-            disabled={!sessionId || currentStep >= lesson.steps.length}
+            disabled={!sessionId || currentStep >= lessonSteps.length}
             onClick={() => requestNav("next")}
           >下一步 →</button>
 
@@ -546,10 +558,16 @@ export default function StagePanel() {
 }
 
 function ParamSliders() {
-  const { lesson, currentStep, paramValues, setParam } = useApp();
-  const step = lesson.steps[currentStep - 1];
+  const { lesson, currentStep, topics, paramValues, setParam } = useApp();
+  // 字符串 stepId(新 topic)从 topics 找 paramsUsed/params;数字(旧 lesson)从 lesson.steps
+  // lesson 可能为 null(分解建的空 session,无知识点拆解),此时无 step/params,直接返回 null
+  const step: any = typeof currentStep === "string"
+    ? topics.flatMap((t) => t.steps).find((s) => s.id === currentStep)
+    : (lesson?.steps ?? [])[currentStep - 1];
   const used = step?.paramsUsed || [];
-  const params = lesson.params.filter((p) => used.includes(p.name));
+  // params 优先用 step.params(新流程 explain 事件带的);否则从 lesson.params 按 used 过滤(旧)
+  const lessonParams = lesson?.params ?? [];
+  const params: any[] = step?.params?.length ? step.params : lessonParams.filter((p) => used.includes(p.name));
   if (params.length === 0) return null;
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
