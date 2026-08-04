@@ -98,10 +98,14 @@ def _get_vision_cfg() -> Optional[LLMConfig]:
 
 
 def save_vision_endpoint(ep: dict) -> dict:
-    """保存视觉辅助模型配置(顶层 visionEndpoint,单条)。"""
+    """保存视觉辅助模型配置(顶层 visionEndpoint,单条)。apiKey 掩码/空时保留原值。"""
     with _lock:
         data = _load_raw()
-        data["visionEndpoint"] = {**ep}
+        prev = data.get("visionEndpoint") or {}
+        ep = {**ep}
+        if not ep.get("apiKey") or str(ep.get("apiKey", "")).startswith("••••"):
+            ep["apiKey"] = prev.get("apiKey", "")
+        data["visionEndpoint"] = ep
         _save_raw(data)
         _invalidate()
     return data
@@ -141,25 +145,54 @@ def _invalidate() -> None:
     _active_cfg = None
 
 
+def _mask_key(k: str) -> str:
+    """掩码 apiKey:只留后 4 位,其余 ••••。空则原样空。"""
+    if not k:
+        return ""
+    if len(k) <= 6:
+        return "••••"
+    return "••••" + k[-4:]
+
+
+def _masked_ep(ep: dict) -> dict:
+    """返回掩码后的端点 dict(只给前端展示用,真实 key 仍只存服务端)。"""
+    e = dict(ep)
+    if e.get("apiKey"):
+        e["apiKey"] = _mask_key(e["apiKey"])
+    if e.get("fallbackApiKey"):
+        e["fallbackApiKey"] = _mask_key(e["fallbackApiKey"])
+    return e
+
+
 def list_endpoints() -> dict:
-    """返回 {activeId, endpoints, visionEndpoint}。apiKey 明文(本地开发)。"""
+    """返回 {activeId, endpoints, visionEndpoint},apiKey 一律掩码(不把明文 key 下发前端)。"""
     data = _load_raw()
     if not data["endpoints"]:
         data = _migrate_from_env()
-    return data
+    out = {**data}
+    out["endpoints"] = [_masked_ep(e) for e in data["endpoints"]]
+    if out.get("visionEndpoint"):
+        out["visionEndpoint"] = _masked_ep(out["visionEndpoint"])
+    return out
 
 
 def save_endpoint(ep: dict) -> dict:
-    """新增或更新(id 为空则生成新 id)。返回更新后的 {activeId, endpoints}。"""
+    """新增或更新(id 为空则生成新 id)。返回更新后的 {activeId, endpoints}。
+    前端 GET 到的是掩码 key;若保存时 apiKey 为空或以 •••• 开头,视为"未改动",保留服务端原 key。"""
     with _lock:
         data = _load_raw()
         if not data["endpoints"] and not ep.get("id"):
             data = _migrate_from_env()
         eid = ep.get("id") or uuid.uuid4().hex[:8]
+        # apiKey / fallbackApiKey 未改动时保留原值(前端保存的是掩码占位或空)
+        prev = next((e for e in data["endpoints"] if e.get("id") == eid), None)
+        for f in ("apiKey", "fallbackApiKey"):
+            v = ep.get(f, "")
+            if prev is not None and (not v or str(v).startswith("••••")):
+                ep = {**ep, f: prev.get(f, "")}
         ep = {**ep, "id": eid}
-        existing = next((i for i, e in enumerate(data["endpoints"]) if e.get("id") == eid), None)
-        if existing is not None:
-            data["endpoints"][existing] = ep
+        if prev is not None:
+            data["endpoints"][data["endpoints"].index(prev)] = ep
         else:
             data["endpoints"].append(ep)
         if data.get("activeId") is None:
