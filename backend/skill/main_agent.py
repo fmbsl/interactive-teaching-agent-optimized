@@ -420,6 +420,23 @@ def set_chat_answer(sid: str, answer: str) -> None:
     _RESUMES[sid] = {"answer": answer}
 
 
+def _has_orphan_tool_call(messages) -> bool:
+    """检测消息历史里是否有"孤儿 tool_call":AIMessage 带 tool_calls 但其后没有对应 ToolMessage。
+
+    interrupt() 工具(ask_user/generate_quiz/animation/decompose)暂停后若用户直接发新消息(没 resume),
+    会留下这种孤儿 tool_call。此时 langgraph 再注入新 user 消息会抛
+    INVALID_CHAT_HISTORY("Found AIMessages with tool_calls that do not have a corresponding ToolMessage")。
+    返回 True 表示存在,主 agent 应先提示用户完成待办,而非崩掉。"""
+    for i, m in enumerate(messages):
+        if type(m).__name__ == "AIMessage" and getattr(m, "tool_calls", None):
+            ids = {tc.get("id") for tc in m.tool_calls}
+            has_tm = any(getattr(x, "tool_call_id", None) in ids
+                         for x in messages[i + 1:] if type(x).__name__ == "ToolMessage")
+            if not has_tm:
+                return True
+    return False
+
+
 def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=None):
     """运行主 agent 一轮(用户发消息)。生成器 yield 事件 dict。
     事件 kind:agent_start|tool_call|tool_result|ask|topic_added|animation_request|error|done。
@@ -448,16 +465,7 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
     try:
         _st = agent_obj.get_state(config)
         _hist = ((_st.values or {}).get("messages") or []) if _st else []
-        _orphan = False
-        for _i, _m in enumerate(_hist):
-            if type(_m).__name__ == "AIMessage" and getattr(_m, "tool_calls", None):
-                _ids = {tc.get("id") for tc in _m.tool_calls}
-                _has_tm = any(getattr(_x, "tool_call_id", None) in _ids for _x in _hist[_i + 1:]
-                              if type(_x).__name__ == "ToolMessage")
-                if not _has_tm:
-                    _orphan = True
-                    break
-        if _orphan:
+        if _has_orphan_tool_call(_hist):
             yield {"kind": "error", "id": _new_id(sid), "parentId": None, "agent": "main",
                    "stepId": None,
                    "payload": {"message": "上一步还有一个待完成的任务(题目/提问/生成动画/分解)。请先完成它(答题或点「跳过」),再继续对话。"}}
