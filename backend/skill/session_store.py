@@ -129,3 +129,23 @@ def read_trace(sid: str, sub_dir: str = "") -> list:
     except OSError:
         pass
     return out
+
+
+def delete_session_files(sid: str) -> None:
+    """删除该会话的所有落盘文件:state.json、主 jsonl、decompose jsonl、上传目录、frames 目录。
+    幂等;文件不存在也不报错。"""
+    import shutil
+    for p in (_state_path(sid), _jsonl_path(sid), _jsonl_path(sid, "decompose")):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+    for d in (os.path.join(_SESSIONS_DIR, sid), os.path.join(_SESSIONS_DIR, f"{sid}_frames"),
+              os.path.join(_SESSIONS_DIR, "decompose", sid),
+              os.path.join(_BACKEND_DIR, "uploads", sid)):
+        try:
+            if os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass

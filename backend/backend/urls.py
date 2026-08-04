@@ -1,5 +1,5 @@
 from django.urls import path
-from api.views import start, next_step, prev_step, goto_step, update, regenerate, render_result, upload, sessions, session_detail, trace, export_session, import_session, health, llm_config, decompose, decompose_trace, decompose_split, decompose_to_topics, decompose_edit, decompose_auto_split, chat, chat_answer, user_preferences, explain
+from api.views import start, next_step, prev_step, goto_step, update, regenerate, render_result, upload, sessions, session_detail, trace, export_session, export_session_md, import_session, health, llm_config, decompose, decompose_trace, decompose_split, decompose_to_topics, decompose_edit, decompose_auto_split, chat, chat_answer, user_preferences, explain, session_delete, session_rename
 
 urlpatterns = [
     path("", health, name="health"),
@@ -19,7 +19,10 @@ urlpatterns = [
     path("api/sessions", sessions, name="sessions"),
     path("api/sessions/<str:sid>", session_detail, name="session_detail"),
     path("api/sessions/<str:sid>/trace", trace, name="trace"),
+    path("api/sessions/<str:sid>/rename", session_rename, name="session_rename"),
+    path("api/sessions/<str:sid>/delete", session_delete, name="session_delete"),
     path("api/session/<str:sid>/export", export_session, name="export_session"),
+    path("api/session/<str:sid>/export_md", export_session_md, name="export_session_md"),
     path("api/session/import", import_session, name="import_session"),
     path("api/llm/config", llm_config, name="llm-config"),
     path("api/decompose", decompose, name="decompose"),

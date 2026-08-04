@@ -10,7 +10,7 @@ import json
 import time
 from io import BytesIO
 
-from django.http import StreamingHttpResponse, JsonResponse
+from django.http import StreamingHttpResponse, JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 
 import agent
@@ -759,6 +759,49 @@ def trace(request, sid: str):
     from skill.session_store import read_trace
     events = read_trace(sid)
     return JsonResponse({"sid": sid, "events": events})
+
+
+@csrf_exempt
+def export_session_md(request, sid: str):
+    """导出会话为 Markdown 学习笔记。GET /api/session/<sid>/export_md → text/markdown。"""
+    if request.method != "GET":
+        return JsonResponse({"error": "GET only"}, status=405)
+    try:
+        md = agent.export_session_md(sid)
+    except KeyError as e:
+        return JsonResponse({"error": str(e)}, status=404)
+    import re as _re_md
+    fname = (_re_md.sub(r'[^\w.\-]', "", (agent.get_session(sid) or {}).get("title", "") or sid)[:40]) or "session"
+    resp = HttpResponse(md, content_type="text/markdown; charset=utf-8")
+    resp["Content-Disposition"] = f'attachment; filename="{fname}-笔记.md"'
+    return resp
+
+
+@csrf_exempt
+def session_delete(request, sid: str):
+    """删除会话:清内存/缓存/落盘文件。DELETE /api/sessions/<sid>。"""
+    if request.method != "DELETE" and request.method != "POST":
+        return JsonResponse({"error": "DELETE/POST only"}, status=405)
+    if agent.delete_session(sid):
+        dlog(f"SESSION_DELETE sid={sid}")
+        return JsonResponse({"ok": True})
+    return JsonResponse({"error": f"会话 {sid} 不存在"}, status=404)
+
+
+@csrf_exempt
+def session_rename(request, sid: str):
+    """重命名会话标题。POST /api/sessions/<sid>/rename {title}。"""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+    try:
+        body = json.loads(request.body or b"{}")
+        title = body.get("title", "")
+    except Exception:
+        title = ""
+    if not agent.rename_session(sid, title):
+        return JsonResponse({"error": "会话不存在或标题为空"}, status=400)
+    dlog(f"SESSION_RENAME sid={sid} title={title!r}")
+    return JsonResponse({"ok": True, "title": title.strip()[:60]})
 
 
 @csrf_exempt

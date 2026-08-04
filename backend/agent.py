@@ -290,6 +290,77 @@ def import_session(data: dict) -> str:
     return sid
 
 
+def export_session_md(sid: str) -> str:
+    """把会话导出为 Markdown 学习笔记(原理+公式+讲解,可下载/打印)。不触 LLM。"""
+    s = _SESSIONS.get(sid)
+    if not s:
+        raise KeyError(f"session {sid} 不存在")
+    lines: list[str] = []
+    title = s.get("title") or (s.get("lesson") or {}).get("title", "") or "学习笔记"
+    question = s.get("question", "")
+    lines.append(f"# {title}")
+    lines.append("")
+    if question:
+        lines.append(f"> 学习主题:{question}")
+        lines.append("")
+
+    def _step_block(step: dict, label: str, sc: str = "") -> None:
+        lines.append(f"### {label}:{(step.get('title') or '')}")
+        lines.append("")
+        intent = step.get("intent") or ""
+        if intent:
+            lines.append("**意图**:")
+            lines.append(intent)
+            lines.append("")
+        expl = step.get("explanation") or step.get("narration") or ""
+        formula = step.get("formula") or ""
+        body = expl
+        if not expl and formula:
+            body = f"$${formula}$$"
+        if body:
+            lines.append("**讲解**:")
+            lines.append(body)
+            lines.append("")
+        used = step.get("paramsUsed") or []
+        if used:
+            lines.append(f"**可调参数**:{'、'.join(str(u) for u in used)}")
+            lines.append("")
+        if sc:
+            lines.append("<details>")
+            lines.append("<summary>动画代码</summary>")
+            lines.append("")
+            lines.append("```ts")
+            lines.append(sc)
+            lines.append("```")
+            lines.append("</details>")
+            lines.append("")
+
+    topics = s.get("topics") or []
+    if topics:
+        lines.append("## 学习清单")
+        for tp in topics:
+            lines.append(f"### 📚 {tp.get('title') or '(未命名主题)'}")
+            if tp.get("summary"):
+                lines.append(tp["summary"])
+                lines.append("")
+            for st in tp.get("steps", []):
+                sid_ = st.get("id")
+                # 讲解/意图存于 step_cache(键字符串),合并才导出完整讲解
+                cache = s.get("step_cache", {}).get(str(sid_)) or {}
+                sc = st.get("sceneCode") or cache.get("sceneCode", "")
+                _step_block({**st, **cache}, f"{sid_} 步", sc)
+    # 旧 lesson 流
+    lesson = s.get("lesson") or {}
+    steps = lesson.get("steps", [])
+    if steps and not topics:
+        lines.append("## 学习清单")
+        for st in steps:
+            cache = s.get("step_cache", {}).get(str(st.get("id"))) or {}
+            sc = st.get("sceneCode") or cache.get("sceneCode", "")
+            _step_block({**st, **cache}, f"第 {st.get('id')} 步", sc)
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def get_step_cache(sid: str, step_id) -> Optional[dict]:
     """从会话缓存取某步的完整设计(下游 agent 产出)。键统一为字符串(int id 与 str id 通吃)。"""
     s = _SESSIONS.get(sid)
@@ -360,6 +431,67 @@ def list_sessions() -> list:
             "step_count": len(lesson.get("steps", [])) if lesson else 0,
         })
     return out
+
+
+def rename_session(sid: str, new_title: str) -> bool:
+    """重命名会话标题(会话列表用)。返回是否成功。"""
+    s = _SESSIONS.get(sid)
+    if not s:
+        return False
+    title = (new_title or "").strip()[:60]
+    if not title:
+        return False
+    s["title"] = title
+    lesson = s.get("lesson") or {}
+    if lesson and not lesson.get("title"):
+        lesson["title"] = title
+    _persist_state(sid)
+    return True
+
+
+def delete_session(sid: str) -> bool:
+    """删除会话:从内存移除 + 清掉各 agent 模块级缓存(图/草稿/事件/暂停)+ 删除落盘文件。
+    若 MemorySaver 还有该 sid 的 checkpoint,一并清(尽力,删不了也继续)。返回是否"找到了要删的"。"""
+    existed = sid in _SESSIONS or _path_exists(sid)
+    if sid in _SESSIONS:
+        del _SESSIONS[sid]
+    # 清各 agent 的按 sid 缓存
+    for mod_name in ("skill.decompose_agent", "skill.main_agent", "skill.step_agent"):
+        try:
+            m = __import__(mod_name, fromlist=["x"])
+            for attr in ("_GRAPHS", "_EMIT", "_LOCKS", "_DRAFTS", "_RESUMES"):
+                if hasattr(m, attr):
+                    try:
+                        getattr(m, attr).pop(sid, None)
+                    except (KeyError, TypeError):
+                        pass
+        except Exception:
+            pass
+    try:
+        from skill.session_store import delete_session_files
+        delete_session_files(sid)
+    except Exception:
+        pass
+    return existed
+
+
+_OSEXISTS = __import__("os").path.exists
+
+
+def _path_exists(sid: str) -> bool:
+    """判断该 sid 是否有任何落盘痕迹(state.json / jsonl / uploads / frames / decompose)。"""
+    try:
+        base = (__import__("os").path.join(
+            __import__("os").path.dirname(__import__("os").path.abspath(__file__)), "sessions"))
+        ul = (__import__("os").path.join(
+            __import__("os").path.dirname(__import__("os").path.abspath(__file__)), "uploads", sid))
+        return (_OSEXISTS(__import__("os").path.join(base, f"{sid}.state.json")) or
+                _OSEXISTS(__import__("os").path.join(base, f"{sid}.jsonl")) or
+                _OSEXISTS(__import__("os").path.join(base, "decompose", f"{sid}.jsonl")) or
+                _OSEXISTS(__import__("os").path.join(base, f"{sid}_frames")) or
+                _OSEXISTS(ul))
+    except Exception:
+        return False
 
 
 def advance_session(sid: str, new_question: Optional[str] = None) -> dict:

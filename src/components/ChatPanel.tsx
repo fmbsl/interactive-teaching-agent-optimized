@@ -8,13 +8,15 @@ import {
   postRenderResult, getTrace,
   chat, chatAnswer, uploadForSession, decompose,
   listSessions, newSession, getSession, exportSession, importSessionFromFile,
+  exportSessionMarkdown,
+  deleteSession, renameSession,
   explainStep,
   type ChatEvent, type AgentRole, type Topic,
 } from "../data/llmClient";
 import { useApp, type StepStatus } from "../store";
 import {
   Menu, Plus, Paperclip, Download, Upload, Wrench, Bot,
-  Code2, Play, Check, X, Loader2, Sparkles,
+  Code2, Play, Check, X, Loader2, Sparkles, FileText,
 } from "lucide-react";
 
 interface RenderedItem { key: string; event: ChatEvent; collapsed: boolean; }
@@ -46,6 +48,7 @@ export default function ChatPanel() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [, setFileText] = useState<string | null>(null); // fileText 值未读(仅 setter 兼容旧接口),取值弃用
   const [showSessions, setShowSessions] = useState(false);
+  const [sessionQuery, setSessionQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -487,6 +490,7 @@ export default function ChatPanel() {
 
   async function handleSwitchSession(sid: string) {
     if (sid === sessionId) { setShowSessions(false); return; }
+    setSessionQuery("");
     consumeRunIdRef.current++; // 作废当前 session 的 consume,防止旧 SSE 事件串台
     try {
       const detail = await getSession(sid);
@@ -518,10 +522,45 @@ export default function ChatPanel() {
     }
   }
 
+  // 删除会话:确认 → 调后端删除实现(清内存/缓存/文件) → 刷新列表;若删的是当前会话则回空态
+  async function handleDeleteSession(sid: string) {
+    if (!window.confirm("删除该会话?此操作会连同其缓存与文件一并清除,不可恢复。")) return;
+    try {
+      await deleteSession(sid);
+      setShowSessions(false);
+      setSessionQuery("");
+      if (sid === sessionId) resetToEmpty();
+      await refreshSessions();
+    } catch (e: any) {
+      window.alert(`删除失败:${e.message}`);
+    }
+  }
+
+  // 重命名会话:prompt 输入新标题 → 调后端 → 刷新列表
+  async function handleRenameSession(sid: string, cur: string) {
+    const title = window.prompt("输入新的会话标题:", cur)?.trim();
+    if (!title) return;
+    try {
+      await renameSession(sid, title);
+      await refreshSessions();
+    } catch (e: any) {
+      window.alert(`重命名失败:${e.message}`);
+    }
+  }
+
   async function handleExport() {
     if (!sessionId) return;
     try {
       await exportSession(sessionId);
+    } catch (e: any) {
+      setItems((prev) => [...prev, makeItem({ kind: "error", message: e.message }, `e-${Date.now()}`)]);
+    }
+  }
+
+  async function handleExportMd() {
+    if (!sessionId) return;
+    try {
+      await exportSessionMarkdown(sessionId);
     } catch (e: any) {
       setItems((prev) => [...prev, makeItem({ kind: "error", message: e.message }, `e-${Date.now()}`)]);
     }
@@ -573,25 +612,46 @@ export default function ChatPanel() {
           {fileName ? <><Paperclip size={13} /> {fileName.slice(0, 12)}</> : <Paperclip size={13} />}
         </button>
         <button onClick={handleExport} disabled={!sessionId} className="btn-ghost px-2 py-1 rounded-md text-[11px] disabled:opacity-30 flex items-center gap-1" title="导出当前会话为 JSON"><Download size={13} /> 导出</button>
+        <button onClick={handleExportMd} disabled={!sessionId} className="btn-ghost px-2 py-1 rounded-md text-[11px] disabled:opacity-30 flex items-center gap-1" title="导出当前会话为 Markdown 学习笔记"><FileText size={13} /> 笔记</button>
         <button onClick={() => importInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] ml-auto flex items-center gap-1" title="导入 JSON 恢复会话"><Upload size={13} /> 导入</button>
         <span className="text-[10px] text-[#4a5365] flex items-center gap-1">
           {loading ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 生成中</> : sessionId ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" /> 会话中</> : <><span className="w-1.5 h-1.5 rounded-full bg-[#4a5365]" /> 待输入</>}
         </span>
 
-        {/* 会话下拉列表 */}
+        {/* 会话下拉列表(搜索/切换/重命名/删除) */}
         {showSessions && (
-          <div className="absolute top-11 left-2 z-20 w-64 rounded-md border border-[#1e293b] bg-[#0b0f18] shadow-xl py-1 max-h-72 overflow-y-auto">
-            {sessionList.length === 0 && <div className="px-3 py-2 text-[11px] text-[#4a5365]">暂无会话</div>}
-            {sessionList.map((s) => (
-              <button
-                key={s.session_id}
-                onClick={() => handleSwitchSession(s.session_id)}
-                className={`w-full text-left px-3 py-1.5 text-[11px] hover:bg-[#161f2e] ${s.session_id === sessionId ? "bg-[#4a9eff]/10" : ""}`}
-              >
-                <div className="text-[#dfe6f0] truncate">{s.title}</div>
-                <div className="text-[9px] text-[#4a5365]">{s.question.slice(0, 40) || "(空)"} · 步 {s.current_step}/{s.step_count}</div>
-              </button>
-            ))}
+          <div className="absolute top-11 left-2 z-20 w-72 rounded-md border border-[#1e293b] bg-[#0b0f18] shadow-xl max-h-80 overflow-hidden flex flex-col">
+            <div className="px-2 pt-1.5 pb-1.5 border-b border-[#1e293b] shrink-0">
+              <input
+                value={sessionQuery}
+                onChange={(e) => setSessionQuery(e.target.value)}
+                placeholder="搜索标题或问题…"
+                className="w-full bg-[#0b0f18] text-[#dfe6f0] text-[11px] px-2 py-1 rounded border border-[#1e293b] outline-none placeholder-[#4a5365] focus:border-[#4a9eff]/50"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {(() => {
+                const q = sessionQuery.trim().toLowerCase();
+                const list = (sessionList || []).filter((s) =>
+                  !q || (s.title || "").toLowerCase().includes(q) || (s.question || "").toLowerCase().includes(q));
+                if (list.length === 0) return <div className="px-3 py-2 text-[11px] text-[#4a5365]">无匹配会话</div>;
+                return list.map((s) => (
+                  <div key={s.session_id} className={`flex items-stretch group hover:bg-[#161f2e] ${s.session_id === sessionId ? "bg-[#4a9eff]/10" : ""}`}>
+                    <button
+                      onClick={() => handleSwitchSession(s.session_id)}
+                      className="flex-1 min-w-0 text-left px-3 py-1.5 text-[11px]"
+                    >
+                      <div className="text-[#dfe6f0] truncate">{s.title}</div>
+                      <div className="text-[9px] text-[#4a5365]">{(s.question || "(空)").slice(0, 34)} · 步 {s.current_step}/{s.step_count}</div>
+                    </button>
+                    <div className="flex items-center pr-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      <span onClick={() => handleRenameSession(s.session_id, s.title)} title="重命名" className="cursor-pointer px-1 py-1 text-[10px] text-[#6b7686] hover:text-[#5fb0ff]">✎</span>
+                      <span onClick={() => handleDeleteSession(s.session_id)} title="删除" className="cursor-pointer px-1 py-1 text-[10px] text-[#6b7686] hover:text-[#fca5a5]">✕</span>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
           </div>
         )}
       </div>

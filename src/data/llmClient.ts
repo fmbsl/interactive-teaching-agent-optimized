@@ -148,6 +148,26 @@ export async function newSession(): Promise<string> {
   return obj.session_id;
 }
 
+/** 删除会话(清内存/缓存/落盘文件)。 */
+export async function deleteSession(sid: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/sessions/${sid}/delete`, { method: "DELETE" });
+  if (!r.ok) {
+    const m = (await r.json().catch(() => ({}))).error;
+    throw new Error(m || `删除失败 ${r.status}`);
+  }
+}
+
+/** 重命名会话标题。 */
+export async function renameSession(sid: string, title: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/sessions/${sid}/rename`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }),
+  });
+  if (!r.ok) {
+    const m = (await r.json().catch(() => ({}))).error;
+    throw new Error(m || `重命名失败 ${r.status}`);
+  }
+}
+
 export interface SessionDetail {
   session_id: string; question: string; title: string; current_step: number;
   lesson: any; scene_codes: Record<number, string>;
@@ -203,6 +223,24 @@ export async function exportSession(sid: string): Promise<void> {
   const m = /filename="([^"]+)"/.exec(cd);
   const name = m ? m[1] : `session_${sid}.json`;
   const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** 导出当前会话为 Markdown 学习笔记(下载 .md)。 */
+export async function exportSessionMarkdown(sid: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/session/${sid}/export_md`);
+  if (!r.ok) throw new Error(`导出笔记失败 ${r.status}`);
+  const text = await r.text();
+  const cd = r.headers.get("Content-Disposition") || "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  const name = m ? m[1] : `session_${sid}-笔记.md`;
+  const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
