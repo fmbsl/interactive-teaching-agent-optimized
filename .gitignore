@@ -22,6 +22,7 @@ backend/*.log
 backend/llm_endpoints.json
 backend/_code*.js
 backend/user_prefs.json
+backend/access_token.txt
 
 # 会话运行日志 / 构建产物
 backend_run.log

@@ -9,10 +9,41 @@ import MermaidPanel from "./components/MermaidPanel";
 import { Settings } from "lucide-react";
 
 export default function App() {
+  // 访问令牌门禁:后端已开启鉴权(access_token.txt)时,无 token 先要求输入。
+  const [token, setToken] = useState(() => localStorage.getItem("access_token") || "");
+  if (!token) {
+    return (
+      <AccessGate onSave={(t) => { localStorage.setItem("access_token", t); setToken(t); }} />
+    );
+  }
   return (
     <AppProvider>
       <AppShell />
     </AppProvider>
+  );
+}
+
+function AccessGate({ onSave }: { onSave: (t: string) => void }) {
+  const [val, setVal] = useState("");
+  return (
+    <div className="grid place-items-center h-screen w-screen bg-[#0a0c14] text-[#dfe6f0]">
+      <form
+        className="max-w-md w-full mx-4 p-6 rounded-xl border border-[#1e293b] bg-[#0d121c]"
+        onSubmit={(e) => { e.preventDefault(); if (val.trim()) onSave(val.trim()); }}
+      >
+        <div className="text-[18px] font-semibold mb-1">Manim Agent</div>
+        <div className="text-[11px] text-[#6b7686] mb-4">输入访问令牌以继续使用。令牌在服务端的 <code className="text-[#5fb0ff]">backend/access_token.txt</code>(首次启动自动生成)。</div>
+        <input
+          autoFocus
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          placeholder="Access Token"
+          className="w-full bg-[#0b0f18] text-[#dfe6f0] text-[13px] px-3 py-2 rounded-md border border-[#1e293b] outline-none focus:border-[#4a9eff]/50 mb-3"
+        />
+        <button type="submit" className="w-full py-2 rounded-md bg-[#4a9eff] text-[#0a0c14] text-[13px] font-medium hover:bg-[#5fb0ff]">进入</button>
+        <div className="text-[9px] text-[#4a5365] mt-3 leading-relaxed">令牌能阻止陌生人访问你的会话 / 刷你的 LLM 额度。若后端还没生成令牌,重启后端后查看 backend/access_token.txt。</div>
+      </form>
+    </div>
   );
 }
 

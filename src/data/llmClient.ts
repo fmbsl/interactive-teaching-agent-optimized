@@ -39,10 +39,19 @@ export type ChatEvent = {
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE || "http://localhost:8000";
 
+/** 带访问令牌的 fetch 包装:若有存储的 token,自动加 Authorization: Bearer。 */
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const h = new Headers(init.headers || {});
+  const t = localStorage.getItem("access_token");
+  if (t) h.set("Authorization", `Bearer ${t}`);
+  return globalThis.fetch(input, { ...init, headers: h });
+}
+
+
 export async function uploadFile(file: File): Promise<string> {
   const fd = new FormData();
   fd.append("file", file);
-  const resp = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: fd });
+  const resp = await apiFetch(`${API_BASE}/api/upload`, { method: "POST", body: fd });
   if (!resp.ok) throw new Error(`上传失败 ${resp.status}`);
   const obj = await resp.json();
   if (obj.error) throw new Error(obj.error);
@@ -54,7 +63,7 @@ export async function uploadForSession(sid: string, file: File): Promise<{ file_
   const fd = new FormData();
   fd.append("file", file);
   fd.append("sid", sid);
-  const resp = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: fd });
+  const resp = await apiFetch(`${API_BASE}/api/upload`, { method: "POST", body: fd });
   if (!resp.ok) throw new Error(`上传失败 ${resp.status}`);
   const obj = await resp.json();
   if (obj.error) throw new Error(obj.error);
@@ -75,12 +84,12 @@ export async function* chatAnswer(sid: string, answer: string = "", result: any 
 
 /** 用户偏好(全局记忆):GET 取 / POST 存。 */
 export async function getUserPrefs(): Promise<string> {
-  const r = await fetch(`${API_BASE}/api/user_prefs`);
+  const r = await apiFetch(`${API_BASE}/api/user_prefs`);
   if (!r.ok) return "";
   return (await r.json()).prefs || "";
 }
 export async function saveUserPrefs(prefs: string): Promise<void> {
-  await fetch(`${API_BASE}/api/user_prefs`, {
+  await apiFetch(`${API_BASE}/api/user_prefs`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefs }),
   });
 }
@@ -135,14 +144,14 @@ export async function* postRenderResult(sessionId: string, stepId: number, ok: b
 export interface SessionSummary { session_id: string; title: string; question: string; current_step: number; step_count: number }
 
 export async function listSessions(): Promise<SessionSummary[]> {
-  const r = await fetch(`${API_BASE}/api/sessions`);
+  const r = await apiFetch(`${API_BASE}/api/sessions`);
   if (!r.ok) throw new Error(`列会话失败 ${r.status}`);
   const obj = await r.json();
   return obj.sessions || [];
 }
 
 export async function newSession(): Promise<string> {
-  const r = await fetch(`${API_BASE}/api/sessions`, { method: "POST" });
+  const r = await apiFetch(`${API_BASE}/api/sessions`, { method: "POST" });
   if (!r.ok) throw new Error(`新建会话失败 ${r.status}`);
   const obj = await r.json();
   return obj.session_id;
@@ -150,7 +159,7 @@ export async function newSession(): Promise<string> {
 
 /** 删除会话(清内存/缓存/落盘文件)。 */
 export async function deleteSession(sid: string): Promise<void> {
-  const r = await fetch(`${API_BASE}/api/sessions/${sid}/delete`, { method: "DELETE" });
+  const r = await apiFetch(`${API_BASE}/api/sessions/${sid}/delete`, { method: "DELETE" });
   if (!r.ok) {
     const m = (await r.json().catch(() => ({}))).error;
     throw new Error(m || `删除失败 ${r.status}`);
@@ -159,7 +168,7 @@ export async function deleteSession(sid: string): Promise<void> {
 
 /** 重命名会话标题。 */
 export async function renameSession(sid: string, title: string): Promise<void> {
-  const r = await fetch(`${API_BASE}/api/sessions/${sid}/rename`, {
+  const r = await apiFetch(`${API_BASE}/api/sessions/${sid}/rename`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }),
   });
   if (!r.ok) {
@@ -174,14 +183,14 @@ export interface SessionDetail {
 }
 
 export async function getSession(sid: string): Promise<SessionDetail> {
-  const r = await fetch(`${API_BASE}/api/sessions/${sid}`);
+  const r = await apiFetch(`${API_BASE}/api/sessions/${sid}`);
   if (!r.ok) throw new Error(`取会话失败 ${r.status}`);
   return r.json();
 }
 
 /** 取某会话的执行树事件流(切回旧会话时重建 Claude Code 式视图)。 */
 export async function getTrace(sid: string): Promise<ChatEvent[]> {
-  const r = await fetch(`${API_BASE}/api/sessions/${sid}/trace`);
+  const r = await apiFetch(`${API_BASE}/api/sessions/${sid}/trace`);
   if (!r.ok) throw new Error(`取执行树失败 ${r.status}`);
   const obj = await r.json();
   const evts = obj.events || [];
@@ -216,7 +225,7 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
 
 /** 导出当前会话为 JSON 文件(浏览器触发下载)。 */
 export async function exportSession(sid: string): Promise<void> {
-  const r = await fetch(`${API_BASE}/api/session/${sid}/export`);
+  const r = await apiFetch(`${API_BASE}/api/session/${sid}/export`);
   if (!r.ok) throw new Error(`导出失败 ${r.status}`);
   const blob = await r.blob();
   const cd = r.headers.get("Content-Disposition") || "";
@@ -234,7 +243,7 @@ export async function exportSession(sid: string): Promise<void> {
 
 /** 导出当前会话为 Markdown 学习笔记(下载 .md)。 */
 export async function exportSessionMarkdown(sid: string): Promise<void> {
-  const r = await fetch(`${API_BASE}/api/session/${sid}/export_md`);
+  const r = await apiFetch(`${API_BASE}/api/session/${sid}/export_md`);
   if (!r.ok) throw new Error(`导出笔记失败 ${r.status}`);
   const text = await r.text();
   const cd = r.headers.get("Content-Disposition") || "";
@@ -254,7 +263,7 @@ export async function exportSessionMarkdown(sid: string): Promise<void> {
 export async function importSessionFromFile(file: File): Promise<{ sessionId: string; title: string }> {
   const text = await file.text();
   const data = JSON.parse(text);
-  const r = await fetch(`${API_BASE}/api/session/import`, {
+  const r = await apiFetch(`${API_BASE}/api/session/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -284,13 +293,13 @@ export interface LlmConfigState {
 }
 
 export async function listLlmConfigs(): Promise<LlmConfigState> {
-  const r = await fetch(`${API_BASE}/api/llm/config`);
+  const r = await apiFetch(`${API_BASE}/api/llm/config`);
   if (!r.ok) throw new Error(`取 LLM 配置失败 ${r.status}`);
   return r.json();
 }
 
 export async function saveLlmConfig(cfg: Partial<EndpointConfig> & { name: string; baseUrl: string; model: string }): Promise<LlmConfigState> {
-  const r = await fetch(`${API_BASE}/api/llm/config`, {
+  const r = await apiFetch(`${API_BASE}/api/llm/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "save", endpoint: cfg }),
@@ -300,7 +309,7 @@ export async function saveLlmConfig(cfg: Partial<EndpointConfig> & { name: strin
 }
 
 export async function saveVisionConfig(endpoint: Partial<EndpointConfig> & { baseUrl: string; model: string }): Promise<LlmConfigState> {
-  const r = await fetch(`${API_BASE}/api/llm/config`, {
+  const r = await apiFetch(`${API_BASE}/api/llm/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "saveVision", endpoint }),
@@ -310,7 +319,7 @@ export async function saveVisionConfig(endpoint: Partial<EndpointConfig> & { bas
 }
 
 export async function deleteLlmConfig(id: string): Promise<LlmConfigState> {
-  const r = await fetch(`${API_BASE}/api/llm/config`, {
+  const r = await apiFetch(`${API_BASE}/api/llm/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "delete", id }),
@@ -320,7 +329,7 @@ export async function deleteLlmConfig(id: string): Promise<LlmConfigState> {
 }
 
 export async function setActiveLlmConfig(id: string): Promise<LlmConfigState> {
-  const r = await fetch(`${API_BASE}/api/llm/config`, {
+  const r = await apiFetch(`${API_BASE}/api/llm/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "setActive", id }),
@@ -339,7 +348,7 @@ export async function* decompose(sid: string, question: string, fileText?: strin
 
 /** 把分解 DAG 转成 Topic 学习清单,写入该 session 的 topics。sid 为主 session id(图已挂其上)。返回 {session_id, topic}。 */
 export async function decomposeToTopics(sid: string, question: string = ""): Promise<{ session_id: string; topic: Topic }> {
-  const r = await fetch(`${API_BASE}/api/decompose/${sid}/to_topics`, {
+  const r = await apiFetch(`${API_BASE}/api/decompose/${sid}/to_topics`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }),
   });
   if (!r.ok) {
@@ -354,7 +363,7 @@ export async function decomposeSplit(
   sid: string, target: string, children: { title: string; mastery?: boolean }[],
   prereqs: { title: string; mastery?: boolean }[] = [], deps: { from: string; to: string }[] = [], prune = true,
 ): Promise<{ sid: string; message: string; graph: any; events: any[] }> {
-  const r = await fetch(`${API_BASE}/api/decompose/${sid}/split`, {
+  const r = await apiFetch(`${API_BASE}/api/decompose/${sid}/split`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, children, prereqs, deps, prune }),
   });
@@ -371,7 +380,7 @@ export async function decomposeSplit(
 export async function decomposeEdit(
   sid: string, op: string, params: Record<string, any>,
 ): Promise<{ sid: string; message: string; graph: any }> {
-  const r = await fetch(`${API_BASE}/api/decompose/${sid}/edit`, {
+  const r = await apiFetch(`${API_BASE}/api/decompose/${sid}/edit`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ op, ...params }),
   });
@@ -384,7 +393,7 @@ export async function decomposeEdit(
 
 /** agent 自动拆分(右键"拆分"菜单):后端用 LLM 跑 _split_replace 的自动分解,返回新快照。 */
 export async function decomposeAutoSplit(sid: string, target: string): Promise<{ sid: string; message: string; graph: any }> {
-  const r = await fetch(`${API_BASE}/api/decompose/${sid}/auto_split`, {
+  const r = await apiFetch(`${API_BASE}/api/decompose/${sid}/auto_split`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target }),
   });
@@ -398,7 +407,7 @@ export async function decomposeAutoSplit(sid: string, target: string): Promise<{
 async function* streamSSE(url: string, body: any): AsyncGenerator<ChatEvent> {
   let resp: Response;
   try {
-    resp = await fetch(url, {
+    resp = await apiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -442,7 +451,7 @@ async function* streamSSE(url: string, body: any): AsyncGenerator<ChatEvent> {
 export async function* streamRawSSE(url: string, body: any): AsyncGenerator<any> {
   let resp: Response;
   try {
-    resp = await fetch(url, {
+    resp = await apiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
