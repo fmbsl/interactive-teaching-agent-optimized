@@ -48,3 +48,10 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# 部署凭据/临时工具(含服务器密码,严禁入库)
+tools/start_public.sh
+tools/cloudflared/
+tools/frp/
+serve_public.log
+ssh_tunnel.log
