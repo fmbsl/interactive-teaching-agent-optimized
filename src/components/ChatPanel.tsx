@@ -16,7 +16,7 @@ import {
 import { useApp, type StepStatus } from "../store";
 import {
   Menu, Plus, Paperclip, Download, Upload, Wrench, Bot,
-  Code2, Play, Check, X, Loader2, Sparkles, FileText,
+  Code2, Play, Check, X, Loader2, Sparkles, FileText, Trash2,
 } from "lucide-react";
 
 interface RenderedItem { key: string; event: ChatEvent; collapsed: boolean; }
@@ -49,6 +49,32 @@ export default function ChatPanel() {
   const [, setFileText] = useState<string | null>(null); // fileText 值未读(仅 setter 兼容旧接口),取值弃用
   const [showSessions, setShowSessions] = useState(false);
   const [sessionQuery, setSessionQuery] = useState("");
+  // 对话栏右键菜单(导出 JSON/笔记、导入、删除当前会话):坐标或 null
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+
+  // 右键菜单:点外部 / Escape 关闭
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = (e: MouseEvent) => {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) setCtxMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCtxMenu(null); };
+    const onScroll = () => setCtxMenu(null);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [ctxMenu]);
+
+  const openCtxMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY });
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -611,10 +637,7 @@ export default function ChatPanel() {
         <button onClick={() => fileInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] flex items-center gap-1" title="上传课件">
           {fileName ? <><Paperclip size={13} /> {fileName.slice(0, 12)}</> : <Paperclip size={13} />}
         </button>
-        <button onClick={handleExport} disabled={!sessionId} className="btn-ghost px-2 py-1 rounded-md text-[11px] disabled:opacity-30 flex items-center gap-1" title="导出当前会话为 JSON"><Download size={13} /> 导出</button>
-        <button onClick={handleExportMd} disabled={!sessionId} className="btn-ghost px-2 py-1 rounded-md text-[11px] disabled:opacity-30 flex items-center gap-1" title="导出当前会话为 Markdown 学习笔记"><FileText size={13} /> 笔记</button>
-        <button onClick={() => importInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] ml-auto flex items-center gap-1" title="导入 JSON 恢复会话"><Upload size={13} /> 导入</button>
-        <span className="text-[10px] text-[#4a5365] flex items-center gap-1">
+        <span className="text-[10px] text-[#4a5365] flex items-center gap-1 ml-auto" title="右键对话区可导出/笔记/导入/删除会话">
           {loading ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 生成中</> : sessionId ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" /> 会话中</> : <><span className="w-1.5 h-1.5 rounded-full bg-[#4a5365]" /> 待输入</>}
         </span>
 
@@ -695,8 +718,8 @@ export default function ChatPanel() {
         </div>
       )}
 
-      {/* 对话流 */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2">
+      {/* 对话流(右键弹出导出/笔记/导入/删除菜单) */}
+      <div ref={scrollRef} onContextMenu={openCtxMenu} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2">
         {items.length === 0 && !loading && (
           <div className="empty-state mt-6">
             <div className="empty-icon"><Sparkles size={30} /></div>
@@ -717,6 +740,48 @@ export default function ChatPanel() {
           </div>
         )}
       </div>
+
+      {/* 对话栏右键菜单:导出 JSON / 导出笔记 / 导入 / 删除当前会话 */}
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          className="fixed z-50 w-48 rounded-md border border-[#1e293b] bg-[#0b0f18] shadow-xl py-1"
+          style={{
+            left: Math.min(ctxMenu.x, window.innerWidth - 210),
+            top: Math.min(ctxMenu.y, window.innerHeight - 200),
+          }}
+        >
+          <MenuRow
+            icon={Download}
+            label="导出 JSON"
+            disabled={!sessionId}
+            onClick={() => { setCtxMenu(null); handleExport(); }}
+            title="导出当前会话为 JSON"
+          />
+          <MenuRow
+            icon={FileText}
+            label="导出学习笔记(.md)"
+            disabled={!sessionId}
+            onClick={() => { setCtxMenu(null); handleExportMd(); }}
+            title="导出当前会话为 Markdown 学习笔记"
+          />
+          <div className="my-1 border-t border-[#1e293b]" />
+          <MenuRow
+            icon={Upload}
+            label="导入 JSON 恢复会话"
+            onClick={() => { setCtxMenu(null); importInputRef.current?.click(); }}
+            title="从 JSON 文件恢复一个会话"
+          />
+          <MenuRow
+            icon={Trash2}
+            label="删除当前会话"
+            disabled={!sessionId}
+            onClick={() => { setCtxMenu(null); if (sessionId) void handleDeleteSession(sessionId); }}
+            title="删除当前会话(不可恢复)"
+            danger
+          />
+        </div>
+      )}
 
       {/* 底部:输入(无上一步/下一步按钮,改用 list 点击或键盘) */}
       <div className="p-2.5 border-t border-[#1e293b] shrink-0 space-y-1.5">
@@ -1038,4 +1103,24 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     default:
       return null;
   }
+}
+
+
+// 对话栏右键菜单行:图标 + 文字;disabled 置灰;danger 红色(用于删除)
+function MenuRow({ icon: Icon, label, onClick, disabled, title, danger }: {
+  icon: React.ComponentType<{ size?: number; className?: string }>;
+  label: string; onClick: () => void; disabled?: boolean; title?: string; danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 disabled:opacity-30
+        ${danger ? "text-[#fca5a5] hover:bg-[#ef4444]/10" : "text-[#dfe6f0] hover:bg-[#161f2e]"}`}
+    >
+      <Icon size={12} className={danger ? "text-[#fca5a5]" : "text-[#6b7686]"} />
+      {label}
+    </button>
+  );
 }
