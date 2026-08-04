@@ -37,7 +37,9 @@ export type ChatEvent = {
   | { kind: "error"; message: string }
 );
 
-const API_BASE = (import.meta as any).env?.VITE_API_BASE || "http://localhost:8000";
+// 默认同源相对路径(/api/...):本地 dev 走 Vite proxy,公网走统一入口反代,均无需跨域/外网直连后端。
+// 可通过 VITE_API_BASE 覆盖(如指向独立后端地址)。
+const API_BASE = ((import.meta as any).env?.VITE_API_BASE as string) || "";
 
 /** 带访问令牌的 fetch 包装:若有存储的 token,自动加 Authorization: Bearer。 */
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {

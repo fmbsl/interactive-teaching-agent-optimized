@@ -8,6 +8,10 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    // 前端走同源相对 /api,dev 时由 Vite 代理到后端 8000(公网/生产由统一入口反代)
+    proxy: {
+      "/api": "http://127.0.0.1:8000",
+    },
     watch: {
       // 整个 backend/ 不监听:后端运行时频繁写 sessions/*.jsonl、*.state.json、
       // step_codes.log、debug.log、llm_endpoints.json 等,这些都不在 import 图里,
