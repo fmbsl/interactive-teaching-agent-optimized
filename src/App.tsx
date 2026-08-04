@@ -9,8 +9,14 @@ import MermaidPanel from "./components/MermaidPanel";
 import { Settings } from "lucide-react";
 
 export default function App() {
-  // 访问令牌门禁:后端已开启鉴权(access_token.txt)时,无 token 先要求输入。
-  const [token, setToken] = useState(() => localStorage.getItem("access_token") || "");
+  // 访问令牌:优先 localStorage;否则若 URL 带 ?token= 则直接用并记住(评审拿完整 URL 直接进,不用输)。
+  const [token, setToken] = useState(() => {
+    const stored = localStorage.getItem("access_token");
+    if (stored) return stored;
+    const u = new URLSearchParams(window.location.search).get("token");
+    if (u) { localStorage.setItem("access_token", u); return u; }
+    return "";
+  });
   if (!token) {
     return (
       <AccessGate onSave={(t) => { localStorage.setItem("access_token", t); setToken(t); }} />
