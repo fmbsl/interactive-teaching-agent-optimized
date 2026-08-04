@@ -315,6 +315,8 @@ export default function ChatPanel() {
         // 主 agent 要生成某步动画:调 /api/explain 跑 step subagent(浏览器在环),跑完 resume 主 agent 传 {ok, step_id}
         const sid = sessionIdRef.current || "";
         const stepId = (ev as any).step_id || ev.stepId || "";
+        // 先把右侧切到这一步(该步已在 topics 里有标题占位),否则讲解要等 explain 事件(动画在环验证通过后)才出现
+        if (stepId) setCurrentStep(stepId as any);
         let ok = false, errMsg = "";
         try {
           for await (const sev of explainStep(sid, stepId)) {
@@ -395,6 +397,7 @@ export default function ChatPanel() {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       const sid = sessionIdRef.current || "";
       const stepId = (ev as any).step_id || ev.stepId || "";
+      if (stepId) setCurrentStep(stepId as any); // 先切右侧到该步(标题占位),等 explain 填讲解
       let ok = false, errMsg = "";
       try {
         for await (const sev of explainStep(sid, stepId)) {
