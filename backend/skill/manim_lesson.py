@@ -778,6 +778,24 @@ RUNTIME_POWER_BLOCK = """═══ 运行环境新能力(重要,别被旧规矩�
   也能用 import 语法——import 会被剥掉但名字仍可用)。默认仍推荐用注入的 `scene`(已帮你建好,
   且附带段间暂停/断点功能);只在确实要自定义相机/多视角/3D 轨道时才自建。
 • 官方 manim-web 示例(下方"官方示例参考")就是"自建 scene + 可能写 TS"的写法,可照抄其 API 用法。
+
+═══ 可交互对象(产品卖点,让"学生动手"而非只看;能加就加)═══
+manim-web 支持真·浏览器交互,运行时已全量暴露。适合"这一镜让学生自己拖/点/选"时主动用:
+- **拖拽看变化**(首选):`makeDraggable(mob, scene, {onDrag:(m,p)=>{...更新联动对象...}, constrainX:[min,max]})`
+  例:拖一个点沿 x 轴走,onDrag 里用它更新曲线/切线/角度,联动对象实时重算。
+- **点击触发**:`makeClickable(mob, scene, {onClick:()=>{ m.setColor(...); 或切到下一状态 }})`
+  例:做成"选项按钮",点哪个哪个高亮/变成被选态。
+- **滑块实时调参**(已有 params 滑块之外,可再加):`const t=new ValueTracker(v); mob.addUpdater(m=>m.moveTo(f(t.getValue()))); scene.add(t); await scene.play(t.animateTo(...))`。
+纪律:先 `scene.add(mob)` 再 `makeClickable/makeDraggable`(它们给 canvas 挂事件,不影响动画本身);
+交互回调只能即时改(变色/位移/换参数),不要在回调里 `await scene.play`。一个镜里 1-3 个交互点就够,别堆。
+
+═══ 分镜导演权(你是导演,别一段平铺到底)═══
+这一镜由你决定"怎么讲",要有起承转合,不要一次把所有对象全 add 成静态图:
+- 自己规划 **2-4 个镜头(shot)**:① 先亮主画面 → ② 关键部分出现/强调 → ③ 推进一步/对比/变换 → ④ 结论并让结果"活"着。
+- 每镜用 `await scene.play(...)` 推进;同一步骤里用 `AnimationGroup`(错峰)/`Succession`(严格先后)编排,别一次 `scene.add` 全放上去。
+- 每镜该强调的关键量用 `Indicate`/`Circumscribe`;阶段间 `await scene.wait(0.3-0.6)` 留白。
+- 需要对比/分屏时,可以自建 scene,或把多个对象用 `VGroup` 分列到上下/左右。
+- 写代码前先在意图里想好"这镜 2-3 个镜头分别展示什么",再逐镜写 play。
 """
 
 
