@@ -1,116 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { makeManimCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn } from "../manimCtx";
+import { makeManimCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn, exposeManimGlobals } from "../manimCtx";
 import { useApp } from "../store";
 import { regenerateScene } from "../data/llmClient";
 import { SkipBack, Play, Pause, SkipForward, RotateCcw } from "lucide-react";
+import { is3DCode, detectOverlap, detectMathTexError } from "../sceneCheck";
+import { execScript, isSelfBuildCode } from "../runScript";
 
 // 转换器路线:后端把 Python Manim → TS,再拼成 `const {...} = ctx; <body>`。
 // ctx 注入 manim-web 全部命名导出(类/颜色/方向/工具函数)+ scene + params,
 // 这样转换代码里 import 的任何标识符都能从 ctx 解构到。
 // manim-web 的 namespace import 隔离在 manimCtx.ts,避免破坏 React Fast Refresh。
 
-
-// 检测场景代码是否需要 3D(含 3D 类则用 ThreeDScene,带 3D 相机+OrbitControls+光照)
-// 检测场景代码是否需要 3D。py2ts 把 Python 的 Surface 映射成 ParametricSurface,
-// ThreeDScene 会被降级成 Scene(但 3D 对象类名保留),所以这里要覆盖 manim-web 3D 类名
-// + py2ts 转换后的别名(ParametricSurface)。
-const THREE_D_CLASSES = [
-  "ThreeDAxes", "ThreeDScene", "Surface3D", "ParametricSurface", "TexturedSurface",
-  "Sphere", "Cube", "Box3D", "Cylinder", "Cone", "Torus", "Prism",
-  "Dot3D", "Line3D", "Arrow3D", "Vector3D", "Polyhedron", "Tetrahedron", "Octahedron", "Icosahedron", "Dodecahedron",
-];
-function is3DCode(code: string): boolean {
-  return THREE_D_CLASSES.some((c) => code.includes(c));
-}
-
-// 遍历 scene 所有 mobject,查 MathTex 的 getRenderError()。
-// manim-web 的 MathTex._renderPromise 用 .catch 吞掉 MathJax 错误(waitForRender 不抛),
-// 但主舞台读几何时同步 MathJax retry 会抛 → 主舞台失败回退默认场景。这里提前暴露。
-// 返回第一个 MathTex 渲染错误信息(无错误返回 "")。
-function detectMathTexError(scene: any): string {
-  try {
-    let firstErr = "";
-    const visit = (m: any) => {
-      if (!m || firstErr) return;
-      // MathTex/Tex 有 getRenderError 方法
-      if (typeof m?.getRenderError === "function") {
-        const err = m.getRenderError();
-        if (err) firstErr = String(err?.message || err);
-      }
-      const subs = m?.submobjects || m?._submobjects;
-      if (Array.isArray(subs)) subs.forEach(visit);
-    };
-    const all = Array.from(scene._mobjects || []);
-    all.forEach(visit);
-    return firstErr;
-  } catch { return ""; }
-}
-
-
-// 预检 TypeScript 语法:沙箱用 new AsyncFunction 跑纯 JS,TS 类型注解会
-// 报 "Unexpected token ':'",对 LLM 不直观。命中时直接给出明确错误,让它
-// 一轮删掉类型注解,而不是反复试。返回错误字符串(无问题返回 "")。
-// 刻意只抓高置信模式,避免误伤合法 JS(如对象字面量 {a: 1}、三元 a ? b : c)。
-function detectTsSyntax(code: string): string {
-  const hits: string[] = [];
-  // 1) 变量/参数后跟类型注解: `: number`/`: string`/`: boolean`/`: any`/`: void`/`: unknown`/`: never`
-  //    用 "标识符/反括号 + 空白 + :" 限定,避开对象字面量键(`{ a: 1 }` 键前无标识符尾)与三元。
-  if (/\b(?:number|string|boolean|any|void|unknown|never|null|undefined|object)\b\s*(?=\[\]|\s|,|\)|;|=|{|$)/.test(code) &&
-      /[:|]\s*(?:number|string|boolean|any|void|unknown|never|object)(?:\s*\[\s*\])?\b/.test(code)) {
-    hits.push("TypeScript 类型注解(如 `(x: number)`、`const a: any[]`)");
-  }
-  // 2) `as` 类型断言: `x as number`(排除字符串里的 "as"——要求前是标识符/`)
-  if (/\b[a-zA-Z_$\)\]]\s+as\s+[A-Z]/.test(code)) hits.push("`as` 类型断言");
-  // 3) interface / type 别名声明
-  if (/\binterface\s+[A-Z]/.test(code)) hits.push("`interface` 声明");
-  if (/\btype\s+[A-Z]\w*\s*=/.test(code)) hits.push("`type` 别名声明");
-  // 4) 泛型: `<T>` 或函数泛型 `<T>(x) =>`——只在行首/逗号后出现 `<大写字母` 且成对时粗判
-  if (/\(\s*<[A-Z]\w*\s*[,>]/.test(code)) hits.push("泛型语法");
-  if (!hits.length) return "";
-  return `代码含 TypeScript 语法(${hits.join("、")}),但执行环境是纯 JavaScript。请删除所有类型注解、interface、type 别名、as 断言、泛型,只保留纯 ES 语法后重新提交。`;
-}
-
-
-// 只检测有几何(非空)的 mobject。返回重叠描述字符串(无重叠返回 "")。
-function detectOverlap(scene: any): string {
-  const mobs: { name: string; isText: boolean; b: { min: { x: number; y: number }; max: { x: number; y: number } } }[] = [];
-  try {
-    const collect = (m: any) => {
-      if (!m) return;
-      const subs = m.submobjects || m._submobjects;
-      let b: any = null;
-      try { b = m.getBoundingBox?.() ?? m.getBounds?.(); } catch { /* empty mobject */ }
-      if (b && b.min && b.max && (b.max.x > b.min.x) && (b.max.y > b.min.y)) {
-        const nm = m.constructor?.name || "";
-        const isText = /Text|Tex|MathTex|Label/i.test(nm);
-        mobs.push({ name: nm, isText, b: { min: { x: b.min.x, y: b.min.y }, max: { x: b.max.x, y: b.max.y } } });
-      }
-      if (subs && Array.isArray(subs)) subs.forEach(collect);
-    };
-    const all = Array.from(scene._mobjects || []);
-    all.forEach(collect);
-  } catch { return ""; }
-  // 只报 Text 相关重叠(Text-Text 或 Text-几何),避免相邻几何误报
-  const texts = mobs.filter((m) => m.isText);
-  if (texts.length === 0) return "";
-  const overlap = (a: any, b: any) =>
-    a.min.x < b.max.x && a.max.x > b.min.x && a.min.y < b.max.y && a.max.y > b.min.y;
-  // Text-Text 重叠
-  for (let i = 0; i < texts.length; i++) {
-    for (let j = i + 1; j < texts.length; j++) {
-      if (overlap(texts[i].b, texts[j].b)) return `${texts[i].name} 与 ${texts[j].name} 重叠`;
-    }
-  }
-  // Text 与非 Text 重叠(文字压在图形上),但忽略 axes(坐标轴常与标签相邻)
-  for (const t of texts) {
-    for (const m of mobs) {
-      if (m.isText) continue;
-      if (/Axes|NumberPlane|Axis/i.test(m.name)) continue;
-      if (overlap(t.b, m.b)) return `${t.name} 与 ${m.name} 重叠`;
-    }
-  }
-  return "";
-}
 
 // 中栏舞台:在 1D 损失 L(w)=½(w-1)² 上可视化梯度下降。
 // η 与起点由滑块通过 ValueTracker 实时驱动(不重跑 construct)——"实时可交互"落点。
@@ -156,6 +56,8 @@ export default function StagePanel() {
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    // 自建场景代码不需要注入 scene(自己在 container 上 new Scene)
+    if (isSelfBuildCode(sceneCode)) { setScene(null); return; }
     const want3D = is3DCode(sceneCode);
     const opts = { backgroundColor: "#0a0c14", width: containerSize.w, height: containerSize.h };
     const s = want3D ? new ThreeDScene(container, opts) : new Scene(container, opts);
@@ -196,39 +98,39 @@ export default function StagePanel() {
     let disposed = false;
     (async () => {
       const { code } = verifyRequest;
-      const want3D = is3DCode(code);
-      // 用一个离屏容器跑验证,不污染主舞台
       const offscreen = document.createElement("div");
       offscreen.style.cssText = "position:absolute;left:-9999px;top:0;width:800px;height:450px;";
       document.body.appendChild(offscreen);
+      // 自建场景代码(自己 new Scene):离屏 freedom-Kitchen 跑,不做 BB/视觉检查(姿势多样)。
+      if (isSelfBuildCode(code)) {
+        try {
+          exposeManimGlobals(offscreen);
+          const cc: any = { container: offscreen, params: paramValues };
+          const rr = await execScript(cc, code, 30000);
+          if (disposed) return;
+          if (!rr.ok) throw new Error(rr.error);
+          reportVerifyResult(true);
+        } catch (e: any) {
+          if (!disposed) reportVerifyResult(false, String(e?.message || e));
+        } finally {
+          offscreen.remove();
+        }
+        return;
+      }
+      const want3D = is3DCode(code);
+      // 用一个离屏容器跑验证,不污染主舞台
       const opts = { backgroundColor: "#0a0c14", width: 800, height: 450 };
       const s = want3D ? new ThreeDScene(offscreen, opts) : new Scene(offscreen, opts);
       try {
         const ctx: any = makeManimCtx(s, paramValues);
-        // 预检 TypeScript 语法(沙箱是纯 JS,类型注解会 Unexpected token ':')
-        const tsErr = detectTsSyntax(code);
-        if (tsErr) throw new Error(tsErr);
-        const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-        const fn = new AsyncFunction("ctx", code);
-        // 超时保护:只防 scene.wait() 无参等真正挂死的情况。
+        // 执行(TS 容忍 + 30s 超时):execScript 先按纯 JS 直跑,语法错(含 TS 注解)才转译重跑。
         // ⚠️ 超时阈值必须大于典型教学动画总时长(常 15-20s,含结尾 Indicate/Pulse/Circumscribe)。
         // 之前 10s 太短:长动画跑到一半被超时判"通过",后段 Indicate/Pulse 从没被验证过 →
         // 主舞台跑完整代码时在那一步报错(e107.map),回退默认梯度下降并 REGENERATE 循环。
         // 超时时间是"动画太长安逸通过"下限。注:超时那一刻后的动画段未被验证(主舞台仍可能触发),
         // 30s 已覆盖绝大多数教学动画全长;这是当前实现的取舍,非"无条件通过"。
-        const VERIFY_TIMEOUT_MS = 30000;
-        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("__verify_timeout__")), VERIFY_TIMEOUT_MS));
-        try {
-          await Promise.race([fn(ctx), timeout]);
-        } catch (e: any) {
-          if (String(e?.message || e) === "__verify_timeout__") {
-            // 超时:代码本身没报错(只是动画长),仍视为渲染通过——但仅当没在超时那一刻前抛错。
-            // 注意:这意味着动画后段(超时后)未被验证,可能仍有主舞台才会触发的错;但拉长到 30s
-            // 已覆盖绝大多数教学动画全长,后段 Indicate/Pulse/Circumscribe 能在验证阶段跑完被检查。
-          } else {
-            throw e;
-          }
-        }
+        const execR = await execScript(ctx, code, 30000);
+        if (!execR.ok) throw new Error(execR.error);
         if (disposed) return;
         // MathTex 渲染错误检查:manim-web 的 MathTex._renderPromise 用 .catch 吞掉 MathJax 错误
         // (只 console.error + 存 _renderError,Promise 仍 resolve),所以 await waitForRender() 不会抛。
@@ -282,16 +184,39 @@ export default function StagePanel() {
   // 超过上限后即便代码仍报错也直接回退默认场景,不再调后端——点回已访问步秒回,不重新生成。
   const regenCountByStepRef = useRef<Record<number, number>>({});
   useEffect(() => {
-    if (!scene) return;
+    const selfBuild = sceneCode ? isSelfBuildCode(sceneCode) : false;
     const s = scene;
+    // 注入 scene 路径需要 scene;自建场景路径不需要(自己在 container 上建)
+    if (!s && !selfBuild) return;
     let cancelled = false;
     // scene 类型和 sceneCode 不匹配时跳过本次 build(等重建 scene 的 useEffect 换成正确类型再跑),
-    // 否则 3D 代码会在普通 Scene 上执行报 "setCameraOrientation is not a function"
+    // 否则 3D 代码会在普通 Scene 上执行报 "setCameraOrientation is not a function"(仅注入 scene 路径)
     const want3D = is3DCode(sceneCode);
     const sceneIs3D = s instanceof ThreeDScene;
-    if (want3D !== sceneIs3D) return;
+    if (!selfBuild && want3D !== sceneIs3D) return;
 
     async function build() {
+      if (selfBuild) {
+        // 自建场景(自由脚本):代码自己 new Scene(container,{相机...}),暂停/断点降级为连播。
+        try {
+          await runSelfBuild(sceneCode, paramValues);
+          regenCountByStepRef.current[currentStep] = 0;
+          return;
+        } catch (e: any) {
+          console.warn("[sceneCode] 自建场景首跑失败,重试一次:", e?.message || e);
+          await new Promise((r) => setTimeout(r, 250));
+          if (cancelled) return;
+          try {
+            await runSelfBuild(sceneCode, paramValues);
+            regenCountByStepRef.current[currentStep] = 0;
+          } catch (e2: any) {
+            console.warn("[sceneCode] 自建场景重试仍失败:", e2?.message || e2);
+            if (s) { try { s.clear(); } catch {} }
+          }
+          return;
+        }
+      }
+      if (!s) return;
       s.clear();
       // 优先执行 LLM 生成的场景代码;失败则回退默认场景并触发重生成
       if (sceneCode) {
@@ -407,6 +332,21 @@ export default function StagePanel() {
       };
     }
 
+    async function runSelfBuild(code: string, params: any) {
+      // 自建场景(自由脚本):代码自己 new Scene(container,{相机...})。给真 #container + 全局导出。
+      const stage = containerRef.current;
+      if (!stage) return;
+      stage.innerHTML = "";
+      const host = document.createElement("div");
+      host.id = "container";
+      host.style.cssText = "width:100%;height:100%;";
+      stage.appendChild(host);
+      exposeManimGlobals(host);
+      const ctx: any = { container: host, params };
+      const r = await execScript(ctx, code, 40000);
+      if (!r.ok) throw new Error(r.error);
+    }
+
     async function runSceneCode(s: any, code: string, params: any) {
       // ctx 注入 manim-web 全部命名导出(类/颜色/方向/工具函数)+ scene + params。
       // 转换器路线下,后端 code 开头 `const {...} = ctx;` 解构出它 import 的标识符。
@@ -430,19 +370,13 @@ export default function StagePanel() {
         await origWait(dur);
         await waitIfPaused();
       };
-      // 预检 TS 语法,给出明确错误(沙箱是纯 JS)
-      const tsErr = detectTsSyntax(code);
-      if (tsErr) throw new Error(tsErr);
-      // 用 AsyncFunction 以支持代码里的 await scene.play(...)。
-      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-      const fn = new AsyncFunction("ctx", code);
-      try {
-        await fn(ctx);
-      } catch (e: any) {
-        // 完整 stack 打到 console,便于定位主舞台 vs 离屏验证不一致的错(e107.map / MathJax retry 等)
-        console.error("[runSceneCode FAIL]", e?.message, "\n", e?.stack);
-        throw e;
-      }
+      // 执行:支持 TS+JS(execScript 先按纯 JS 直跑,语法错才懒加载 typescript 转译剥类型),
+      // 带 40s 超时防代码挂死(卡死的动画不再把主舞台 build 卡住)。
+      const execR = await execScript(ctx, code, 40000);
+      if (execR.ok) return;
+      // 完整信息打到 console,便于定位主舞台 vs 离屏验证不一致的错(e107.map / MathJax retry 等)
+      console.error("[runSceneCode FAIL]", execR.error);
+      throw new Error(execR.error);
     }
 
     void build();

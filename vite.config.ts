@@ -27,6 +27,7 @@ export default defineConfig({
         main: resolve(__dirname, "index.html"),
         standalone: resolve(__dirname, "standalone.html"),
         graph: resolve(__dirname, "graph.html"),
+        templates: resolve(__dirname, "templates.html"),
       },
     },
   },

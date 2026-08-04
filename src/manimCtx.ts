@@ -16,6 +16,20 @@ export function makeManimCtx(scene: SceneLike, params: Record<string, number>) {
   return { ...manimWeb, matMul, np, alwaysRedraw, scene, params };
 }
 
+/** 自由脚本运行时:把 manim-web 全部导出 + 一个容器铺到 window 全局,
+ * 让 `import {X} from 'manim-web'`(被剥掉后)的名字与 `container` 在脚本里直接可用,
+ * 代码可自己 new Scene(container, {相机...}) 建场景,不必受注入 scene 约束。
+ * 顶多执行一次(幂等)。在 manimCtx 内部做,保持 namespace import 的 Fast Refresh 隔离。 */
+export function exposeManimGlobals(container: HTMLElement) {
+  const w = window as any;
+  w.container = container;
+  for (const k of Object.keys(manimWeb)) {
+    try { w[k] = (manimWeb as any)[k]; } catch { /* 个别只读/符号跳过 */ }
+  }
+  w.matMul = matMul;
+  w.np = np;
+}
+
 /** 矩阵乘法:支持矩阵×矩阵、矩阵×向量(JS 没有 @ 运算符,py2ts 也不转,
  * 转换器路线下 LLM 常写 A @ B,适配层把 ` @ ` 替换成 matMul 调用)。
  * M 为二维数组,v 为一维数组。 */

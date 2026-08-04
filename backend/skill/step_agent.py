@@ -22,6 +22,7 @@ from langchain_openai import ChatOpenAI
 from .manim_lesson import (
     LLMConfig, _get_runtime_cfg, _call_vision_llm,
     API_REF_BLOCK, RUNTIME_RULES_BLOCK, FEWSHOT_BLOCK, TEACHING_NORMS_BLOCK,
+    RUNTIME_POWER_BLOCK, OFFICIAL_EXAMPLES_BLOCK,
 )
 from .llm_config_store import _get_vision_cfg
 
@@ -78,9 +79,17 @@ sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;
 
 {RUNTIME_RULES_BLOCK}
 
+{RUNTIME_POWER_BLOCK}
+
 {FEWSHOT_BLOCK}
 
 {TEACHING_NORMS_BLOCK}
+
+═══ 官方 manim-web 示例参考(约 50%,自建 scene 风格;运行时已支持 TS/自建)═══
+下方是 manim-web 官方 example 原文。它们自带 Scene/相机、可能写 TS/多色,是 API 用法参考。
+你可以照抄其 API(坐标轴/曲线/ValueTracker/3D 相机/公式),但输出时仍需守上面的教学规范
+(配色可丰富/fontFamily 中文/教学公式);需要 3D 相机或多视角时可按官方样式在代码里 `new ThreeDScene(container,...)` 自建 scene。
+{OFFICIAL_EXAMPLES_BLOCK}
 
 记住:动画 code 必须先经 add_animation 验证通过(ok=true)才算数;不要凭空写完就 finish。
 """

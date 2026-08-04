@@ -1,11 +1,7 @@
-"""全局访问令牌鉴权(可选开关,用于安全地把后端暴露到局域网/公网)。
+"""全局访问令牌鉴权。
 
-机制:
-- token 存 backend/access_token.txt,首次启动自动生成(secrets.token_urlsafe),不重复覆盖。
-- 所有 /api/ 请求(除 /api/health)必须带 `Authorization: Bearer <token>` 或 `?token=`,否则 401。
-- 未读到 token 文件时不拦截(直通)——便于本地无鉴权开发;只要 access_token.txt 存在即强制鉴权。
-
-注意:这是"挡陌生人"的轻量门禁,不是完整用户体系。别在上面放真正敏感的数据。
+⚠️ 已按用户要求【关闭】:本中间件现在对 /api 一律放行,不拦截、不自动生成 token。
+要恢复:把 __call__ 改回"检查 Authorization/CORS"的逻辑即可(见 git 历史 / 本文件注释)。
 """
 import os
 import secrets
@@ -27,7 +23,7 @@ def get_access_token():
 
 
 def _issue_token():
-    """首次生成 token 并落盘(幂等:已存在不覆盖)。"""
+    """(关闭状态不再调用)首次生成 token 并落盘(幂等:已存在不覆盖)。"""
     if os.path.exists(_TOKEN_FILE):
         return
     t = secrets.token_urlsafe(24)
@@ -43,19 +39,9 @@ def _issue_token():
 class AccessTokenMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
-        _issue_token()
+        # 鉴权已关闭:不再自动生成/强制 token
 
     def __call__(self, request):
-        path = request.path.rstrip("/") or "/"
-        if path.startswith("/api") and path != "/api/health":
-            token = get_access_token()
-            if token is not None:
-                # CORS 预检放行(corsheaders 已先处理;这里兜底)
-                if request.method == "OPTIONS":
-                    return self.get_response(request)
-                auth = request.headers.get("Authorization", "")
-                provided = auth[7:].strip() if auth.startswith("Bearer ") else request.GET.get("token", "")
-                if provided and secrets.compare_digest(provided, token):
-                    return self.get_response(request)
-                return JsonResponse({"error": "unauthorized: 需要有效的访问令牌(Access Token)"}, status=401)
+        # 鉴权关闭:所有请求直接放行。
+        return self.get_response(request)
         return self.get_response(request)

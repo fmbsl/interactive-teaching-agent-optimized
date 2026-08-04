@@ -298,7 +298,7 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 ═══════════════════════════════════════════
 二、API REF(manim-web 0.3.24 真实签名,照此写)
 ═══════════════════════════════════════════
-所有构造都是 `new Class({...options})` 选项对象风格,camelCase key。坐标 2D `[x,y,0]`,3D `[x,y,z]`。颜色用 CSS 字符串(如 `'#4a9eff'`)或 manim 常量(已注入:`BLUE`/`BLUE_B`/`BLUE_C`/`BLUE_D`/`BLUE_E`/`WHITE`/`GRAY`/`LIGHT_GRAY` 等)。**只用蓝色系**,禁红绿橙黄紫粉。
+所有构造都是 `new Class({...options})` 选项对象风格,camelCase key。坐标 2D `[x,y,0]`,3D `[x,y,z]`。颜色用 CSS 字符串(如 `'#4a9eff'`)或 manim 常量(已注入:`BLUE`/`BLUE_B`/`BLUE_C`/`BLUE_D`/`BLUE_E`/`WHITE`/`GRAY`/`LIGHT_GRAY` 等)。**配色可丰富**(多色区分元素,见第五节教学与视觉规范)。
 
 【场景控制】
 - `scene.add(...mobs)` / `scene.remove(...mobs)` / `await scene.wait(duration?)`
@@ -428,7 +428,7 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 
 ═══════════════════════════════════════════
 四、FEW SHOT(实测可运行的写法,照此模板)
-以下 10 个示例改写自 manim-web 官方 examples(maloyan 维护,实测可运行),覆盖 2D 函数图/向量/积分/ValueTracker/线性变换/公式/3D 曲面/3D 相机。**注意:官方示例用了 RED/GREEN/YELLOW 等多色、且 Text 没带 fontFamily(为展示 API),但你自己的代码必须:(1)遵守第五节蓝色系;(2)所有 Text 带 `fontFamily: '"Times New Roman","SimSun",serif'`;(3)数学公式用 MathTex/Tex 而非 Text**。变量名照官方可保留 snake_case 作参考,但你输出时用 camelCase。其中 `displaying_equations`/`moving_angle` 示例演示了 MathTex/MathTexImage 的用法(`await waitForRender()` 后再 add/play)。
+以下 10 个示例改写自 manim-web 官方 examples(maloyan 维护,实测可运行),覆盖 2D 函数图/向量/积分/ValueTracker/线性变换/公式/3D 曲面/3D 相机。**注意:官方示例用了 RED/GREEN/YELLOW 等多色、且 Text 没带 fontFamily(为展示 API),但你自己的代码必须:(1)配色可丰富但一致、对比清晰(见第五节);(2)所有 Text 带 `fontFamily: '"Times New Roman","SimSun",serif'`;(3)数学公式用 MathTex/Tex 而非 Text**。变量名照官方可保留 snake_case 作参考,但你输出时用 camelCase。其中 `displaying_equations`/`moving_angle` 示例演示了 MathTex/MathTexImage 的用法(`await waitForRender()` 后再 add/play)。
 
 【vector_arrow · 2D 基础:NumberPlane + Dot + Arrow + Text 标注】
 ```typescript
@@ -721,8 +721,9 @@ const axes = new ThreeDAxes({
 ═══════════════════════════════════════════
 五、教学与视觉规范
 ═══════════════════════════════════════════
-- **配色只用蓝色系梯度**:主蓝 `BLUE`/`#4a9eff`、亮蓝 `BLUE_C`/`#5fb0ff`、深蓝 `BLUE_D`/`#2b6cb0`、中性 `GRAY`/`#9aa6b8`、背景轴 `#2b3a52`。禁红绿橙黄紫粉。
-- 主体图形 strokeWidth 3-4;辅助线/标注 1-2 且用中性色。
+- **配色可以丰富(多色更好)**:允许红/绿/橙/黄/紫/青等,用不同色相区分不同元素/曲线/对比,教学上更清楚。要点:
+  ① 同一画面里同类元素用一致的色;② 主体用高对比亮色、辅助/背景/网格用低饱和中性色;③ 背景保持深色(`#0a0c14` 附近)、浅色文字;④ 别让文字与底色或同色线混在一起。可参考官方 example 的多色用法。
+- 主体图形 strokeWidth 3-4;辅助线/标注 1-2 且用中性或浅色。
 - **每步建议有文字标注**(显示关键概念名/公式/轴标签,帮助理解),但不要为凑数堆砌——画面简洁清晰优先。中文 Text 必带 fontFamily。数学公式另用 MathTex/Tex(见下)。
 - 动画节奏**按需**:简单概念不必硬拆多步,但**进场别只用裸 `Create`/`FadeIn`**——文字/公式用 `Write`、向量用 `GrowArrow`、几何形用 `DrawBorderThenFill`,关键量用 `Indicate`/`Circumscribe` 强调(见 API REF 动画段 + 编排与节奏)。多元素进场用 `AnimationGroup`/`LaggedStart` 错峰,别一次性 `scene.add` 瞬切。需要分步演示的才用多个 `await scene.play(...)`;不要只画静态图(除非该步本就是静态结论)。
 - 3D 场景的标题/标注用 `scene.addFixedInFrameMobjects(text)` 钉到屏幕帧;3D 对象(Dot3D/Sphere/Arrow3D)直接 `scene.add`。
@@ -761,6 +762,74 @@ API_REF_BLOCK = _BLOCKS["api_ref"]
 RUNTIME_RULES_BLOCK = _BLOCKS["runtime_rules"]
 FEWSHOT_BLOCK = _BLOCKS["few_shot"]
 TEACHING_NORMS_BLOCK = _BLOCKS["teaching_norms"]
+
+
+# ---------- 运行环境新能力(TS 容忍 + 可自建 scene)----------
+# 运行时(前端 src/runScript.ts + manimCtx.exposeManimGlobals)已支持:
+#   • TS 注解容忍:LLM 顺手带 `: number` 等运行时会自动剥掉,不必整段重写;
+#   • 自建 scene:代码可 `new Scene(container,{相机/3D})` / `new ThreeDScene(container,...)`,
+#     运行时给真 #container 并把 manim-web 全部导出铺到全局,import 也可用(会被剥掉)。
+# 仍保留注入 scene 的默认写法(暂停/断点依赖);需要相机/3D/PiP 时才自建。
+RUNTIME_POWER_BLOCK = """═══ 运行环境新能力(重要,别被旧规矩吓退)═══
+• 你现在可以写 TS 类型注解(如 `const dots: Dot[] = []`、`(x: number)`、`x as T`)——
+  运行时会在执行前自动剥掉类型转成纯 JS,不会再整段报错。但别依赖它:写出清晰 JS 更省 token、更稳。
+• 你现在可以自建 scene:需要相机/3D/视角/PiP 时,直接在代码里 `new ThreeDScene(container, {...})`
+  或 `new Scene(container, {...})` 自己建(container 由运行时提供,manim-web 全部导出已铺到全局,
+  也能用 import 语法——import 会被剥掉但名字仍可用)。默认仍推荐用注入的 `scene`(已帮你建好,
+  且附带段间暂停/断点功能);只在确实要自定义相机/多视角/3D 轨道时才自建。
+• 官方 manim-web 示例(下方"官方示例参考")就是"自建 scene + 可能写 TS"的写法,可照抄其 API 用法。
+"""
+
+
+# ---------- 官方 example 约 50%(few-shot 参考:自建 scene 风格)----------
+# 从 tools/demo/_mw_exs 读取官方示例全文注入提示词,让 LLM 学到 manim-web 的真实 API 用法。
+# 注:官方例子保留多色/无 fontFamily/自建场景,是 API 演示;你自己输出时仍要守教学规范
+# (配色可丰富/fontFamily 中文/公式用 MathTexImage/自建或注入 scene 皆可)。
+_OFFICIAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "tools", "demo", "_mw_exs")
+OFFICIAL_FEWSHOT_FILES = [
+    "vector_arrow.ts", "sin_cos_plot.ts", "graph_area_plot.ts", "sine_curve_unit_circle.ts",
+    "polygon_on_axes.ts", "moving_dots.ts", "point_moving_on_shapes.ts", "point_with_trace.ts",
+    "rotation_updater.ts", "moving_angle.ts", "moving_group_to_destination.ts", "replacement_transform.ts",
+    "text_transform.ts", "displaying_text.ts", "displaying_equations.ts", "brace_annotation.ts",
+    "boolean_operations.ts", "heat_diagram_plot.ts", "moving_around.ts",
+    "three_d_surface_plot.ts", "three_d_angle.ts", "three_d_camera_rotation.ts",
+    "three_d_camera_illusion_rotation.ts", "three_d_light_source_position.ts",
+    "mathtex_svg.ts", "mathtex_to_text_transform.ts", "easing_functions_showcase.ts",
+    "rate_functions_comparison.ts", "manim_ce_logo.ts", "opening_manim.ts",
+]
+
+
+def _find_official_dir() -> str:
+    # 从本文件逐级向上找含 tools/demo/_mw_exs 的目录(兼容主仓/工作树两种检出)
+    cur = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _ in range(6):
+        cand = os.path.join(cur, "tools", "demo", "_mw_exs")
+        if os.path.isdir(cand):
+            return cand
+        up = os.path.dirname(cur)
+        if up == cur:
+            break
+        cur = up
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "tools", "demo", "_mw_exs")
+
+
+_OFFICIAL_DIR = _find_official_dir()
+
+
+def _load_official_fewshot(subset: Optional[list] = None) -> str:
+    files = subset or OFFICIAL_FEWSHOT_FILES
+    blocks = []
+    for f in files:
+        p = os.path.join(_OFFICIAL_DIR, f)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                blocks.append("/* 官方示例: %s */\n" % f + fh.read())
+        except Exception:
+            continue
+    return "\n\n".join(blocks)
+
+
+OFFICIAL_EXAMPLES_BLOCK = _load_official_fewshot()
 
 
 def generate_step(
@@ -834,7 +903,7 @@ SCENE_SYSTEM_PROMPT = """你是一个 manim-web(浏览器版 Manim,TypeScript)�
 - **数学公式用 `MathTex`/`Tex`**(真 LaTeX,ctx 已提供),不要把公式塞进 Text;Text 只用于普通文字/标注。MathTex 用前 `await eq.waitForRender()`。
 
 视觉要求(重要,避免简陋):
-- 配色统一蓝色系梯度:主蓝 "#4a9eff"、亮蓝 "#5fb0ff"、浅蓝 "#a8c8e8"、深蓝 "#2b6cb0"、中性 "#9aa6b8"、背景轴 "#2b3a52"。禁止用橙/绿/红/紫等其它色相。
+- 配色可丰富(多色区分元素/曲线/对比),背景保持深色、浅色文字;主体 strokeWidth 3-4,辅助中性。
 - 主体图形 strokeWidth 3-4;辅助线/标注 strokeWidth 1-2 且用中性色。
 - **每步代码必须包含至少 1 个 Text 作为标题或标注**(显示该步关键概念名/公式/坐标轴标签),不能只画几何图形没有文字。所有 Text 必须带 fontFamily: '"Times New Roman","SimSun",serif',否则中文不显示。文字 fontSize 0.25-0.4,用亮蓝/浅蓝色让标注醒目。
 - 用 VGroup 分组相关元素,一起 Create 或 FadeIn。
