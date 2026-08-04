@@ -12,6 +12,11 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["backend/manage.py", "runserver", "--noreload", "8000"],
       "port": 8000
+    },
+    {
+      "name": "attach-5173",
+      "url": "http://localhost:5173",
+      "port": 5173
     }
   ]
 }

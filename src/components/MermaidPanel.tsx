@@ -15,7 +15,10 @@ async function loadMermaid() {
   if (mermaidReady) return mermaidReady;
   mermaidReady = (async () => {
     const m = await import("mermaid");
-    m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose", fontFamily: '"Times New Roman","SimSun",serif' });
+    // securityLevel 用 strict:mermaid 对渲染出的 SVG 做 DOMPurify 清洗。图代码来自主 agent LLM 输出,
+    // LLM 的输入(用户问题/上传文件)可被诱导在节点标签里插 HTML(如 <img onerror>),loose 模式会原样进 DOM
+    // 最后走 dangerouslySetInnerHTML → XSS。strict 会剥掉脚本/事件处理器。
+    m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict", fontFamily: '"Times New Roman","SimSun",serif' });
     return m.default;
   })();
   return mermaidReady;

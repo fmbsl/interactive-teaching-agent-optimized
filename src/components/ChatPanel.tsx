@@ -4,7 +4,7 @@ import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import {
-  startLesson, nextStep, prevStep, gotoStep, updateQuestion, uploadFile,
+  nextStep, prevStep, gotoStep,
   postRenderResult, getTrace,
   chat, chatAnswer, uploadForSession, decompose,
   listSessions, newSession, getSession, exportSession, importSessionFromFile,
@@ -13,7 +13,7 @@ import {
 } from "../data/llmClient";
 import { useApp, type StepStatus } from "../store";
 import {
-  Menu, Plus, Paperclip, Download, Upload, ChevronRight, Wrench, Bot,
+  Menu, Plus, Paperclip, Download, Upload, Wrench, Bot,
   Code2, Play, Check, X, Loader2, Sparkles,
 } from "lucide-react";
 
@@ -44,7 +44,7 @@ export default function ChatPanel() {
   const [loading, setLoading] = useState(false);
   const [pendingAsk, setPendingAsk] = useState<{ question: string; options?: string[] } | null>(null); // 主 agent 问的问题(+可选预设选项);非 null 时发送=回答该问题
   const [fileName, setFileName] = useState<string | null>(null);
-  const [fileText, setFileText] = useState<string | null>(null);
+  const [, setFileText] = useState<string | null>(null); // fileText 值未读(仅 setter 兼容旧接口),取值弃用
   const [showSessions, setShowSessions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -243,6 +243,8 @@ export default function ChatPanel() {
       }
       if (ev.kind === "render_request") {
         // 浏览器在环验证:让 StagePanel 跑这段 code,拿结果(含可选最后一帧 frame)回传后端,继续 consume 回传流
+        // 先切回动画舞台,保证 StagePanel 挂载消费 verifyRequest(否则 view=graph/mermaid 时 Promise 永不 resolve → 死锁)
+        setView("animation");
         const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
           verifyResultHandler.current = (ok, error, frame) => resolve({ ok, error, frame });
           requestVerify(ev.stepId, ev.code);
@@ -327,6 +329,8 @@ export default function ChatPanel() {
       else updateStepContent(ev.stepId, content);
     } else if (ev.kind === "render_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      // 必须先切回动画舞台:StagePanel 挂载才有 verifyRequest 消费端;view=graph/mermaid 时无人 resolve → 永久"生成中"死锁
+      setView("animation");
       const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
         verifyResultHandler.current = (ok, error, frame) => resolve({ ok, error, frame });
         requestVerify(ev.stepId, ev.code);
@@ -391,7 +395,7 @@ export default function ChatPanel() {
       setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
     } else if (ev.kind === "ask") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
-      setPendingAsk(ev.question);
+      setPendingAsk({ question: ev.question, options: (ev as any).options });
     } else if (ev.kind === "done" || ev.kind === "plan" || ev.kind === "step-start") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
     }
@@ -408,7 +412,6 @@ export default function ChatPanel() {
       if (pendingAsk) {
         setPendingAsk(null);
         await consume(chatAnswer(sessionIdRef.current || "", q));
-        void ask;
       } else {
         const fileIds = pendingFiles.map((f) => f.file_id);
         clearPendingFiles();
@@ -526,7 +529,7 @@ export default function ChatPanel() {
 
   async function handleImport(f: File) {
     try {
-      const { sessionId: sid, title } = await importSessionFromFile(f);
+      const { sessionId: sid } = await importSessionFromFile(f);
       const detail = await getSession(sid);
       switchSession({
         sessionId: sid,
@@ -769,12 +772,12 @@ function renderTree(items: RenderedItem[], setItems: Dispatch<SetStateAction<Ren
     return (
       <div key={it.key} style={{ paddingLeft: depth * 14 }}>
         <EventCard event={it.event} collapsed={it.collapsed} onToggle={() => toggle(it.key)} />
-        {!it.collapsed && renderKids(kids, depth + 1, toggle)}
+        {!it.collapsed && renderKids(kids, depth + 1)}
       </div>
     );
   };
   // 渲染一组 children:把连续的 tool_call 聚合成 ToolGroup(一行"Wrench t1 → t2 · N 个",点开逐个展开)
-  const renderKids = (kids: RenderedItem[], depth: number, toggle: (k: string) => void): ReactNode => {
+  const renderKids = (kids: RenderedItem[], depth: number): ReactNode => {
     const out: ReactNode[] = [];
     let group: RenderedItem[] = [];
     const flush = () => {

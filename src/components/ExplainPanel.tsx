@@ -7,7 +7,7 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 
 export default function ExplainPanel() {
-  const { lesson, currentStep, topics, pendingQuiz, setPendingQuiz, quizResult, setQuizResult, setPendingResume } = useApp();
+  const { lesson, currentStep, topics, pendingQuiz, quizResult, setQuizResult, setPendingResume } = useApp();
   // 新流程:currentStep 是字符串 topicid-N,从 topics 找;旧流程:数字,从 lesson.steps 找
   // lesson 可能为 null(分解建的空 session),用空数组兜底
   const lessonSteps = lesson?.steps ?? [];
@@ -28,6 +28,13 @@ export default function ExplainPanel() {
     const correct = choice === pendingQuiz.answer;
     setQuizResult({ choice, correct, explanation: pendingQuiz.explanation });
     setPendingResume({ answer: String(choice) });  // ChatPanel useEffect 监听 → consume chatAnswer
+  };
+  // 跳过此题:resume 主 agent 的 generate_quiz(answer=-1 → 工具判"未作答"),让对话能继续,
+  // 避免用户发新消息时撞上悬空的 tool_call 导致 INVALID_CHAT_HISTORY
+  const skipQuiz = () => {
+    if (!pendingQuiz || quizResult) return;
+    setQuizResult({ choice: -1, correct: false, explanation: "你跳过了这道题。" });
+    setPendingResume({ answer: "-1" });
   };
 
   return (
@@ -112,6 +119,14 @@ export default function ExplainPanel() {
                 );
               })}
             </div>
+            {!quizResult && (
+              <button
+                onClick={skipQuiz}
+                className="w-full text-[10px] text-[#4a5365] hover:text-[#9aa6b8] border border-[#1e293b] hover:border-[#2b6cb0]/40 rounded-md px-2 py-1 transition-colors"
+              >
+                跳过此题,继续对话
+              </button>
+            )}
             {quizResult && (
               <div className={`text-[11px] leading-relaxed rounded-md p-2 ${quizResult.correct ? "bg-[#16a34a]/10 text-[#86efac]" : "bg-[#ef4444]/8 text-[#fca5a5]"}`}>
                 <span className="font-medium">{quizResult.correct ? "答对啦!" : "答错了"}</span>

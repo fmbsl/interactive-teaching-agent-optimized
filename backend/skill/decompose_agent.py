@@ -518,8 +518,10 @@ def run_decompose_agent(sid: str, question: str, file_text: Optional[str] = None
     """
     cfg = cfg or _get_runtime_cfg()
     # 初始化该 session 的图草稿 + root 节点(root 是普通节点,拆则消失,不拆则留作叶)
-    _GRAPHS[sid] = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}}
-    _EMIT[sid] = []
+    # 复位整图要在 _LOCKS 内进行,防与并行编辑/edit_* 竞态(swap 瞬间短暂持锁,不阻塞后续工具)
+    with _LOCKS[sid]:
+        _GRAPHS[sid] = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}}
+        _EMIT[sid] = []
     G = _GRAPHS[sid]
     root_title = question.strip()[:40] or "知识点"
     root_id = "root"

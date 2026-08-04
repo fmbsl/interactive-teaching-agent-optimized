@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edge, type Connection, type EdgeChange, type NodeChange, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
+import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edge, MarkerType, useNodesState, useEdgesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { uploadFile, decompose, decomposeToTopics, decomposeEdit, decomposeAutoSplit, newSession } from "../data/llmClient";
 import { useApp } from "../store";
-import { Wrench, Paperclip, ListPlus, Pencil, Trash2, GraduationCap, Split, Merge, Plus, X } from "lucide-react";
+import { Paperclip, ListPlus, Pencil, Trash2, GraduationCap, Split, Merge, Plus } from "lucide-react";
 
 // 深色主题。xyflow v12 的 .react-flow__edges 缺 width/height,强制铺满。
 // 用默认 node(ReactFlow 内置)而非自定义 nodeTypes——自定义 node 在本环境会触发 ResizeObserver 不触发→visibility:hidden→边不画。

@@ -28,7 +28,7 @@ from .llm_config_store import _get_vision_cfg
 
 # ---------- 草稿存储:每个 (sid, step_id) 一份,工具往里写 ----------
 
-_DRAFTS: dict[tuple[str, int], dict] = defaultdict(lambda: {
+_DRAFTS: dict[tuple[str, str], dict] = defaultdict(lambda: {
     "title": "", "intent": "", "explanation": "", "formula": "", "narration": "",
     "params": [], "sceneCode": "", "renderAttempts": 0,
 })
@@ -258,13 +258,15 @@ def _build_agent(cfg: LLMConfig, sid: str, step_id: int):
 # ---------- 运行:返回事件生成器(处理 interrupt/resume)----------
 
 # resume 值暂存:前端 POST /api/render_result 时存进来,run_step_agent 的循环读取
-_RESUMES: dict[tuple[str, int], dict] = {}
+_RESUMES: dict[tuple[str, str], dict] = {}
 
 
-def set_render_result(sid: str, step_id: int, ok: bool, error: str = "", frame_path: str = "") -> None:
+def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: str = "") -> None:
     """前端渲染回传结果(由 /api/render_result 调用)。
     frame_path:若 ok=True 且前端截了最后一帧(视觉检查用),为图片存盘路径;否则空。"""
-    _RESUMES[(sid, step_id)] = {"ok": ok, "error": error, "framePath": frame_path}
+    # 键统一为字符串:run 与 resume 都 str(step_id),防旧整数流 int/str 键不匹配 → resume 失效
+    key = (sid, str(step_id))
+    _RESUMES[key] = {"ok": ok, "error": error, "framePath": frame_path}
 
 
 def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
@@ -277,6 +279,8 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
       3. 若超 max_attempts 或异常,yield {"kind":"error","message":...}。
     """
     cfg = cfg or _get_runtime_cfg()
+    # step_id 键统一为字符串(旧整数流是 int,新 topic 流是 str),run 与 resume 一致才能命中 _DRAFTS/_RESUMES
+    step_id = str(step_id)
     # 重置草稿
     _DRAFTS[(sid, step_id)] = {
         "title": step_title, "intent": "", "explanation": "", "formula": "", "narration": "",
@@ -360,9 +364,10 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
            "agent": "step", "stepId": step_id, "payload": {"message": "agent 结束但未生成通过的动画"}}
 
 
-def resume_step_agent(sid: str, step_id: int, cfg: Optional[LLMConfig] = None):
+def resume_step_agent(sid: str, step_id, cfg: Optional[LLMConfig] = None):
     """前端回传渲染结果后,恢复 agent 继续跑。生成器 yield 同 run_step_agent。"""
     cfg = cfg or _get_runtime_cfg()
+    step_id = str(step_id)  # 与 run_step_agent/set_render_result 键一致(统一字符串)
     draft0 = _DRAFTS.get((sid, step_id), {})
     tid = _thread_id(sid, step_id, draft0.get("runNonce", "0"))
     result = _RESUMES.pop((sid, step_id), None)

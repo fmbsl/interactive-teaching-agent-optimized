@@ -298,12 +298,44 @@ def _resolve_step_info(session: dict, step_id) -> tuple[str, list[str], object]:
                 return title, outline_titles, step_id
         return f"第 {step_id} 步", [], None
     # 旧 lesson step(int)
+    try:
+        n = int(step_id)
+    except Exception:
+        return f"第 {step_id} 步", [], None
     lesson = session.get("lesson") or {}
-    n = int(step_id)
     title = _step_title(lesson, n) or f"第 {n} 步"
     outline_titles = [st.get("title", "") for st in lesson.get("steps", [])]
     prev_id = n - 1 if n > 1 else None
     return title, outline_titles, prev_id
+
+
+def _valid_step_id(session: dict, step_id) -> bool:
+    """校验 step_id 是否属于该 session 的真实一步。
+    防两件事:①垃圾字符串(如 'abc'、'no-such-topic-1')被 _resolve_step_info 的 int() 炸成 500
+    或②触发 step_agent 空跑浪费 LLM。新 topic 流要求 topicid 存在且 step 精确匹配/索引合法;旧 lesson 流要求 1<=int<=len(steps)。"""
+    if isinstance(step_id, str) and "-" in step_id:
+        topic_id, n_part = step_id.rsplit("-", 1)
+        is_summary = n_part.startswith("S")
+        try:
+            n = int(n_part[1:]) if is_summary else int(n_part)
+        except Exception:
+            n = None
+        for tp in session.get("topics", []):
+            if tp.get("id") != topic_id:
+                continue
+            # 精确 id 匹配(含融合总结 step);否则数字索引合法也放行
+            if any(s.get("id") == step_id for s in tp.get("steps", [])):
+                return True
+            if n is not None:
+                return 1 <= n <= len(tp.get("steps", []) or [])
+            return False
+        return False
+    try:
+        n = int(step_id)
+    except Exception:
+        return False
+    lesson = session.get("lesson") or {}
+    return 1 <= n <= len(lesson.get("steps", []) or [])
 
 
 
@@ -376,6 +408,9 @@ def next_step(request):
         return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
 
     lesson = session["lesson"]
+    # current_step 可能是字符串 topic step_id(topic 会话),legacy next/prev 只支持数字步,避免 TypeError
+    if not isinstance(session["current_step"], (int, float)):
+        return _streaming_response(iter([_sse("error", {"message": "当前会话为知识点(list)流程,请用左侧知识点列表跳转"})]))
     nxt = session["current_step"] + 1
     if nxt > len(lesson["steps"]):
         return _streaming_response(iter([_sse("done", {"message": "已全部完成"})]))
@@ -407,6 +442,8 @@ def prev_step(request):
         return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
 
     lesson = session["lesson"]
+    if not isinstance(session["current_step"], (int, float)):
+        return _streaming_response(iter([_sse("error", {"message": "当前会话为知识点(list)流程,请用左侧知识点列表跳转"})]))
     prev = session["current_step"] - 1
     if prev < 1:
         return _streaming_response(iter([_sse("done", {"message": "已是第一步"})]))
@@ -441,10 +478,9 @@ def goto_step(request):
         return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
 
     lesson = session["lesson"]
-    # 旧 lesson step 做边界检查;新 topic step 由 _explain_event 内部解析,这里跳过数值校验
-    if not isinstance(step_id, str):
-        if step_id < 1 or step_id > len(lesson["steps"]):
-            return _streaming_response(iter([_sse("error", {"message": "step_id 越界"})]))
+    # 统一校验(旧 lesson 数值边界 + 新 topic 存在性 + 防垃圾字符串 int() 500 / LLM 空跑)
+    if not _valid_step_id(session, step_id):
+        return _streaming_response(iter([_sse("error", {"message": f"step_id 无效或越界: {step_id}"})]))
     session["current_step"] = step_id
     dlog(f"GOTO sid={sid} -> step={step_id}")
 
@@ -478,6 +514,8 @@ def explain(request):
     if not session:
         return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
     lesson = session.get("lesson") or {}
+    if not _valid_step_id(session, step_id):
+        return _streaming_response(iter([_sse("error", {"message": f"step_id 无效: {step_id}"})]))
     session["current_step"] = step_id
     dlog(f"EXPLAIN sid={sid} step={step_id}")
 
@@ -543,6 +581,8 @@ def regenerate(request):
     session = agent.get_session(sid)
     if not session or not step_id:
         return _streaming_response(iter([_sse("error", {"message": "会话或 step_id 缺失"})]))
+    if not _valid_step_id(session, step_id):
+        return _streaming_response(iter([_sse("error", {"message": f"step_id 无效: {step_id}"})]))
 
     lesson = session["lesson"]
     dlog(f"REGENERATE sid={sid} step={step_id} error={error!r}")
@@ -583,6 +623,12 @@ def render_result(request):
         return _streaming_response(iter([_sse("error", {"message": "session_id/step_id 缺失"})]))
     # step_id 统一转字符串(set_render_result/resume_step_agent/step_cache 都按字符串键存)
     step_id = str(step_id)
+    # 文件名的 step_id 必须白名单清洗:禁止 / \ .. 等路径穿越字符(step_id 也作缓存键,故单独清洗出一份)
+    try:
+        import re as _re_safe
+        safe_id = "".join(_re_safe.findall(r"[A-Za-z0-9_-]", step_id)) or "step"
+    except Exception:
+        safe_id = "step"
     # ok=True 且带了 frame → 存盘,路径传给 step agent 做视觉检查
     frame_path = ""
     if ok and frame:
@@ -592,9 +638,9 @@ def render_result(request):
             _os.makedirs(frames_dir, exist_ok=True)
             # 去掉可能的 data: 前缀
             raw = _re.sub(r"^data:image/\w+;base64,", "", frame)
-            with open(_os.path.join(frames_dir, f"step_{step_id}.png"), "wb") as _f:
+            with open(_os.path.join(frames_dir, f"step_{safe_id}.png"), "wb") as _f:
                 _f.write(_b64.b64decode(raw))
-            frame_path = _os.path.join(frames_dir, f"step_{step_id}.png")
+            frame_path = _os.path.join(frames_dir, f"step_{safe_id}.png")
         except Exception as e:
             dlog(f"FRAME_SAVE_FAIL sid={sid} step={step_id} err={e!r}")
     dlog(f"RENDER_RESULT sid={sid} step={step_id} ok={ok} error={error!r} frame={'Y' if frame_path else 'N'}")
@@ -668,7 +714,7 @@ def session_detail(request, sid: str):
     merged_steps = []
     for st in lesson.get("steps", []):
         sid_num = st.get("id")
-        sc = step_cache.get(sid_num, {})
+        sc = step_cache.get(str(sid_num), {})
         merged_steps.append({
             **st,
             "narration": sc.get("narration", st.get("narration", "")),
@@ -725,8 +771,11 @@ def export_session(request, sid: str):
     except KeyError as e:
         return JsonResponse({"error": str(e)}, status=404)
     resp = JsonResponse(data, json_dumps_params={"ensure_ascii": False})
-    filename = (data.get("title") or sid).replace(" ", "_")[:30]
-    resp["Content-Disposition"] = f'attachment; filename="{filename}.json"'
+    # 清理文件名:去掉引号/CR/LF/路径分隔等可能注入 Content-Disposition 响应头的字符
+    import re as _re_cd
+    fname = (data.get("title") or sid).replace(" ", "_")
+    fname = _re_cd.sub(r'[^\w.\-]', "", fname)[:40] or "session"
+    resp["Content-Disposition"] = f'attachment; filename="{fname}.json"'
     return resp
 
 
@@ -974,8 +1023,9 @@ def decompose_split(request, sid: str):
     if not target:
         return JsonResponse({"error": "缺少 target"}, status=400)
     dlog(f"DECOMPOSE SPLIT sid={sid} target={target!r} children={len(children)} prune={prune}")
-    from skill.decompose_agent import manual_split, _GRAPHS
-    if sid not in _GRAPHS or not _GRAPHS[sid].get("nodes"):
+    from skill.decompose_agent import manual_split, _GRAPHS, ensure_graph_loaded
+    # 重启后 _GRAPHS 为空,先从 session.graph 快照重建(与 edit/auto_split/to_topics 一致),否则重启即 404
+    if not ensure_graph_loaded(sid):
         return JsonResponse({"error": f"会话 {sid} 不存在或未初始化(先跑一次分解)"}, status=404)
     events, msg, snapshot = manual_split(sid, target, children, prereqs, deps, prune=prune)
     # 落盘拆分事件到 decompose jsonl(供 trace 重放)

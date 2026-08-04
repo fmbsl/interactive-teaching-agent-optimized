@@ -173,8 +173,14 @@ def _build_tools(sid: str):
         用户学完某步、或想自测时调。一次出一道题。
         step_title=该题对应的知识点标题;question=题干;options=4 个选项文本(数组);answer=正确选项的下标(0-3);explanation=答案解析(讲为什么对、其他为什么错)。
         前端在右边栏显示题+选项按钮,用户点选项后返回,工具自动对比 answer 判对错。"""
+        # answer 是 LLM 传入的选项下标,可能越界或非数字(str/int),钳制到合法范围防 IndexError/ValueError 崩掉 agent turn
+        try:
+            answer_idx = int(answer)
+        except (TypeError, ValueError):
+            answer_idx = 0
+        answer_idx = max(0, min(answer_idx, len(options) - 1)) if options else 0
         iv = {"kind": "quiz", "step_title": step_title, "question": question,
-              "options": list(options), "answer": int(answer), "explanation": explanation}
+              "options": list(options), "answer": answer_idx, "explanation": explanation}
         result = interrupt(iv)
         # result = 用户选的选项下标(int)或 {"choice": idx}
         if isinstance(result, dict):
@@ -185,12 +191,12 @@ def _build_tools(sid: str):
             choice = int(choice) if choice is not None else -1
         except (TypeError, ValueError):
             choice = -1
-        correct = (choice == int(answer))
+        correct = (choice == answer_idx)
         if choice < 0:
-            return f"用户未作答(跳过)。正确答案:{chr(65+int(answer))}. {options[int(answer)]}"
+            return f"用户未作答(跳过)。正确答案:{chr(65+answer_idx)}. {options[answer_idx]}"
         if correct:
             return f"用户答对啦!选了 {chr(65+choice)}。解析:{explanation}"
-        return f"用户答错。选了 {chr(65+choice)},正确答案是 {chr(65+int(answer))}. {options[int(answer)]}。解析:{explanation}"
+        return f"用户答错。选了 {chr(65+choice)},正确答案是 {chr(65+answer_idx)}. {options[answer_idx]}。解析:{explanation}"
 
     @tool
     def generate_diagram(step_title: str, diagram_type: str, code: str, explanation: str) -> str:
@@ -427,10 +433,37 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
         s.setdefault("conversation", []).append({"role": "user", "content": user_text})
         _agent()._persist_state(sid)
     _DRAFTS[sid] = {"topics": list((s or {}).get("topics", []))}
+    # 清掉上个 run 残留的 _EMIT 事件(上个 run 若在工具 append 后异常/被 supersede 才可能在该 run 开头被误 drain → 串台误触发 stage_switch/graph)。
+    # 本 run 全新开始,不应带旧事件。
+    _EMIT.pop(sid, None)
 
     thread_id = f"main#{sid}"
     agent_obj = _build_agent(cfg, sid, cur_depth)
     config = {"configurable": {"thread_id": thread_id}}
+    # 防止 INVALID_CHAT_HISTORY:若上一回合有"未完成的工具调用"(ask_user/生成题/动画/分解用
+    # interrupt() 暂停后,用户没走 resume(答题/跳过)而是直接发了条新消息),这个孤儿 tool_call
+    # 没有对应的 ToolMessage。此时在本线程上再注入新的 user 消息,langgraph 会抛
+    # "Found AIMessages with tool_calls that do not have a corresponding ToolMessage" 把主 agent 崩掉。
+    # 检测到就给出干净错误并提示先完成(答完题/点「跳过」),而不是让 agent 抛异常。
+    try:
+        _st = agent_obj.get_state(config)
+        _hist = ((_st.values or {}).get("messages") or []) if _st else []
+        _orphan = False
+        for _i, _m in enumerate(_hist):
+            if type(_m).__name__ == "AIMessage" and getattr(_m, "tool_calls", None):
+                _ids = {tc.get("id") for tc in _m.tool_calls}
+                _has_tm = any(getattr(_x, "tool_call_id", None) in _ids for _x in _hist[_i + 1:]
+                              if type(_x).__name__ == "ToolMessage")
+                if not _has_tm:
+                    _orphan = True
+                    break
+        if _orphan:
+            yield {"kind": "error", "id": _new_id(sid), "parentId": None, "agent": "main",
+                   "stepId": None,
+                   "payload": {"message": "上一步还有一个待完成的任务(题目/提问/生成动画/分解)。请先完成它(答题或点「跳过」),再继续对话。"}}
+            return
+    except Exception:
+        pass  # get_state 失败不阻塞主流程
     agent_evt_id = _new_id(sid)
     yield {"kind": "agent_start", "id": agent_evt_id, "parentId": None, "agent": "main",
            "stepId": None, "payload": {"title": "主 agent · 对话"}}

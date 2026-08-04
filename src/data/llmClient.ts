@@ -171,7 +171,7 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
     const base = { id: e.id, parentId: e.parentId, ts: e.ts, agent: e.agent };
     switch (e.kind) {
       case "message": return { ...base, kind: "message", role: p.role || "orchestrator", text: p.text || "" };
-      case "message_delta": return { ...base, kind: "message_delta", id: tree?.id || p.id || "", role: p.role || "orchestrator", text: p.text || "" };
+      case "message_delta": return { ...base, kind: "message_delta", id: e.id || p.id || "", role: p.role || "orchestrator", text: p.text || "" };
       case "plan": return { ...base, kind: "plan", title: p.title, summary: p.summary, params: p.params, steps: p.steps };
       case "step-start": return { ...base, kind: "step-start", stepId: (p.stepId ?? e.stepId), title: p.title };
       case "agent_start": return { ...base, kind: "agent_start", stepId: (p.stepId ?? e.stepId), title: p.title };
@@ -391,6 +391,10 @@ async function* streamSSE(url: string, body: any): AsyncGenerator<ChatEvent> {
     }
   } catch (e: any) {
     yield { kind: "error", message: `流中断:${e.message}` };
+  } finally {
+    // 早退(如切会话/新 run 取代旧 run 时 consume 提前 return,生成器被 .return() 中断):
+    // 显式取消底层 reader,否则已建立的 HTTP 连接会挂着直到服务端超时
+    try { reader.cancel(); } catch { /* ignore */ }
   }
 }
 
@@ -431,6 +435,8 @@ export async function* streamRawSSE(url: string, body: any): AsyncGenerator<any>
     }
   } catch (e: any) {
     yield { kind: "error", message: `流中断:${e.message}` };
+  } finally {
+    try { reader.cancel(); } catch { /* ignore */ }
   }
 }
 

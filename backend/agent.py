@@ -139,7 +139,9 @@ def restore_session(sid: str, state: dict) -> None:
         "current_step": state.get("current_step", 1),
         "finished": state.get("finished", False),
         "title": state.get("title", ""),
-        "step_cache": {int(k): v for k, v in (state.get("step_cache") or {}).items()},
+        # step_cache 键统一为字符串:旧 lesson 流的整数 id 与 topic 流的字符串 id(topicid-N / topicid-SN)
+        # 都经 JSON 落地为字符串。不能 int() 强转——topic id 形如 `b8f7f543-1`,强转会 500(见 accessor 统一 str 键)。
+        "step_cache": dict(state.get("step_cache") or {}),
         "scene_codes": {},
         # 新字段(旧 state.json 没有则空默认)
         "conversation": state.get("conversation", []),
@@ -149,9 +151,9 @@ def restore_session(sid: str, state: dict) -> None:
         "step_status": state.get("step_status", {}),
         "graph": state.get("graph"),
     }
-    # 重建 scene_codes(兼容),键统一 int
+    # 重建 scene_codes(兼容),键与 step_cache 一致(字符串)
     for k, v in _SESSIONS[sid]["step_cache"].items():
-        _SESSIONS[sid]["scene_codes"][int(k)] = v.get("sceneCode", "")
+        _SESSIONS[sid]["scene_codes"][k] = v.get("sceneCode", "")
 
 
 # ---------- 文件存储 ----------
@@ -192,13 +194,22 @@ def get_file_meta(sid: str, file_id: str) -> Optional[dict]:
 
 
 def load_sessions_on_startup() -> None:
-    """Django 启动时调:扫 sessions/*.state.json 重建 _SESSIONS。"""
+    """Django 启动时调:扫 sessions/*.state.json 重建 _SESSIONS。
+    逐个 session try/except——单个坏会话(如旧格式/缺字段)不能拖垮整批加载。"""
     try:
         from skill.session_store import load_all_states
-        for sid, st in load_all_states().items():
-            restore_session(sid, st)
     except Exception:
-        pass
+        return
+    loaded = failed = 0
+    for sid, st in load_all_states().items():
+        try:
+            restore_session(sid, st)
+            loaded += 1
+        except Exception as e:
+            failed += 1
+            print(f"[load_sessions_on_startup] skip {sid}: {type(e).__name__}: {e}", file=__import__("sys").stderr)
+    if failed:
+        print(f"[load_sessions_on_startup] loaded={loaded} failed={failed}", file=__import__("sys").stderr)
 
 
 def export_session(sid: str) -> dict:
@@ -221,9 +232,9 @@ def export_session(sid: str) -> dict:
                 "formula": st.get("formula", ""),
                 "narration": st.get("narration", ""),
                 "paramsUsed": st.get("paramsUsed", []),
-                # 附上已设计的完整动画代码(若该步已生成)
-                "pythonCode": (s.get("step_cache", {}).get(st.get("id", i + 1)) or {}).get("pythonCode", ""),
-                "sceneCode": (s.get("step_cache", {}).get(st.get("id", i + 1)) or {}).get("sceneCode", ""),
+                # 附上已设计的完整动画代码(若该步已生成);step_cache 键为字符串
+                "pythonCode": (s.get("step_cache", {}).get(str(st.get("id", i + 1))) or {}).get("pythonCode", ""),
+                "sceneCode": (s.get("step_cache", {}).get(str(st.get("id", i + 1))) or {}).get("sceneCode", ""),
             }
             for i, st in enumerate(lesson.get("steps", []))
         ],
@@ -259,9 +270,9 @@ def import_session(data: dict) -> str:
         "scene_codes": {},
         "title": lesson["title"],
     }
-    # 把每步已设计的动画代码填进 step_cache
+    # 把每步已设计的动画代码填进 step_cache(键统一字符串)
     for st in data.get("steps", []):
-        step_id = st.get("id")
+        step_id = str(st.get("id"))
         sc = st.get("sceneCode", "")
         py = st.get("pythonCode", "")
         if sc or py:
@@ -279,22 +290,22 @@ def import_session(data: dict) -> str:
     return sid
 
 
-def get_step_cache(sid: str, step_id: int) -> Optional[dict]:
-    """从会话缓存取某步的完整设计(下游 agent 产出)。"""
+def get_step_cache(sid: str, step_id) -> Optional[dict]:
+    """从会话缓存取某步的完整设计(下游 agent 产出)。键统一为字符串(int id 与 str id 通吃)。"""
     s = _SESSIONS.get(sid)
     if not s:
         return None
-    return s.get("step_cache", {}).get(step_id)
+    return s.get("step_cache", {}).get(str(step_id))
 
 
-def set_step_cache(sid: str, step_id: int, step_data: dict) -> None:
-    """缓存某步的完整设计。"""
+def set_step_cache(sid: str, step_id, step_data: dict) -> None:
+    """缓存某步的完整设计。键统一为字符串。"""
     s = _SESSIONS.get(sid)
     if not s:
         return
-    s.setdefault("step_cache", {})[step_id] = step_data
+    s.setdefault("step_cache", {})[str(step_id)] = step_data
     # 同步 scene_codes(兼容)
-    s.setdefault("scene_codes", {})[step_id] = step_data.get("sceneCode", "")
+    s.setdefault("scene_codes", {})[str(step_id)] = step_data.get("sceneCode", "")
     # 同步 step_status 黑板:有 sceneCode 即视为 done
     s.setdefault("step_status", {})[str(step_id)] = "done" if step_data.get("sceneCode") else "error"
     _persist_state(sid)
@@ -325,15 +336,15 @@ def get_scene_code(sid: str, step_id: int) -> Optional[str]:
     return st.get("sceneCode") if st else None
 
 
-def set_scene_code(sid: str, step_id: int, code: str) -> None:
-    """把场景代码存入会话缓存。"""
+def set_scene_code(sid: str, step_id, code: str) -> None:
+    """把场景代码存入会话缓存。键统一为字符串。"""
     s = _SESSIONS.get(sid)
     if not s:
         return
-    s.setdefault("scene_codes", {})[step_id] = code
+    s.setdefault("scene_codes", {})[str(step_id)] = code
     sc = s.setdefault("step_cache", {})
-    if step_id in sc:
-        sc[step_id]["sceneCode"] = code
+    if str(step_id) in sc:
+        sc[str(step_id)]["sceneCode"] = code
 
 
 def list_sessions() -> list:

@@ -113,12 +113,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setLesson = (l: Lesson) => {
     // 补全后端可能缺的字段(outline 只给 id/title,paramsUsed/explanation 等稍后才填)
+    // 默认值整体 spread 与 s 合并:s 的字段优先,缺口用默认值填充;分散字面量会触发 TS2783
     const steps = l.steps.map((s) => ({
-      paramsUsed: [] as string[],
-      intent: "",
-      formula: "",
-      narration: "",
-      explanation: "",
+      ...{ paramsUsed: [] as string[], intent: "", formula: "", narration: "", explanation: "" },
       ...s,
     }));
     const normalized = { ...l, steps };
@@ -181,7 +178,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSceneCode(info.sceneCode);
     if (info.lesson) {
       const steps = (info.lesson.steps ?? []).map((s) => ({
-        paramsUsed: [] as string[], intent: "", formula: "", narration: "", explanation: "",
+        ...{ paramsUsed: [] as string[], intent: "", formula: "", narration: "", explanation: "" },
         ...s,
       }));
       const lesson = { ...info.lesson, steps };

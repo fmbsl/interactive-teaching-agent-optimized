@@ -78,7 +78,6 @@ function detectOverlap(scene: any): string {
     const collect = (m: any) => {
       if (!m) return;
       const subs = m.submobjects || m._submobjects;
-      const isVGroup = (m.constructor?.name === "VGroup") || (subs && subs.length > 0 && !m._isVMobject);
       let b: any = null;
       try { b = m.getBoundingBox?.() ?? m.getBounds?.(); } catch { /* empty mobject */ }
       if (b && b.min && b.max && (b.max.x > b.min.x) && (b.max.y > b.min.y)) {
@@ -121,7 +120,7 @@ export default function StagePanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   // 舞台铺满:不传 width/height,useScene 默认用容器尺寸,并随容器 resize 自适应。
   // 自管 scene:根据 sceneCode 是否含 3D 类,创建 Scene 或 ThreeDScene(带 3D 相机+OrbitControls+光照)。
-  const [scene, setScene] = useState<Scene | null>(null);
+  const [scene, setScene] = useState<InstanceType<typeof Scene> | null>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 420 });
   // 断点进度:breakpoints=该步动画的断点总数(预扫 await scene.play/wait 估);currentBp=已到达的断点序号(1-based)
   const [breakpoints, setBreakpoints] = useState(0);
@@ -167,8 +166,8 @@ export default function StagePanel() {
     };
   }, [sceneCode, stageResetKey, containerSize.w, containerSize.h]);
 
-  const lrTrackerRef = useRef<ValueTracker | null>(null);
-  const startTrackerRef = useRef<ValueTracker | null>(null);
+  const lrTrackerRef = useRef<InstanceType<typeof ValueTracker> | null>(null);
+  const startTrackerRef = useRef<InstanceType<typeof ValueTracker> | null>(null);
   const iterateRef = useRef<(() => Promise<void>) | null>(null);
   // 段间暂停控制:LLM 代码每个 await scene.play(...) 后,检查 pauseCtrl.paused,
   // 若暂停则阻塞,直到用户按"播放"调 resume()。默认 paused=true(首段播完自动停,等用户按播放)。
@@ -215,10 +214,10 @@ export default function StagePanel() {
         // ⚠️ 超时阈值必须大于典型教学动画总时长(常 15-20s,含结尾 Indicate/Pulse/Circumscribe)。
         // 之前 10s 太短:长动画跑到一半被超时判"通过",后段 Indicate/Pulse 从没被验证过 →
         // 主舞台跑完整代码时在那一步报错(e107.map),回退默认梯度下降并 REGENERATE 循环。
-        // 超时不再是"无条件通过":见下方 timeoutHit 处理。
+        // 超时时间是"动画太长安逸通过"下限。注:超时那一刻后的动画段未被验证(主舞台仍可能触发),
+        // 30s 已覆盖绝大多数教学动画全长;这是当前实现的取舍,非"无条件通过"。
         const VERIFY_TIMEOUT_MS = 30000;
-        let timeoutHit = false;
-        const timeout = new Promise((_, rej) => setTimeout(() => { timeoutHit = true; rej(new Error("__verify_timeout__")); }, VERIFY_TIMEOUT_MS));
+        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("__verify_timeout__")), VERIFY_TIMEOUT_MS));
         try {
           await Promise.race([fn(ctx), timeout]);
         } catch (e: any) {
@@ -580,7 +579,10 @@ function ParamSliders() {
   if (params.length === 0) return null;
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-      {params.map((p) => (
+      {params.map((p) => {
+        // 参数值可能缺失(切会话/切 topic 步时 paramValues 未初始化对应 key),兜底用默认值,防 toFixed(undefined) 白屏
+        const v = paramValues[p.name] ?? p.default ?? p.min ?? 0;
+        return (
         <label key={p.name} className="flex items-center gap-2.5 text-[11px]">
           <span className="w-16 text-[#6b7686] shrink-0">{p.label}</span>
           <input
@@ -588,13 +590,14 @@ function ParamSliders() {
             min={p.min}
             max={p.max}
             step={p.step}
-            value={paramValues[p.name]}
+            value={v}
             onChange={(e) => setParam(p.name, parseFloat(e.target.value))}
             className="flex-1"
           />
-          <span className="w-10 text-right tnum text-[#5fb0ff]">{paramValues[p.name].toFixed(2)}</span>
+          <span className="w-10 text-right tnum text-[#5fb0ff]">{v.toFixed(2)}</span>
         </label>
-      ))}
+        );
+      })}
     </div>
   );
 }
