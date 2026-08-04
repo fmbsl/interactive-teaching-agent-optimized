@@ -181,3 +181,23 @@ agent 生成器不再直接接到 SSE:每个视图构造 `gen_factory`(yield 事
 - `backend/debug.log`:流程时序(START/render_request/RENDER_RESULT/STORED 等),`dlog()` 写。
 - `backend/llm_responses.log`:走 `_call_llm` 的完整 LLM 回复(outline + 旧 generate_step fallback)。**step_agent 的 tool-call 不进这里**(create_react_agent 直接调 ChatOpenAI)。
 - `backend/sessions/<sid>.jsonl`:执行树原始事件(唯一能看 step agent 实际生成动画代码的地方——`step_agent.py` 的 `add_animation` 工具落盘每次提交的 code)。
+
+## 公网部署与访问令牌鉴权(2026-08 新增·踩坑)
+
+**访问令牌(轻量鉴权,可安全公网暴露)**:`backend/middleware.py` 的 `AccessTokenMiddleware`。
+- 所有 `/api/` 请求(除 `/api/health`)须带 `Authorization: Bearer <token>` 或 `?token=<token>`,否则 401。
+- token 存 `backend/access_token.txt`(Django 首次启动自动生成 secrets 随机串),**不入库**。
+- 前端:打开的 URL 带 `?token=` 会自动写入 localStorage 并直接进入(见 `src/App.tsx`),评审拿"地址+token"一个链接即可用。
+
+**前端同源 API(最容易踩的坑!)**:
+- `src/data/llmClient.ts` 的 `API_BASE` 默认**空串** → 走相对 `/api`(同源)。dev 由 `vite.config` 的 `server.proxy['/api']→8000` 转发。
+- ⚠️ **绝不能设 `VITE_API_BASE=http://localhost:8000`(不管在 .env 还是构建环境)**:Vite 会把它**硬编码进 bundle**,公网上评审浏览器把 API 打到**评审自己机器**的 localhost → 必现 `Failed to fetch`(还伴随 CORS preflight 打到 localhost)。症状即"页面能开、一调 API 就 Failed"。要同源就把 .env 里该行删掉再 `npm run build`。
+
+**公网部署形态(一台服务器即可)**:
+- nginx:静态 `dist/` + `location /api/ { proxy_pass http://127.0.0.1:8000; ... }`。
+  - 必须 `proxy_set_header Authorization $http_authorization;`(nginx 默认不透传该头→后端 401)。
+  - 必须 `proxy_buffering off; proxy_read_timeout 600s;`(SSE 流式聊天不断流)。
+- 后端:`python manage.py runserver 0.0.0.0:8000`(并发要求不高够用)。
+- 评审访问 `http://<ip>:8080/?token=...`。**不要**用自写 `tools/serve_public.py`(它对本机 curl 正常但对**浏览器**兼容差,会 `Connection reset by peer` → Failed to fetch);本地测试可用,公网入口一律用 nginx。
+
+**LLM 接入点地域注意**:后端从**服务器本地**读 `llm_endpoints.json` 直调 LLM base_url,**服务器网络必须能连到该 LLM API**。实例:韩国(Azure)服务器连不上中国科大 `api.llm.ustc.edu.cn`(DNS 解析到国内 IP,跨网超时),但能连 `api.deepseek.com` → 该服务器 active 必须切到 deepseek 才能用。切换:`POST /api/llm/config {"action":"setActive","id":"default"}`。
