@@ -111,3 +111,18 @@
 - **并行真实 agent 负载**:6 个 decompose agent 同线程并行跑(每 run 一个后台 thread),全 200、各自建成有效 DAG → 多会话并行 + 共享 session 状态无崩溃
 - **全程后端日志 0 个 500 / 0 Traceback / 0 INVALID_CHAT_HISTORY**;内存稳定 ~400MB;后端响应 p99 <1.1s
 - 遗留/如实说明:dev server 是 Django runserver(非生产 WSGI),未测超大规模 RPS(无工具);并行 LLM 负载压到 6 个以控成本;模块级 _GRAPHS/_EMIT/_DRAFTS/MemorySaver 按 sid 只增不删,长跑内存无界(已记录为已知限制)。压测新增 ~7 个测试会话不影响功能。
+
+## 改进实施(2026-08-04,来自上一轮提的建议,均已实现+验证+提交)
+### 工程类
+- P0#2 安全:LLM API key 不再明文下发前端 —— GET /api/llm/config 全掩码(••••后4位);保存时空/掩码 key 保留服务端真 key;真实 key 只存服务端。验证:GET 掩码、存掩码保留 len25 真 key、vision 也掩码。
+- P0#3 自动化测试:新增 backend/tests/ pytest 第一层 15 用例(step_id 校验 5、孤儿 tool_call 4、安全 3、会话 3),`python -m pytest backend/tests/` → 15 passed。把之前人肉打过的边界固化成回归。
+- P1#7 前端 ErrorBoundary:顶层边界,渲染异常不再白屏,给可恢复面板。已在 FileText 渲染崩溃中实证生效(接住异常显示面板)。
+- P1#5 会话生命周期:新增 delete/rename 会话(清内存/缓存/落盘文件,幂等,404 兜底)。
+### 功能类
+- 功能#2 会话列表:搜索(标题/问题过滤)+ 重命名 + 删除,直击 150+ 会话无搜索/无生命周期痛点。搜索已验证(输入"加法" 150→20)。
+- 功能#9 Markdown 学习笔记导出:export_session_md(原理+公式+讲解,合并 step_cache),GET /api/session/<sid>/export_md;前端「笔记」按钮下载 .md。验证:含意图+讲解+公式。
+
+## 未实施(较大,留待后续)
+- MemorySaver→SqliteSaver(agent 记忆跨重启,改动大需慎测)
+- 学习进度/掌握状态跨会话持久化 + 全局已学地图
+- 错题重练/间隔复习;PDF 图片/公式视觉理解;URL 深链刷新恢复
