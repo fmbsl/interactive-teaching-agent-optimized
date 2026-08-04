@@ -2,4 +2,3 @@ Django>=5.0
 openai>=1.40
 python-dotenv>=1.0
 django-cors-headers>=4.4
-waitress
