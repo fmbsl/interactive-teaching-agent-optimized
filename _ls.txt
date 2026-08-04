@@ -1,2 +1,0 @@
-params: [{"name": "a", "label": "半轴a", "min": 0.5, "max": 3, "step": 0.1, "default": 1}, {"name": "b", "label": "半轴b", "min": 0.5, "max": 3, "step": 0.1, "default": 1.5}, {"name": "c", "label": "半轴c", "min": 0.5, "max": 3, "step": 0.1, "default": 2}]
-step2: {"id": 2, "title": "标准椭球面方程", "intent": "固定a=2,b=1.5,c=1，展示典型椭球面，并标出三个主轴长度。", "formula": "\\frac{x^2}{2^2}+\\frac{y^2}{1.5^2}+\\frac{z^2}{1^2}=1", "narration": "当a、b、c互不相等时，我们得到一般的椭球面。例如，a=2，b=1.5，c=1，这个曲面在x方向最宽，z方向最窄。椭球面是对称的，所有截痕都是椭圆。", "paramsUsed": ["a", "b", "c"], "_current": false}

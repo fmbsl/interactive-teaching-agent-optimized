@@ -1,3 +1,0 @@
-has3D=False
-len=0
-===

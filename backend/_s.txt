@@ -1,9 +1,0 @@
-event: session
-data: {"session_id": "423b8238"}
-
-event: plan
-data: {"title": "导数", "summary": "", "params": [], "steps": [{"id": 1, "title": "瞬时变化率与切线斜率的直观感知", "intent": "", "formula": "", "narration": "", "paramsUsed": []}, {"id": 2, "title": "极限视角下的导数严格定义", "intent": "", "formula": "", "narration": "", "paramsUsed": []}, {"id": 3, "title": "基本初等函数的求导计算示例", "intent": "", "formula": "", "narration": "", "paramsUsed": []}, {"id": 4, "title": "连续性与可导性的关系及常见误区", "intent": "", "formula": "", "narration": "", "paramsUsed": []}, {"id": 5, "title": "导数与函数单调性及极值的关系", "intent": "", "formula": "", "narration": "", "paramsUsed": []}, {"id": 6, "title": "高阶导数与运动学中的物理意义", "intent": "", "formula": "", "narration": "", "paramsUsed": []}]}
-
-event: step-start
-data: {"stepId": 1, "title": "瞬时变化率与切线斜率的直观感知"}
-
