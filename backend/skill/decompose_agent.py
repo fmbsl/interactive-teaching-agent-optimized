@@ -51,6 +51,9 @@ import re as _re
 
 MAX_DEPTH = 4
 MAX_NODES = 80
+# 单次分解允许的 expand_node 次数上限(限时:每轮 = 一次 LLM 调用,叠太多耗时太长)。
+# 触顶后清理 frontier,提示 agent 调 finish() 收尾。
+MAX_EXPAND = 8
 
 
 def _new_id() -> str:
@@ -473,7 +476,12 @@ def _build_tools(sid: str):
             if target_id not in G["frontier"]:
                 ft = [G["nodes"][fid]["title"] for fid in G["frontier"] if fid in G["nodes"]]
                 return f"错误:「{tgt}」不在 frontier(可能已拆分)。当前 frontier:{ft[:10]}"
+            if G.get("expand_count", 0) >= MAX_EXPAND:
+                G["frontier"] = []
+                return (f"已达到本次分解的展开上限({MAX_EXPAND} 次)。"
+                        f"frontier 已清空以控制分解耗时,请调 finish() 输出当前知识谱系图。")
             events, msg = _split_replace(sid, target_id, children or [], prereqs or [], deps or [], prune=True)
+            G["expand_count"] = G.get("expand_count", 0) + 1
         _EMIT[sid].extend(events)
         return msg
 
@@ -520,7 +528,7 @@ def run_decompose_agent(sid: str, question: str, file_text: Optional[str] = None
     # 初始化该 session 的图草稿 + root 节点(root 是普通节点,拆则消失,不拆则留作叶)
     # 复位整图要在 _LOCKS 内进行,防与并行编辑/edit_* 竞态(swap 瞬间短暂持锁,不阻塞后续工具)
     with _LOCKS[sid]:
-        _GRAPHS[sid] = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}}
+        _GRAPHS[sid] = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}, "expand_count": 0}
         _EMIT[sid] = []
     G = _GRAPHS[sid]
     root_title = question.strip()[:40] or "知识点"
@@ -733,7 +741,7 @@ def ensure_graph_loaded(sid: str) -> bool:
     snap = (s or {}).get("graph", {}).get("snapshot") if (s or {}).get("graph") else None
     if not snap or not snap.get("nodes"):
         return False
-    G = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}}
+    G = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}, "expand_count": 0}
     for n in snap["nodes"]:
         G["nodes"][n["id"]] = {
             "title": n["title"], "aliases": list(n.get("aliases", [])),

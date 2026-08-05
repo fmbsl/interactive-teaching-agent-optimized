@@ -66,6 +66,10 @@ STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知�
 
 工具调用顺序自由发挥,不强制先设哪个。但动画 code 必须经 update_animation 验证通过(ok=true)才能 finish。
 
+**想参考别人怎么写?用 lookup_example(query)**:写动画前,若这一镜需要某种手法(可拖拽点看变化、
+定积分/切线/线性变换、3D 相机旋转、多镜头分镜节奏、点选高亮),先调它检索最相关的范例(会返回
+完整可运行代码),学它的 API 用法与分镜/交互思路,再自己写。概念不同就别硬套/照抄。
+
 sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`)。用 `await scene.play(...)` / `scene.add(...)` 驱动。
 
 ⚠️ **params 解构铁律(高频错,务必遵守)**:
@@ -234,6 +238,18 @@ def _build_tools(sid: str, step_id: int):
         return draft.get("sceneCode") or draft.get("_lastSubmittedCode") or "(尚无动画代码,先调 update_animation 只给 code 提交完整代码)"
 
     @tool
+    def lookup_example(query: str) -> str:
+        """在"人工手写 + 官方 manim-web"模板库里检索与本镜最相关的动画范例(含完整可运行代码)。
+        当这一镜想参考别人怎么写"某个概念/题型"(切线、积分、线性变换、3D 相机旋转、可拖拽点、
+        分镜节奏等)时调用。返回匹配度最高的前几个范例(含意图 + 完整 sceneCode),学习它的
+        API 用法、分镜/交互手法后,再写你自己的 update_animation 代码。"""
+        try:
+            from . import example_library
+        except Exception as e:
+            return f"(范例库不可用:{type(e).__name__}:{e})"
+        return example_library.lookup_example(query, n=3)
+
+    @tool
     def finish() -> str:
         """所有字段就绪且动画已验证通过后调用,结束本步设计。"""
         missing = [k for k in ("title", "explanation") if not draft.get(k)]
@@ -243,7 +259,7 @@ def _build_tools(sid: str, step_id: int):
             return f"缺少必填字段:{missing},请先设置。"
         return "FINISHED"
 
-    return [set_title, set_intent, set_explanation, set_params, update_animation, read_animation, finish]
+    return [set_title, set_intent, set_explanation, set_params, update_animation, read_animation, lookup_example, finish]
 
 
 # ---------- agent 构造(每会话每步一个,带 MemorySaver)----------
