@@ -72,16 +72,27 @@ export async function uploadForSession(sid: string, file: File): Promise<{ file_
   return { file_id: obj.file_id, name: obj.name, size: obj.size };
 }
 
-/** 主 agent 多轮对话:SSE 流。sid 留空则后端新建。 */
-export async function* chat(sid: string, text: string, depth: Depth = "understand", fileIds: string[] = []): AsyncGenerator<ChatEvent> {
-  yield* streamSSE(`${API_BASE}/api/chat`, { sid, text, depth, file_ids: fileIds });
+/** 主 agent 多轮对话:SSE 流。sid 留空则后端新建。signal 可传 AbortController.signal 以支持打断。 */
+export async function* chat(sid: string, text: string, depth: Depth = "understand", fileIds: string[] = [], signal?: AbortSignal): AsyncGenerator<ChatEvent> {
+  yield* streamSSE(`${API_BASE}/api/chat`, { sid, text, depth, file_ids: fileIds }, signal);
 }
 
 /** 回传 ask_user 的回答 或 generate_animation 的结果,恢复主 agent:SSE 流。 */
-export async function* chatAnswer(sid: string, answer: string = "", result: any = null): AsyncGenerator<ChatEvent> {
+export async function* chatAnswer(sid: string, answer: string = "", result: any = null, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   const body: Record<string, unknown> = { sid, answer };
   if (result !== null) body.result = result;
-  yield* streamSSE(`${API_BASE}/api/chat_answer`, body);
+  yield* streamSSE(`${API_BASE}/api/chat_answer`, body, signal);
+}
+
+/** 打断当前对话生成:通知后端停掉该 sid 的当前 run(停推 SSE),配合前端 abort fetch。 */
+export async function chatStop(sid: string): Promise<void> {
+  try {
+    await apiFetch(`${API_BASE}/api/chat_stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sid }),
+    });
+  } catch { /* 打断失败静默:前端已本地中止 */ }
 }
 
 /** 用户偏好(全局记忆):GET 取 / POST 存。 */
@@ -406,15 +417,17 @@ export async function decomposeAutoSplit(sid: string, target: string): Promise<{
   return r.json();
 }
 
-async function* streamSSE(url: string, body: any): AsyncGenerator<ChatEvent> {
+async function* streamSSE(url: string, body: any, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   let resp: Response;
   try {
     resp = await apiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
   } catch (e: any) {
+    if (signal?.aborted) { yield { kind: "error", message: "已打断" }; return; }
     yield { kind: "error", message: `无法连接后端:${e.message}` };
     return;
   }
@@ -439,7 +452,8 @@ async function* streamSSE(url: string, body: any): AsyncGenerator<ChatEvent> {
       }
     }
   } catch (e: any) {
-    yield { kind: "error", message: `流中断:${e.message}` };
+    if (signal?.aborted) { yield { kind: "error", message: "已打断" }; }
+    else { yield { kind: "error", message: `流中断:${e.message}` }; }
   } finally {
     // 早退(如切会话/新 run 取代旧 run 时 consume 提前 return,生成器被 .return() 中断):
     // 显式取消底层 reader,否则已建立的 HTTP 连接会挂着直到服务端超时
@@ -450,15 +464,17 @@ async function* streamSSE(url: string, body: any): AsyncGenerator<ChatEvent> {
 /** 原始 SSE 流:不经 parseSSE 类型窄化,每个 frame 直接 JSON.parse 返回原始事件 dict。
  *  供知识分解 graph 页用(事件 kind:node/edge/graph/decompose_start 不在 ChatEvent union 里)。
  *  返回的 dict 形态:执行树事件 {id,parentId,kind,agent,payload} 或裸控制事件 {kind:"session"/"done"/"error",...}。 */
-export async function* streamRawSSE(url: string, body: any): AsyncGenerator<any> {
+export async function* streamRawSSE(url: string, body: any, signal?: AbortSignal): AsyncGenerator<any> {
   let resp: Response;
   try {
     resp = await apiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
   } catch (e: any) {
+    if (signal?.aborted) { yield { kind: "error", message: "已打断" }; return; }
     yield { kind: "error", message: `无法连接后端:${e.message}` };
     return;
   }

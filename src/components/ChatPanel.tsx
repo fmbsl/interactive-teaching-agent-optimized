@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex";
 import {
   nextStep, prevStep, gotoStep,
   postRenderResult, getTrace,
-  chat, chatAnswer, uploadForSession, decompose,
+  chat, chatAnswer, chatStop, uploadForSession, decompose,
   listSessions, newSession, getSession, exportSession, importSessionFromFile,
   exportSessionMarkdown,
   deleteSession, renameSession,
@@ -44,6 +44,8 @@ export default function ChatPanel() {
   const [items, setItems] = useState<RenderedItem[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // 打断:每次生成一个 AbortController;点"■ 停止"→ abort fetch + 通知后端停 run。
+  const abortRef = useRef<AbortController | null>(null);
   const [pendingAsk, setPendingAsk] = useState<{ question: string; options?: string[] } | null>(null); // 主 agent 问的问题(+可选预设选项);非 null 时发送=回答该问题
   const [fileName, setFileName] = useState<string | null>(null);
   const [, setFileText] = useState<string | null>(null); // fileText 值未读(仅 setter 兼容旧接口),取值弃用
@@ -439,19 +441,37 @@ export default function ChatPanel() {
     setInput("");
     setLoading(true);
     setItems((prev) => [...prev, makeItem({ kind: "message", role: "user", text: q, ts: Date.now() } as ChatEvent, `u-${Date.now()}`)]);
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
       // 若有 pendingAsk(主 agent 问了问题),发送=回答该问题;否则正常对话
       if (pendingAsk) {
         setPendingAsk(null);
-        await consume(chatAnswer(sessionIdRef.current || "", q));
+        await consume(chatAnswer(sessionIdRef.current || "", q, null, ac.signal));
       } else {
         const fileIds = pendingFiles.map((f) => f.file_id);
         clearPendingFiles();
-        await consume(chat(sessionIdRef.current || "", q, depth, fileIds));
+        await consume(chat(sessionIdRef.current || "", q, depth, fileIds, ac.signal));
       }
+    } catch (e: any) {
+      // AbortError 已被 llmClient 转成 error 事件(不是 throw);这里兜底
+      if (ac.signal.aborted) return;
+      throw e;
     } finally {
+      if (abortRef.current === ac) abortRef.current = null;
       setLoading(false);
     }
+  }
+
+  // 打断当前 LLM 生成:abort fetch(本地立即停)+ 通知后端停 run(停推/省 token)。
+  function stopGeneration() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    consumeRunIdRef.current++; // 使当前 consume 的后续事件作废(防串台残留)
+    setLoading(false);
+    const sid = sessionIdRef.current;
+    if (sid) void chatStop(sid);
+    setItems((prev) => [...prev, makeItem({ kind: "message", role: "orchestrator", text: "⛔ 已打断生成。", ts: Date.now() } as ChatEvent, `s-${Date.now()}`)]);
   }
 
   // 点预设选项按钮:直接用选项文本回答主 agent(不经输入框),点击即发送
@@ -459,10 +479,13 @@ export default function ChatPanel() {
     if (loading || !pendingAsk) return;
     setLoading(true);
     setItems((prev) => [...prev, makeItem({ kind: "message", role: "user", text, ts: Date.now() } as ChatEvent, `u-${Date.now()}`)]);
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
       setPendingAsk(null);
-      await consume(chatAnswer(sessionIdRef.current || "", text));
+      await consume(chatAnswer(sessionIdRef.current || "", text, null, ac.signal));
     } finally {
+      if (abortRef.current === ac) abortRef.current = null;
       setLoading(false);
     }
   }
@@ -833,7 +856,15 @@ export default function ChatPanel() {
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
             className="flex-1 bg-transparent text-[12px] text-[#dfe6f0] resize-none outline-none placeholder:text-[#4a5365] leading-5"
           />
-          <button onClick={submit} disabled={loading} className="btn-blue px-3 py-1 rounded-md text-[11px] disabled:opacity-40">{loading ? "…" : pendingAsk ? "回答" : "发送"}</button>
+          {loading ? (
+            <button
+              onClick={stopGeneration}
+              className="px-3 py-1 rounded-md text-[11px] font-medium bg-[#3a1620] text-[#f87171] border border-[#5a2430] hover:bg-[#4a1c28]"
+              title="打断当前 LLM 生成"
+            >■ 停止</button>
+          ) : (
+            <button onClick={submit} disabled={loading} className="btn-blue px-3 py-1 rounded-md text-[11px] disabled:opacity-40">{pendingAsk ? "回答" : "发送"}</button>
+          )}
         </div>
       </div>
     </div>
