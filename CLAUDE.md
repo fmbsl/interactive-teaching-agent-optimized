@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 前端:`npm run dev`(Vite,5173)
 - 后端:`python backend/manage.py runserver --noreload 8000`(必须 `--noreload`,autoreload 会清空内存 session)
 - 类型检查:`npm run type-check`(注意:`tsc -b` 报的 `Scene`/`ValueTracker` as type、`title unused` 是预先存在的噪音,vite dev 不跑 tsc 不挡)
-- 构建:`npm run build`(tsc + vite build,产出 `dist/` 含 main + standalone 两个入口)
+- 构建:`npm run build`(tsc + vite build,产出 `dist/` 含 main + standalone + graph + **templates** 四个入口)
 - 装后端依赖:`pip install -r backend/requirements.txt`(Django/openai/python-dotenv/django-cors-headers)+ langgraph/langchain-openai/langchain-core(已装,未在 requirements.txt)
 - 前端依赖:`npm install`(含 `mermaid`——mermaid 图展示,动态 `import("mermaid")` 加载;`lucide-react`——开源 SVG 图标库,替代符号图标)
 
@@ -36,7 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **分解图编辑(8 工具,复用 `decompose_agent` 的 `edit_*` 核心函数)**:`split_graph_node(target, children, prereqs?)` 拆节点、`remove_graph_node(title)` 删节点(连边一起删)、`add_graph_node(title, mastery?, aliases?)` 加节点、`rename_graph_node(title, new_title)` 改名、`add_graph_dependency(from_title, to_title)` 加依赖边(带环检测)、`remove_graph_dependency(from_title, to_title)` 删边、`set_graph_mastered(title, mastered)` 标记已掌握/取消、`list_graph_nodes()` 列所有节点(改图前先调,防 MemorySaver 上下文记错幻觉)。每个改图工具(除 list)开头先 `switch_stage("graph")` 往 `_EMIT` append stage_switch,再调 `edit_*` 拿快照,最后 `_push_graph(msg, snapshot)`:写回 `session.graph`(持久化)+ 往 `_EMIT` append `graph` 事件(前端 consume 收到刷新画布)。返回工具结果给 LLM。
   - 系统提示词:身份 + **系统认知**(三栏 UI/中间舞台可切换/典型工作流)+ 用户偏好(`backend/user_prefs.json`)+ depth 指引 + 工具说明 + "拆解前必须先问用户(传 options)" + "文件不给全文,用 read/grep 按需读"。
   - **流式回复**:用 `stream(stream_mode=["messages","updates"])` 多模式。messages 模式拿 LLM token 增量,yield `message_delta` 事件(同 id,增量 text);updates 模式拿 tool_call/interrupt,文本不重发(已流式)。前端 consume 收到 message_delta 找同 id 的 message item 追加 text(无则新建)。
-- **step subagent**(`backend/skill/step_agent.py`):设计单个子知识点。工具 `set_title`/`set_intent`/`set_explanation`(md,含 `$...$` 公式)/`set_params`/`update_animation(code, old_str, new_str)`(合并的提交+局部改,见下)/`read_animation`/`finish`。
+- **step subagent**(`backend/skill/step_agent.py`):设计单个子知识点。工具 `set_title`/`set_intent`/`set_explanation`(md,含 `$...$` 公式)/`set_params`/`update_animation(code, old_str, new_str)`(合并的提交+局部改,见下)/`read_animation`/**`lookup_example(query)`**(在范例库检索与本镜最相关的手写/官方示例代码,学习其 API/交互/分镜手法后再写)/`finish`。
 
 ### 浏览器在环验证(step agent 核心)
 
@@ -47,6 +47,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ⚠️ **step_id 兼容**:分层 list 后 step_id 是字符串(`topicid-N`)。所有接 step_id 的端点(`render_result`/`goto`/`regenerate`/`explain`)都要兼容字符串,**不能 `int()` 强转**——漏一个就 ValueError 卡死。
 
 step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_call`/`tool_result` 事件(agent=step)。主 agent 同理(agent=main)。
+
+**生成提示词能力(`backend/skill/manim_lesson.py` 的 `RUNTIME_POWER_BLOCK` 等)**:step_agent 系统提示词已放开——①「可交互对象」:教它用 `makeDraggable(mob,scene,{onDrag})`/`makeClickable(mob,scene,{onClick})`/`ValueTracker+addUpdater`,让动画可拖/可点;②「分镜导演权」:让它自己规划 2-4 个镜头、用 `Succession`/`AnimationGroup` 编排、关键量 `Indicate`/`Circumscribe`;③ 配色放开(多色更好);④ TS 容忍 + 可自建 scene(见前端执行模型)。`lookup_example(query)` 可检索范例库取参考。
 
 ### 共享 session 状态(`agent.py` 的 `_SESSIONS[sid]`)
 
@@ -66,6 +68,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 - **新主流程**:`/api/chat`(用户发消息,跑主 agent,带 depth+file_ids)、`/api/chat_answer`(回答 ask_user 或回传 generate_animation 结果,resume 主 agent)、`/api/upload`(传文件返回 file_id)
 - **点 list 生动画**(不经主 agent):`/api/explain`(step_id 可 int 或 str `topicid-N`,跑 step_agent,结果写 step_cache+step_status)
 - **浏览器在环**:`/api/render_result`(前端回传渲染结果,字符串 step_id,恢复 step_agent)
+- **打断生成**:`/api/chat_stop`(POST `{sid}` → `current_run(sid).finish()` 停推 SSE;配合前端 AbortController 让对话框生成可被打断)
 - **旧/兼容**:`/api/start`/`/api/next`/`/api/prev`/`/api/goto`/`/api/update`/`/api/regenerate`(旧 lesson 数字 step 流程,保留)、`/api/sessions`/`/api/sessions/<sid>`/`/api/sessions/<sid>/trace`、`/api/llm/config`、`/api/user_prefs`、`/api/decompose`(知识谱系图,独立功能)
 
 ### 知识分解 agent(接入主应用,中间舞台可切换,图随 session)
@@ -99,7 +102,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 - `decompose_knowledge` 前先 `switch_stage("graph")` 让用户实时看节点逐个出现(分解过程可视化)。
 
 **文件:**
-- 后端核心:`backend/skill/decompose_agent.py`。模块级 `_GRAPHS`/`_EMIT`/`_LOCKS`。工具 `expand_node`/`finish`。`_split_replace` 共用。`MAX_DEPTH=4`、`MAX_NODES=80`。`thread_id=f"decompose#{sid}"`。`ensure_graph_loaded` 从快照重建。
+- 后端核心:`backend/skill/decompose_agent.py`。模块级 `_GRAPHS`/`_EMIT`/`_LOCKS`。工具 `expand_node`/`finish`。`_split_replace` 共用。`MAX_DEPTH=4`、`MAX_NODES=80`、**`MAX_EXPAND=8`**(单次分解的 `expand_node` 调用次数上限,每轮=一次 LLM 调用,触顶清空 frontier 提示 finish 收尾,限时用;图表状态含 `expand_count`)。`thread_id=f"decompose#{sid}"`。`ensure_graph_loaded` 从快照重建。
 - 后端端点(`backend/api/views.py`):`decompose`(POST,接收主 sid)、`decompose_trace`(GET)、`decompose_split`(POST)、`decompose_to_topics`(POST,用主 sid 不新建)。路由 `backend/backend/urls.py`。
 - 前端:`src/graph/GraphApp.tsx`(用 `@xyflow/react` ReactFlow 画图,嵌入中间区时 `embedded` prop:去掉 minWidth/aside 执行流、顶栏紧凑)。`layeredLayout` **按 edges 拓扑分层**(Kahn + 最长路径,不用 depth 字段——depth 是递归拆解深度,children/prereqs 共用 new_depth 导致基础和高级混层):入度 0 的节点 level=0(最基础,最下 y=0),沿依赖向上 level 递增,高级目标(被依赖最多)在最上(y=-level*LAYER_ROW_H)。同层水平居中铺开。基础(下)→高级(上),边自然朝上。`depthColor` 色阶(深蓝→浅青,mastery 绿)。边 `type:"bezier"` + `markerEnd` 箭头;**边锚点**:节点 `sourcePosition: Position.Top`(从顶边出,指向更高级)/ `targetPosition: Position.Bottom`(从底边入,来自更基础),边不指定 handle 即用这两个默认 handle。节点 `width:180,height:54` 显式给(ReactFlow v12 minimap 依赖 measured,RO 在 preview 不触发 → 显式尺寸不依赖 RO)。
 - jsonl 子目录隔离:事件落 `backend/sessions/decompose/<sid>.jsonl`(`sub_dir="decompose"`),与主 agent 的 `backend/sessions/<sid>.jsonl` 分开。**不写 `_SESSIONS`、不调 `save_state`**(轻量 session,但 graph 快照写主 session 的 state.json)。
@@ -111,7 +114,13 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 
 ### 前端执行模型
 
-`src/components/StagePanel.tsx`:收到 `sceneCode` 用 `new AsyncFunction("ctx", code)` 沙箱执行,ctx 由 `makeManimCtx(scene, params)` 提供(`src/manimCtx.ts` 隔离 `import * as manimWeb`,避免破坏 React Fast Refresh)。3D 自动检测(`is3DCode` 正则)用 `ThreeDScene`,否则 `Scene`。验证用离屏 div + **30s 超时**(长动画要覆盖到结尾 Indicate/Pulse)+ 2D BB 重叠检测(开关 `bbCheckEnabled`)+ 视觉检查(开关 `visionCheckEnabled`:通过后截最后一帧 canvas.toDataURL,POST 给后端,后端存 png + 调视觉辅助模型描述画面,仅提示不阻塞定稿)。
+**共享执行层 `src/runScript.ts`**:所有 sceneCode 统一经它执行 —— `execScript(ctx, code, timeoutMs)` 先按纯 JS 用 `new AsyncFunction("ctx", code)` 直跑,若语法错(含 TS 注解如 `: number`/`as T`)就用 `ts.transpileModule` **懒加载剥掉类型**后重跑(**运行时兼容 TS**,不再整段拒绝);`stripBareImports` 剥 `import/export`(manim-web 导出已铺全局,见下);带超时防卡死。这是主应用 StagePanel 与模板检查页共用的执行入口(替代旧的 `detectTsSyntax` 打回)。
+
+`src/manimCtx.ts`:隔离 `import * as manimWeb`(避免破坏 React Fast Refresh)。`makeManimCtx(scene, params)` 做注入 scene 的 ctx;新增 `exposeManimGlobals(container)` 把 manim-web 全部导出 + `container` 铺到 `window` 全局(自由脚本可 `new Scene(container,{相机})` 自建 scene、`import` 也可用)。
+
+`src/components/StagePanel.tsx`:收到 `sceneCode` 后**自动分两种模式**——常规代码用注入 `scene`(主舞台有暂停/断点);代码若**自建 scene**(含 `new Scene(`/`new ThreeDScene(`),走自由脚本模式(给真 `#container` + 铺全局 + `execScript`,暂停/断点降级为连播)。离屏浏览器在环验证同样支持 TS 容忍 + 自建 scene;3D 自动检测(`is3DCode`)决定注入 scene 类型;验证带 **30s 超时**(长动画覆盖结尾 Indicate/Pulse)+ 2D BB 重叠检测 + 视觉检查(截末帧给视觉辅助模型,仅提示不阻塞)。
+
+**模板库与检查页**:`src/templates/library.ts`(人工手写教学范例)+ `src/templates/official.ts`(由 `tools/gen_official_templates.py` 从 maloyan/manim-web 官方 example 生成,自建 scene 风格)。独立检查页 `templates.html`(Vite 入口已加)逐个渲染/检查。后端 `backend/skill/examples.json` 由这两个 TS 库导出,供 step_agent 的 `lookup_example` 检索。
 
 **动画段间暂停**:主舞台 `runSceneCode` 包装 `scene.play`/`scene.wait`,每个动画段后调 `waitIfPaused()`。`pauseCtrl` ref(`{paused, resume, stepOnce}`):播放=解除暂停连播;暂停=下个段末停;⏭下一段=`stepOnce` 走一段再停;⏮=回开头(bumpStageReset)。**断点进度条**:预扫 `await scene.play/wait` 个数 = 断点数,`currentBp` 在 waitIfPaused 递增,UI 横条(已过亮/当前发光/未到暗)+ "X/总数"。
 
@@ -124,6 +133,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 - 分层 topics list:`TopicNode` 可折叠,子知识点按 `explanation||sceneCode` 判断已缓存(✓ 蓝底 + "已生成"标记)vs 未生成(数字灰边)。**多级缩进**:`step.level`(sets 链长)控制 paddingLeft(level 0=4px,每级 +14px)。**融合总结节点**(`is_summary`):badge 显示 `Σ`,标题"总结:XXX",上方分隔线,"融合"标记,蓝边样式。点击 → `handleTopicStep` → `/api/explain`(已缓存 HIT cache 不重跑,后端缓存命中时不发 step-start 不重复加卡片)。
 - 工具调用折叠:`makeItem` 对 subagent 的 `agent_start` 默认折叠(藏其下 tool_call 组),主 agent 的不折叠。tool_call collapsed 只显 `Wrench 图标 + 工具名`(藏 argSummary,展开看 args)。连续 tool_call 用 `ToolGroup` 聚合成一行"Wrench t1 → t2 · N 个工具"。step subagent 段整体折叠成一行"Bot 图标 + 设计第 X 步",点开看工具过程。图标用 `lucide-react`(Wrench/Bot/Code2/Play/Check/X/Menu/Plus/Paperclip/Download/Upload/Settings/SkipBack/Play/Pause/SkipForward/RotateCcw/Sparkles/Loader2)。
 - **思考动效**:`loading` 时对话末尾显示 `.thinking-dot`(三点错峰脉冲 + 旋转 Loader2 + "主 agent 正在思考…"),表示等 LLM 回答/拆解/生成。
+- **打断生成**:`loading` 时输入栏发送按钮变「■ 停止」,点击 → `abortRef.current.abort()` 立即停流(AbortController 传入 `chat`/`chatAnswer` 的 signal)+ `chatStop(sid)`(POST `/api/chat_stop` 让后端停推)+ 清 loading + 对话加"⛔ 已打断生成"。
 - `consume` 处理 `stage_switch`(setView,支持 graph/animation/mermaid)、`graph`(主 agent 图编辑工具改图后推的快照,调 `setDecomposeGraph` 刷新画布,不进对话栏)、`quiz`(主 agent 出题,`setPendingQuiz` 存 store,右边栏显示)、`diagram`(主 agent 产 mermaid 图,`setDiagram` 存 store,MermaidPanel 渲染)、`decompose_request`(调 `/api/decompose` 跑分解 agent,每个 graph 事件实时 setDecomposeGraph,跑完 chatAnswer resume)、`animation_request`(调 `explainStep` 跑 step subagent,流正常结束即 ok=true resume)。`consumeRunIdRef` 防 session 串台。
 - ⚠️ **非 ChatPanel 发起的 resume(右边栏考题作答)经 `store.pendingResume`**:ExplainPanel 点选项 → `setQuizResult`(本地判对错)+ `setPendingResume({answer})`;ChatPanel useEffect 监听 pendingResume → `consume(chatAnswer(sid, answer))`(主 agent 反馈才进对话栏)→ 清空。不能在 ExplainPanel 直接 consume(事件不进 ChatPanel 对话栏)。
 - ⚠️ **graph 事件分支必须在 `consume` 里(不是 `handleEvent`)**:`consume` 是主 agent `/api/chat` 流的消费者,主 agent 图编辑工具推的 `graph` 事件走这里。`handleEvent` 只处理子流递归(render_request/decompose_request/animation_request 的回传流),里面的 graph 分支轮不到。曾误加在 handleEvent 导致画布不刷新。`consume` 用独立 `if (ev.kind === "graph")`(在 stage_switch 之后,和 session/plan/ask 等同级),非 `else if`。
@@ -151,7 +161,7 @@ agent 生成器不再直接接到 SSE:每个视图构造 `gen_factory`(yield 事
 
 - **字体**:所有 `new Text` 必带 `fontFamily: '"Times New Roman","SimSun",serif'`(英文 Times New Roman,中文 fallback SimSun;manim-web Text 用 Canvas fillText,无 fontFamily 中文不显示)。
 - **公式**:`MathTexImage`(KaTeX)首选,稳定;`MathTex`/`Tex`(MathJax)慎用——`\overrightarrow`/`\mathcal` 等需动态字体的命令在浏览器里触发 MathJax retry,错误被静默吞,主舞台读几何时才抛。含这类命令一律用 MathTexImage。`await eq.waitForRender()` 后再 add/play。
-- **sceneCode 是纯 JS 不是 TS**:沙箱 `new AsyncFunction("ctx", code)` 跑纯 JS,TS 类型注解(`(x: number)`、`as`、`interface`)会 `Unexpected token ':'`。前端 `detectTsSyntax` 预检命中直接给明确错误。
+- **sceneCode 兼容 TS(运行时剥类型)**:沙箱 `new AsyncFunction` 本质跑纯 JS,但 runner([src/runScript.ts](src/runScript.ts))现在会在语法错时用 `ts.transpileModule` **自动剥掉 TS 注解**(`(x: number)`、`as T`、`interface` 等)后重跑,不再整段拒绝。TS 注解会白耗 token,提示词仍建议写清晰纯 JS,但偶发带上不会崩。**事件/`detectTsSyntax` 打回已废弃**,改为转译容错。
 - **sceneCode 格式**:开头 `const { scene, ..., params } = ctx;` 解构(用到 `params.xxx` 必须把 `params` 加进解构;**局部改引入新标识符也要同步加进解构行**,否则 `XXX is not defined`)。
 - **改透明度**:统一 `setFillOpacity`(动画 `mob.animate.setFillOpacity(o)`、即时 `mob.setFillOpacity(o)` 都行)。`setStrokeOpacity` 只能即时(不在 `.animate` 链)。`setOpacity` **两处都不能用**(普通 mobject 无此方法;AnimateProxy 转发报 not found)。`withDuration` 小写 `w`。
 - **动画 API 签名**(易错,照 d.ts 核实过):`ApplyFunction(mob, {func, duration})`(func 在 options 里);`ApplyPointwiseFunction` 已从提示词移除(别用,易和 ApplyFunction 混)。`AnimationGroup`/`LaggedStart`/`Succession` 接 `(animations数组, options)`——传数组不要 `...spread`。`Angle({line1, line2})` 的 line1/line2 必须是 `Line` 不是 `Arrow`。
@@ -184,10 +194,7 @@ agent 生成器不再直接接到 SSE:每个视图构造 `gen_factory`(yield 事
 
 ## 公网部署与访问令牌鉴权(2026-08 新增·踩坑)
 
-**访问令牌(轻量鉴权,可安全公网暴露)**:`backend/middleware.py` 的 `AccessTokenMiddleware`。
-- 所有 `/api/` 请求(除 `/api/health`)须带 `Authorization: Bearer <token>` 或 `?token=<token>`,否则 401。
-- token 存 `backend/access_token.txt`(Django 首次启动自动生成 secrets 随机串),**不入库**。
-- 前端:打开的 URL 带 `?token=` 会自动写入 localStorage 并直接进入(见 `src/App.tsx`),评审拿"地址+token"一个链接即可用。
+**⚠️ 访问令牌鉴权当前已关闭**:`backend/middleware.py` 的 `AccessTokenMiddleware.__call__` 现直接 `return self.get_response(request)`,对所有 `/api` 放行、不自动生成 token。要恢复公网鉴权:把 `__call__` 改回检查 `Authorization: Bearer`/`?token=` 的逻辑(见 git 历史或文件内注释)。此前机制(可安全公网暴露):所有 `/api/` 请求(除 `/api/health`)须带 `Authorization: Bearer <token>` 或 `?token=<token>`;token 存 `backend/access_token.txt`(Django 首启自动生成);前端 URL 带 `?token=` 自动写入 localStorage 直接进入。
 
 **前端同源 API(最容易踩的坑!)**:
 - `src/data/llmClient.ts` 的 `API_BASE` 默认**空串** → 走相对 `/api`(同源)。dev 由 `vite.config` 的 `server.proxy['/api']→8000` 转发。
