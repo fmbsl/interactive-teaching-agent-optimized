@@ -50,16 +50,9 @@ export default function ExplainPanel() {
           <div className="empty-state min-h-[140px]">
             <div className="empty-icon">¶</div>
             <div className="text-[12px] text-[#6b7686]">在左侧输入知识点后,这里会显示讲解</div>
-            <div className="text-[10.5px] text-[#4a5365]">含动画意图、公式推导、Markdown 图文</div>
+            <div className="text-[10.5px] text-[#4a5365]">含公式推导、Markdown 图文</div>
           </div>
         ) : (<>
-        {/* 动画意图 */}
-        {step.intent && (
-          <Section label="动画意图" hint="Animator 输入">
-            <p className="text-[11px] text-[#6b7686] leading-relaxed">{step.intent}</p>
-          </Section>
-        )}
-
         {/* 讲解(含公式,Markdown 渲染) */}
         <Section label="讲解">
           <div className="md-prose">

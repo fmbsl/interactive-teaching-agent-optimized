@@ -955,6 +955,22 @@ def chat_answer(request):
 
 
 @csrf_exempt
+def chat_stop(request):
+    """打断:结束该 sid 的当前 run(停推 SSE)。前端点"■ 停止"时调用。
+    后台 agent 线程本段收尾后不再推有用事件;配合前端 Abort 立即停流。"""
+    try:
+        data = json.loads(request.body or b"{}")
+    except Exception:
+        data = {}
+    sid = data.get("sid") or request.POST.get("sid")
+    if sid:
+        run = current_run(sid)
+        if run is not None:
+            run.finish()  # 标 done → SSE 读者立即收尾 / 停推
+    return JsonResponse({"ok": True})
+
+
+@csrf_exempt
 def user_preferences(request):
     """GET 返回用户偏好文本;POST {prefs} 保存。"""
     from skill import user_prefs
