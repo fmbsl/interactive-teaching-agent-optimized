@@ -42,6 +42,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `update_animation(code, old_str, new_str)` 不传 old_str = 整段提交;传 old_str+new_str = 局部改(唯一匹配替换,省 token)。内调 LangGraph `interrupt()` 暂停 → 后端把 code 通过 SSE `render_request` 推前端 → 前端 StagePanel 离屏跑 manim-web → POST `/api/render_result` 回传 ok/error(+可选最后一帧 frame)→ 后端 `Command(resume=)` 恢复 agent。**必须用 `MemorySaver` checkpointer**。interrupt value 从 stream 末尾 `__interrupt__` chunk 取(state 可能是 list **或 tuple**)。agent 能多轮自修运行时错。
 
+**验证检测项**(`src/sceneCheck.ts`,渲染成功后依次跑,任一失败即 `reportVerifyResult(false, 原因)` 打回 agent 自修):
+1. **MathTex 渲染错**(`detectMathTexError`):MathJax 异步字体加载失败,提示改 MathTexImage。
+2. **NaN 检测**(`detectNaN`,硬错误、不受 BB 开关控制):标签文字含 `NaN` 或对象坐标为 NaN -> 报"角度/参数计算错,检查 ValueTracker/弧度换算/除数/np 向量化"。由来:实测某步"转角 NaN°"反复打回 6 次,加这个后 agent 一次拿到可操作原因。
+3. **2D BB 重叠**(`detectOverlap`,开关 `bbCheckEnabled`):文字-文字 / 文字-图形重叠;忽略坐标轴。
+4. **文字越界**(`detectOutOfBounds`):文字飘出 camera `frameWidth×frameHeight` 边界 -> 报哪段文字越界(右/上/…)。
+5. **视觉检查**(`visionCheckEnabled`):截末帧给视觉辅助模型描述,仅提示不阻塞。
+
+⚠️ **manim 构造名会被压缩**:打包后 `constructor.name` 是 `t9`/`e62` 之类,不能靠它判"是文字 / 坐标轴"。检测器统一用能力探测:文字 = `getText()/._text`、坐标轴 = `c2p/p2c`、边界 = `getCenter() ± getBoundingBox() 尺寸/2`(getBoundingBox 返回 `{width,height}` 尺寸,不是 `{min,max}`)。重叠/越界报错里非文字统一写"图形对象"(不显压缩名),文字带内容,方便 agent 定位。
+
 ⚠️ **langgraph resume 会从工具入口重跑整个工具函数**(不是从 interrupt 处继续)。所以工具里在 interrupt **前**不能改会被重跑逻辑依赖的状态(如 `_lastSubmittedCode` 只能在渲染通过后才设,否则重跑时 old_str 在已替换的代码里找不到)。
 
 ⚠️ **step_id 兼容**:分层 list 后 step_id 是字符串(`topicid-N`)。所有接 step_id 的端点(`render_result`/`goto`/`regenerate`/`explain`)都要兼容字符串,**不能 `int()` 强转**——漏一个就 ValueError 卡死。
@@ -112,6 +121,14 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 
 `backend/skill/llm_config_store.py` 存 `backend/llm_endpoints.json`:多接入点(每个 base_url/api_key/model + fallback + `supportsVision`)+ 顶层 `visionEndpoint`(视觉辅助模型,主模型无视觉时用)。`_get_runtime_cfg()` 返回当前启用接入点;`_get_vision_cfg()` 返回视觉辅助模型。前端 `SettingsPanel` 编辑。`.env` 的 `LLM_*` 仅作首次迁移默认。
 
+### 应用级设置(`/api/settings`)与主题
+
+- **设置面板**:头部 `设置` 按钮打开 `src/components/SettingsPanel.tsx` 的 **多 Tab 弹窗**(模型 / 偏好 / 主题 / 知识分解 / 其它)。模型 tab = 原有 LLM 接入点 + 视觉辅助;偏好 tab = 用户偏好文本(user_prefs);知识分解 tab = 力度档位;其它 tab = BB 重叠检测 / 视觉检查开关。
+- **应用级设置存储 `backend/skill/app_settings.py`** → `backend/app_settings.json`。端点 `GET/POST /api/settings`。目前唯一大类设置是 `decompose_effort`(low/mid/high),由 `EFFORT_PRESETS` 一键映射 decompose 三预算(深度/节点数/单次展开上限)。**decompose_agent** 在两处建图时把 `G["budget"]` 种子进图状态,`_split_replace`/`expand_node` 读 `G["budget"]`(缺省回模块常量 `MAX_DEPTH`/`MAX_NODES`/`MAX_EXPAND`)。
+- **主题引擎 `src/theme.ts`**:前端中性色+强调色+错误/成功容器色全部改为 CSS 变量(基线在 `index.css` `:root`,组件用 `bg-[var(--bg-1)]` / `text-[var(--text)]` 等)。切换主题 = 给 `<html>` 设 `data-theme` + 注入高特异性 `:root[data-theme="id"]` 覆盖 `<style>`;`main.tsx` 模块加载即 `applyTheme(loadTheme())` 防首帧闪跳;自定义 CSS 存 `#user-css`(用户覆写主题变量要用 `:root[data-theme="paper"]{...}` 才压过内置)。预置 5 套:deepsea/oled/paper/terminal/sakura。
+- ⚠️ **manim-web/three 不吃 CSS var()**:喂给 manim-web mobject 或 `Scene` 的 `color`/`backgroundColor` 参数不能用 `"var(--blue)"`,必须解析成实际颜色——`StagePanel` 里用模块级 `cssVar("--blue")`(读 getComputedStyle)包一层。否则 three.js 报 `THREE.Color: Unknown color model` 且颜色失效。
+- **浅色主题下 manim 颜色自动压暗(双保险)**:浅色背景(paper/sakura,判断 `--bg-deepest` 感知亮度>0.5)下的亮色(亮度>0.5)会被压暗到 ~20% 但保留色相(WHITE→#333333、YELLOW→#333300)。两处生效,共用 `src/themeColor.ts`(无 manim-web 依赖):① `makeManimCtx`/`exposeManimGlobals` 展开命名色常量时覆盖(WHITE/BLACK/RED… 大写 `#hex`),② `runScript.execScript` 在进入前对**字面量** `color:"#ffffff"`/`"white"`/`"yellow"` 等做字符串替换兜底(`adaptColorLiterals`,不误伤纯文本内容,深色主题下原样)。深色主题保持原样。
+
 ### 前端执行模型
 
 **共享执行层 `src/runScript.ts`**:所有 sceneCode 统一经它执行 —— `execScript(ctx, code, timeoutMs)` 先按纯 JS 用 `new AsyncFunction("ctx", code)` 直跑,若语法错(含 TS 注解如 `: number`/`as T`)就用 `ts.transpileModule` **懒加载剥掉类型**后重跑(**运行时兼容 TS**,不再整段拒绝);`stripBareImports` 剥 `import/export`(manim-web 导出已铺全局,见下);带超时防卡死。这是主应用 StagePanel 与模板检查页共用的执行入口(替代旧的 `detectTsSyntax` 打回)。
@@ -123,6 +140,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 **模板库与检查页**:`src/templates/library.ts`(人工手写教学范例)+ `src/templates/official.ts`(由 `tools/gen_official_templates.py` 从 maloyan/manim-web 官方 example 生成,自建 scene 风格)。独立检查页 `templates.html`(Vite 入口已加)逐个渲染/检查。后端 `backend/skill/examples.json` 由这两个 TS 库导出,供 step_agent 的 `lookup_example` 检索。
 
 **动画段间暂停**:主舞台 `runSceneCode` 包装 `scene.play`/`scene.wait`,每个动画段后调 `waitIfPaused()`。`pauseCtrl` ref(`{paused, resume, stepOnce}`):播放=解除暂停连播;暂停=下个段末停;⏭下一段=`stepOnce` 走一段再停;⏮=回开头(bumpStageReset)。**断点进度条**:预扫 `await scene.play/wait` 个数 = 断点数,`currentBp` 在 waitIfPaused 递增,UI 横条(已过亮/当前发光/未到暗)+ "X/总数"。
+**动画导出(控制栏)**:①截图 = `scene.renderer.getCanvas().toDataURL('image/png')` 下载当前帧;②录制 WebM = `canvas.captureStream(30)` + `MediaRecorder`(先 vp9 后 vp8),**录制期间用 rAF 每帧调 `scene.render()` 强制重绘**,否则静止 WebGL 的 captureStream 录到空(110B 头)。`stageCanvas` 对自建场景取 container 里 canvas,但自建场景脚本自己驱动绘制、无法强制重绘(录制依赖其自身)。
 
 `src/components/ExplainPanel.tsx`:用 `react-markdown`+`remark-math`+`rehype-katex` 渲染 `explanation`(md,文字+`$...$`/`$$...$$`公式),`.md-prose` 容器(手写 CSS,无 typography 插件)。**考题区**:底部渲染 `store.pendingQuiz`(主 agent 出的选择题)——题干+4 选项按钮,用户点选项 → 本地判对错(正确绿框✓/错误红框✗)+ 显示解析 + `setPendingResume({answer})` 触发 ChatPanel resume。已作答禁用重复点。无论有无 step 都显示考题区(step null 时只显示考题)。
 

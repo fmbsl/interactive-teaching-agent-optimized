@@ -21,7 +21,7 @@ const FLOW_CSS = `
 .react-flow__minimap { background: var(--bg-1); border: 1px solid var(--border); }
 .react-flow__minimap svg { background: var(--bg-1); }
 /* minimap 节点缩略图:确保可见(默认继承,深色底上用蓝/绿) */
-.react-flow__minimap-node { fill: #4a9eff; }
+.react-flow__minimap-node { fill: var(--blue); }
 `;
 
 type LogItem = { id: string; parentId?: string | null; kind: string; text: string; depth: number };
@@ -147,8 +147,8 @@ function nodeStyle(mastery: boolean, depth: number = 0): React.CSSProperties {
 }
 
 const edgeStyle = { stroke: "var(--blue)", strokeWidth: 1.5 };
-const edgeStyleDim = { stroke: "#1e293b", strokeWidth: 1 };
-const edgeStyleHi = { stroke: "#5fb0ff", strokeWidth: 2.2 };
+const edgeStyleDim = { stroke: "var(--border)", strokeWidth: 1 };
+const edgeStyleHi = { stroke: "var(--blue-strong)", strokeWidth: 2.2 };
 const edgeLabelStyle = { fill: "var(--text-dim)", fontSize: 10 };
 const edgeLabelBgStyle = { fill: "transparent" };
 
@@ -170,7 +170,7 @@ function snapshotToNodesEdges(snap: any, selectedId: string | null = null) {
       data: { label: nodeLabel(n.title, !!n.mastery, n.sets ?? [], n.aliases ?? []) },
       position: pos[n.id] ?? { x: 0, y: 0 },
       style: { ...nodeStyle(!!n.mastery, n.depth ?? 0), ...(dim ? { opacity: 0.3 } : {}),
-               ...(selectedId === n.id ? { boxShadow: "0 0 0 2px #5fb0ff", zIndex: 10 } : {}) },
+               ...(selectedId === n.id ? { boxShadow: "0 0 0 2px var(--blue-strong)", zIndex: 10 } : {}) },
       sourcePosition: Position.Top,
       targetPosition: Position.Bottom,
       draggable: true,
@@ -184,7 +184,7 @@ function snapshotToNodesEdges(snap: any, selectedId: string | null = null) {
       id: `${e.from}-${e.to}`, source: e.from, target: e.to, type: "bezier",
       style: hiSet ? (involved ? edgeStyleHi : edgeStyleDim) : edgeStyle,
       labelStyle: edgeLabelStyle, labelBgStyle: edgeLabelBgStyle,
-      markerEnd: { type: MarkerType.ArrowClosed, color: involved ? "#5fb0ff" : "var(--blue)", width: 18, height: 18 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: involved ? "var(--blue-strong)" : "var(--blue)", width: 18, height: 18 },
       ...(dim ? { animated: false } : {}),
     };
   });
@@ -496,23 +496,23 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
             onSelectionChange={({ nodes: sel }) => { selectedNodesRef.current = new Set(sel.map((n) => n.id)); }}
             multiSelectionKeyCode="Shift"
             fitView proOptions={{ hideAttribution: true }} style={{ width: "100%", height: "100%" }}>
-            <Background color="#1e293b" gap={20} />
+            <Background color="var(--border)" gap={20} />
             <Controls showInteractive={false} />
             <MiniMap pannable zoomable nodeColor={(n: any) => {
               const bg = String((n.style as any)?.background || "");
               if (bg.includes("163,74")) return "#16a34a";
               const m = bg.match(/hsla\((\d+)/);
               if (m) { const h = +m[1]; return `hsl(${h},65%,50%)`; }
-              return "#4a9eff";
+              return "var(--blue)";
             }} />
           </ReactFlow>
           {/* 右键框选矩形(屏幕坐标,fixed 定位) */}
           {selRect && createPortal(
             <div style={{ position: "fixed", left: selRect.x, top: selRect.y, width: selRect.w, height: selRect.h,
-              zIndex: 9990, pointerEvents: "none", border: "1.5px solid #5fb0ff", background: "rgba(74,158,255,0.10)", borderRadius: 3 }} />,
+              zIndex: 9990, pointerEvents: "none", border: "1.5px solid var(--blue-strong)", background: "var(--blue-soft)", borderRadius: 3 }} />,
             document.body)}
           {sessionId && (
-            <div style={{ position: "absolute", top: 8, left: 8, fontSize: 11, fontFamily: "monospace", color: "var(--text-mute)", background: "rgba(7,10,18,0.7)", padding: "4px 8px", borderRadius: 4, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", top: 8, left: 8, fontSize: 11, fontFamily: "monospace", color: "var(--text-mute)", background: "var(--panel-bg-soft)", padding: "4px 8px", borderRadius: 4, pointerEvents: "none" }}>
               节点 {rfNodes.length} · 边 {rfEdges.length}
               <br /><span style={{ color: "#16a34a" }}>■</span> 已掌握 &nbsp;<span style={{ color: "var(--blue)" }}>■</span> 待学 &nbsp;<span style={{ color: "var(--blue)" }}>─</span> 前置
             </div>
@@ -592,7 +592,7 @@ function ContextMenu({ x, y, nodeIds, masteredMap, onAction, onClose }: {
   const top = Math.max(8, Math.min(y, window.innerHeight - items.length * 34 - 16));
   const menu = (
     <div onClick={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      style={{ position: "fixed", left, top, zIndex: 9999, minWidth: 190, background: "rgba(11,15,24,0.97)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", padding: 4, backdropFilter: "blur(8px)" }}>
+      style={{ position: "fixed", left, top, zIndex: 9999, minWidth: 190, background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.5)", padding: 4, backdropFilter: "blur(8px)" }}>
       {items.map((it) => (
         <button key={it.action}
           onClick={() => {
@@ -603,7 +603,7 @@ function ContextMenu({ x, y, nodeIds, masteredMap, onAction, onClose }: {
               onAction(it.action, nodeIds);
             }
           }}
-          className={`w-full flex items-center gap-2 text-left text-[12px] px-2.5 py-1.5 rounded transition-colors ${it.danger ? "text-[#fca5a5] hover:bg-[#ef4444]/12" : "text-[#dfe6f0] hover:bg-[#161f2e]"}`}>
+          className={`w-full flex items-center gap-2 text-left text-[12px] px-2.5 py-1.5 rounded transition-colors ${it.danger ? "text-[#fca5a5] hover:bg-[#ef4444]/12" : "text-[var(--text)] hover:bg-[var(--bg-3)]"}`}>
           <it.icon size={14} /> {it.label}
         </button>
       ))}

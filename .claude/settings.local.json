@@ -3,7 +3,10 @@
     "allow": [
       "Bash(PYTHONIOENCODING=utf-8 python -)",
       "Bash(npm run *)",
-      "Bash(python tools/gen_official_templates.py)"
+      "Bash(python tools/gen_official_templates.py)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"EXIT: $?\")",
+      "mcp__tavily__tavily_extract"
     ]
   }
 }

@@ -1,8 +1,7 @@
 """Step 生成 agent:tool-calling + 浏览器在环验证。
 
-用 LangGraph create_react_agent 编排:LLM 调 set_title/set_intent/set_explanation/set_params/
-add_animation 等工具逐项设计一个教学 step。其中 add_animation(code) 通过 interrupt() 暂停,
-等前端真渲染回传结果(ok/error)后 resume,LLM 据此修正 code 重调,直到跑通。
+用 LangGraph create_react_agent 编排:LLM 调 set_step(title+讲解+可选 params)/
+update_animation / read_animation / lookup_example / finish 等工具逐项设计一个教学 step。其中 update_animation(code) 通过 interrupt() 暂停,等前端真渲染回传结果(ok/error)后 resume,LLM 据此修正 code 重调,直到跑通。
 
 对比旧的 generate_step(一次性 JSON + 单次重试),这里是多轮 tool loop,运行时错就地修。
 
@@ -50,13 +49,13 @@ def _thread_id(sid: str, step_id: int, nonce: str) -> str:
 
 # ---------- 系统提示词:复用 STEP_PROMPT 的 API REF / 铁律 / FEW SHOT / 教学规范 ----------
 
-STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知识点逐步设计浏览器讲解:标题、意图、讲解、(可选)可调参数、动画代码。
+STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知识点逐步设计浏览器讲解:标题、讲解、(可选)可调参数、动画代码。
 
 **工作方式**:通过调用工具逐项设置,不要输出 JSON 或自然语言解释,只调工具。
-- set_title:简短标题。
-- set_intent:一句话教学意图(动画想让学生看到什么)。
-- set_explanation:讲解正文,**Markdown 格式**,文字与公式混排。公式用 `$...$`(行内)或 `$$...$$`(独占一行),会被 KaTeX 渲染。可含标题/列表/段落。这是该步的完整讲解,讲清来龙去脉,承接上文。
-- set_params:**仅当这一步确实需要用户交互调节参数时才调**(如"拖动看角度变化")。无需可调参数就跳过这个工具,不要硬凑。
+- set_step(title, explanation, params?):一次性设置本步的标题 + 讲解 + (可选)可调参数(替代分步设置,省往返)。
+  - title:简短标题。
+  - explanation:讲解正文,**Markdown 格式**,文字与公式混排。公式用 `$...$`(行内)或 `$$...$$`(独占一行),会被 KaTeX 渲染。可含标题/列表/段落。这是该步的完整讲解,讲清来龙去脉,承接上文。
+  - params:**仅当这一步确实需要用户交互调节参数时才给**(如"拖动看角度变化"),JSON 数组字符串,每项 `{{name,label,min,max,step,default}}`,如 `[{{"name":"lr","label":"学习率","min":0.01,"max":1,"step":0.01,"default":0.1}}]`。无需参数就传 `'[]'` 或省略,不要硬凑。
 - update_animation(code, old_str?, new_str?):提交或修改动画代码,浏览器真渲染验证。**一个工具两种用法**:
   - 整段提交(首次或大改):只给 `code`(完整 manim-web TS 函数体),不传 old_str/new_str。
   - 局部改(小修,省 token):传 `old_str`+`new_str`(不传 code)。在当前代码里定位 old_str(必须**唯一**匹配,含缩进,从当前代码原样复制一段),替换成 new_str(空串=删除),整段送验证。找不到/不唯一会报错——补上下文或改整段提交。
@@ -73,10 +72,10 @@ STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知�
 sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`)。用 `await scene.play(...)` / `scene.add(...)` 驱动。
 
 ⚠️ **params 解构铁律(高频错,务必遵守)**:
-- 只要你调了 `set_params`,代码里就一定会用 `params.<name>` 读参数。**解构行的 `{{ }}` 里必须显式列出 `params`**,否则运行时报 `params is not defined`。
+- 只要你在 `set_step` 里给了 `params`,代码里就一定会用 `params.<name>` 读参数。**解构行的 `{{ }}` 里必须显式列出 `params`**,否则运行时报 `params is not defined`。
 - 正确:`const {{ scene, Axes, Dot, Text, Create, params }} = ctx;` 然后 `const x = params.x;`
 - 错误:解构行写了 `scene, Axes, Dot` 却漏 `params`,代码里又用 `params.x` → 报错。
-- 反过来:**没调 set_params(无参数)就完全不要在代码里引用 `params`**,解构行也别写它。
+- 反过来:**`set_step` 里没给 params(无参数)就完全不要在代码里引用 `params`**,解构行也别写它。
 - 这条是 `params is not defined` 的唯一根因,渲染失败一次就要立刻检查解构行有没有 `params`。
 
 {API_REF_BLOCK}
@@ -132,37 +131,24 @@ def _build_tools(sid: str, step_id: int):
     draft = _DRAFTS[(sid, step_id)]
 
     @tool
-    def set_title(title: str) -> str:
-        """设置该步标题(简短,如"正弦函数的定义")。"""
+    def set_step(title: str, explanation: str, params_json: str = "[]") -> str:
+        """一次性设置本步的标题 + 讲解 + (可选)可调参数(替代分步 set_title/set_explanation/set_params,省往返)。
+        - title:简短标题,如"正弦函数的定义"。
+        - explanation:讲解正文,Markdown 格式,文字与公式混排。公式用 $...$ 行内或 $$...$$ 独占行(KaTeX 渲染)。可含标题/列表/段落。讲清来龙去脉,承接上文。
+        - params_json:可调参数 JSON 数组字符串,每项 {name,label,min,max,step,default}。**仅当该步确实需要用户调参时才给**;无需参数传 '[]' 或省略。"""
         draft["title"] = title
-        return f"标题已设:{title}"
-
-    @tool
-    def set_intent(intent: str) -> str:
-        """设置该步教学意图(一句话,这一步要让学生理解什么)。"""
-        draft["intent"] = intent
-        return "意图已设"
-
-    @tool
-    def set_explanation(explanation: str) -> str:
-        """设置讲解正文,Markdown 格式,文字与公式混排。公式用 $...$ 行内或 $$...$$ 独占行(KaTeX 渲染)。可含标题/列表/段落。讲清来龙去脉,承接上文。"""
         draft["explanation"] = explanation
-        # 兼容旧字段:从 explanation 提取首个 $...$/$$...$$ 作 formula,纯文本作 narration
         import re as _re
         fm = _re.search(r'\$\$?(.+?)\$\$?', explanation, _re.S)
         draft["formula"] = fm.group(1).strip() if fm else ""
         draft["narration"] = _re.sub(r'\$\$?.+?\$\$?', '', explanation).strip()
-        return "讲解已设"
-
-    @tool
-    def set_params(params_json: str) -> str:
-        """设置可调参数,JSON 数组字符串,每项 {{name,label,min,max,step,default}}。**仅当该步确实需要用户调参时才调**;无需参数就跳过本工具或传 '[]'。"""
-        import json as _json
-        try:
-            draft["params"] = _json.loads(params_json)
-        except Exception as e:
-            return f"参数 JSON 解析失败:{e}"
-        return f"参数已设:{len(draft['params'])} 个"
+        if params_json and params_json != "[]":
+            import json as _json
+            try:
+                draft["params"] = _json.loads(params_json)
+            except Exception as e:
+                return f"标题/讲解已设,但参数 JSON 解析失败:{e}"
+        return f"已设置:标题={title[:20]}…,讲解 {len(explanation)} 字"
 
     @tool
     def update_animation(code: str = "", old_str: str = "", new_str: str = "") -> str:
@@ -259,7 +245,7 @@ def _build_tools(sid: str, step_id: int):
             return f"缺少必填字段:{missing},请先设置。"
         return "FINISHED"
 
-    return [set_title, set_intent, set_explanation, set_params, update_animation, read_animation, lookup_example, finish]
+    return [set_step, update_animation, read_animation, lookup_example, finish]
 
 
 # ---------- agent 构造(每会话每步一个,带 MemorySaver)----------

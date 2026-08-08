@@ -116,24 +116,24 @@ export default function TemplateReview() {
   const domainLabel: Record<string, string> = { math: "数学", physics: "物理", demo: "官方示例" };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#0a0c14] text-[#dfe6f0]">
+    <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-deepest)] text-[var(--text)]">
       {/* 左:模板列表 */}
-      <aside className="w-64 shrink-0 border-r border-[#1e293b] overflow-y-auto">
-        <div className="px-4 py-3 border-b border-[#1e293b]">
+      <aside className="w-64 shrink-0 border-r border-[var(--border)] overflow-y-auto">
+        <div className="px-4 py-3 border-b border-[var(--border)]">
           <div className="text-[13px] font-semibold text-white">manim 动画模板库</div>
-          <div className="text-[10px] text-[#4a5365]">第一批 · 数学 / 物理(本科)</div>
+          <div className="text-[10px] text-[var(--text-faint)]">第一批 · 数学 / 物理(本科)</div>
         </div>
         {groups.map((dom) => (
           <div key={dom.domain} className="py-2">
-            <div className="px-4 py-1 text-[10px] uppercase tracking-wider text-[#4a5365]">{domainLabel[dom.domain]}</div>
+            <div className="px-4 py-1 text-[10px] uppercase tracking-wider text-[var(--text-faint)]">{domainLabel[dom.domain]}</div>
             {dom.categories.map((cat) => (
               <div key={cat.name} className="mb-1">
-                <div className="px-4 py-0.5 text-[11px] text-[#6b7686]">{cat.name}</div>
+                <div className="px-4 py-0.5 text-[11px] text-[var(--text-mute)]">{cat.name}</div>
                 {cat.items.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setSelectedId(t.id)}
-                    className={`block w-full text-left px-4 py-1.5 text-[12px] leading-snug transition-colors ${selectedId === t.id ? "bg-[#14233f] text-[#7cc6ff] border-l-2 border-[#4a9eff]" : "text-[#9aa6b8] hover:bg-[#101826]"}`}
+                    className={`block w-full text-left px-4 py-1.5 text-[12px] leading-snug transition-colors ${selectedId === t.id ? "bg-[var(--glow-1)] text-[#7cc6ff] border-l-2 border-[var(--blue)]" : "text-[var(--text-dim)] hover:bg-[var(--bg-2)]"}`}
                   >{t.title}</button>
                 ))}
               </div>
@@ -145,14 +145,14 @@ export default function TemplateReview() {
       {/* 中:舞台 + 信息 */}
       <main className="flex-1 flex flex-col min-w-0">
         <div ref={containerRef} className="flex-1 min-h-0 w-full relative">
-          {!tpl && <div className="empty-state absolute inset-0"><div className="text-[12px] text-[#6b7686]">未选择模板</div></div>}
+          {!tpl && <div className="empty-state absolute inset-0"><div className="text-[12px] text-[var(--text-mute)]">未选择模板</div></div>}
         </div>
-        <div className="border-t border-[#1e293b] px-4 py-3 space-y-3 shrink-0">
+        <div className="border-t border-[var(--border)] px-4 py-3 space-y-3 shrink-0">
           {/* 标题 + 状态 + 操作 */}
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
               <div className="text-[14px] font-semibold text-white">{tpl?.title ?? "—"}</div>
-              <div className="text-[11.5px] text-[#9aa6b8] mt-0.5 leading-relaxed">{tpl?.intent ?? "选左侧模板查看这一镜讲什么"}</div>
+              <div className="text-[11.5px] text-[var(--text-dim)] mt-0.5 leading-relaxed">{tpl?.intent ?? "选左侧模板查看这一镜讲什么"}</div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               <span className={`text-[11px] px-2 py-1 rounded-md ${status.ok ? "bg-[#0e2a1d] text-[#4ade80]" : "bg-[#2a1215] text-[#f87171]"}`}>{status.text}</span>
@@ -167,11 +167,11 @@ export default function TemplateReview() {
                 const v = paramValues[p.name] ?? p.default;
                 return (
                   <label key={p.name} className="flex items-center gap-2.5 text-[11px]">
-                    <span className="w-24 text-[#6b7686] shrink-0">{p.label}</span>
+                    <span className="w-24 text-[var(--text-mute)] shrink-0">{p.label}</span>
                     <input type="range" min={p.min} max={p.max} step={p.step} value={v}
                       onChange={(e) => setParamValues((prev) => ({ ...prev, [p.name]: parseFloat(e.target.value) }))}
                       className="flex-1" />
-                    <span className="w-12 text-right tnum text-[#5fb0ff]">{v.toFixed(2)}</span>
+                    <span className="w-12 text-right tnum text-[var(--blue-strong)]">{v.toFixed(2)}</span>
                   </label>
                 );
               })}

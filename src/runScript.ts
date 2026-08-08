@@ -9,13 +9,16 @@
 //      剥 import/export(标识符由 manimCtx 铺到全局可用)→ 尝试直跑 → 语法错(含 TS)则
 //      懒加载 typescript 转译剥类型后重跑。
 
+import { adaptColorLiterals } from "./themeColor";
+import { ensureManimGlobals } from "./manimCtx";
+
 const AsyncFunctionCtor = Object.getPrototypeOf(async function () {}).constructor;
 
 /** 剥掉 `import ... from '...'` 与 `export` 前缀(跨行 import 也处理)。manim-web 导出已铺全局。 */
 export function stripBareImports(code: string): string {
   let s = code;
   // import { ... } from '...'; 或 import * as X from '...'; 或 import X from '...'; 可能跨行
-  s = s.replace(/\bimport\s+[\s\S]*?from\s*['"][^'"]*['"]\s*;?/g, (m) => {
+  s = s.replace(/\bimport\s+[\s\S]*?from\s*['"][^'"]*['"]\s*;?/g, () => {
     // 保留其中的纯类型/空,但整段 import 剥掉(名字已在全局)
     return "";
   });
@@ -27,22 +30,13 @@ export function stripBareImports(code: string): string {
   return s;
 }
 
-/** 用 typescript transpileModule 把 TS 剥成(基本)纯 JS:精确去类型,不用正则,安全处理对象字面量/三元等。 */
-export async function transpileTS(code: string, callBackup?: (fn: () => void) => void): Promise<string> {
-  const ts: any = await import("typescript");
-  const out = ts.transpileModule(code, {
-    fileName: "scene.ts",
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2020,
-      module: ts.ModuleKind.None,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      isolatedModules: true,
-      reportDiagnostics: false,
-      jsx: ts.JsxEmit.None,
-    },
-    reportDiagnostics: false,
-  });
-  return out.outputText ?? code;
+/** 用 sucrase 把 TS 剥成(基本)纯 JS:精确去类型、安全处理对象字面量/三元等。
+ * 比 typescript 轻(纯 JS 浏览器可用、体积小一个量级、更快);只处理"剥类型+少量 TS 语法",
+ * 输入已是 stripBareImports 后的代码,不含 import。 */
+export async function transpileTS(code: string, _callBackup?: (fn: () => void) => void): Promise<string> {
+  const { transform } = await import("sucrase");
+  const out = transform(code, { transforms: ["typescript"], production: true });
+  return out.code ?? code;
 }
 
 /** 是否"自建场景"代码:代码里自己 new Scene/ThreeDScene(而非用注入的 scene)。
@@ -63,7 +57,10 @@ export type ExecResult =
  * @param timeoutMs 超时(长动画/卡死的兜底;超时视为通过,仅标记 timedOut)
  */
 export async function execScript(ctx: any, code: string, timeoutMs = 40000): Promise<ExecResult> {
-  let js = stripBareImports(code);
+  // 兜底:把 manim-web 导出铺到 window 全局,LLM 忘在解构行列出 LEFT/RIGHT/DOWN/UP/颜色/类名时能从全局拿到
+  ensureManimGlobals();
+  // 颜色字面量浅色兜底(adaptColorLiterals 内部会判断是否浅色背景;非浅色则原样返回)
+  let js = stripBareImports(adaptColorLiterals(code));
   let fn: any;
   try {
     fn = new AsyncFunctionCtor("ctx", js);

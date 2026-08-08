@@ -23,6 +23,7 @@ from skill.executor import start_run, iter_events, current_run
 # Django 启动时加载落盘的 session(重启不丢)
 agent.load_sessions_on_startup()
 from skill.llm_config_store import list_endpoints, save_endpoint, delete_endpoint, set_active, save_vision_endpoint
+from skill import app_settings as _app_settings
 
 
 def _sse(event_type: str, data: dict) -> str:
@@ -968,6 +969,28 @@ def chat_stop(request):
         if run is not None:
             run.finish()  # 标 done → SSE 读者立即收尾 / 停推
     return JsonResponse({"ok": True})
+
+
+@csrf_exempt
+def app_settings(request):
+    """应用级设置:GET 返回 {decompose_effort, effort_presets};POST {decompose_effort} 保存。
+    目前唯一的大类设置是"知识分解力度档位"(低/中/高),它一键同时控制分解的三个预算
+    (最大深度/最大节点数/单次展开上限),见 skill/app_settings.py 的 EFFORT_PRESETS。
+    """
+    from skill import app_settings as as_
+    if request.method == "GET":
+        return JsonResponse({
+            "decompose_effort": as_.get_decompose_effort(),
+            "effort_presets": as_.EFFORT_PRESETS,
+        })
+    if request.method != "POST":
+        return JsonResponse({"error": "GET/POST only"}, status=405)
+    try:
+        body = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "非法 JSON"}, status=400)
+    level = as_.set_decompose_effort(body.get("decompose_effort", ""))
+    return JsonResponse({"ok": True, "decompose_effort": level, "effort_presets": as_.EFFORT_PRESETS})
 
 
 @csrf_exempt

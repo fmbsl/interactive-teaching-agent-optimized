@@ -11,7 +11,8 @@
       "name": "django-backend",
       "runtimeExecutable": "python",
       "runtimeArgs": ["backend/manage.py", "runserver", "--noreload", "8000"],
-      "port": 8000
+      "port": 8000,
+      "autoPort": false
     },
     {
       "name": "attach-5173",

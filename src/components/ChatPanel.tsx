@@ -33,11 +33,11 @@ function makeItem(ev: ChatEvent, key: string): RenderedItem {
 }
 
 const roleStyle: Record<AgentRole, { name: string; color: string; dot: string; icon: string }> = {
-  user:        { name: "你",        color: "#9aa6b8", dot: "#4a5365", icon: "·" },
-  orchestrator:{ name: "主 Agent",  color: "#5fb0ff", dot: "#4a9eff", icon: "◆" },
-  animator:    { name: "Animator",  color: "#9aa6b8", dot: "#6b7686", icon: "▶" },
-  verifier:    { name: "Verifier",  color: "#9aa6b8", dot: "#6b7686", icon: "✓" },
-  narrator:    { name: "Narrator",  color: "#9aa6b8", dot: "#6b7686", icon: "✎" },
+  user:        { name: "你",        color: "var(--text-dim)", dot: "var(--text-faint)", icon: "·" },
+  orchestrator:{ name: "主 Agent",  color: "var(--blue-strong)", dot: "var(--blue)", icon: "◆" },
+  animator:    { name: "Animator",  color: "var(--text-dim)", dot: "var(--text-mute)", icon: "▶" },
+  verifier:    { name: "Verifier",  color: "var(--text-dim)", dot: "var(--text-mute)", icon: "✓" },
+  narrator:    { name: "Narrator",  color: "var(--text-dim)", dot: "var(--text-mute)", icon: "✎" },
 };
 
 export default function ChatPanel() {
@@ -324,7 +324,8 @@ export default function ChatPanel() {
           for await (const sev of explainStep(sid, stepId)) {
             if (consumeRunIdRef.current !== myRun) return;
             // render_request 走 handleEvent(浏览器在环验证 + postRenderResult 递归);explain 写 store;error 记录
-            await handleEvent(sev, myRun);
+            const r = await handleEvent(sev, myRun);
+            if (r?.error) errMsg = r.error;
             if (sev.kind === "explain") ok = true;
             if (sev.kind === "error") errMsg = sev.message || "";
           }
@@ -345,7 +346,7 @@ export default function ChatPanel() {
 
   // 处理单个事件(供 render_request 递归消费复用):落盘 explain/plan/session/error,render_request 递归验证
   // myRun:外层 consume 的 runId,递归中切会话时据此中断,防止回传流写到新会话(串台)
-  async function handleEvent(ev: ChatEvent, myRun: number) {
+  async function handleEvent(ev: ChatEvent, myRun: number): Promise<{ error: string } | undefined> {
     // 落盘 explain 到 store;其他事件也追加到对话树
     if (ev.kind === "explain") {
       setItems((prev) => {
@@ -370,10 +371,14 @@ export default function ChatPanel() {
       });
       if (consumeRunIdRef.current !== myRun) return;
       const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame);
+      let subErr = "";
       for await (const sub of subStream) {
         if (consumeRunIdRef.current !== myRun) return;
-        await handleEvent(sub, myRun);
+        const r = await handleEvent(sub, myRun);
+        if (r?.error) subErr = r.error;
       }
+      // 把本段(含递归渲染回传流)遇到的 error 冒泡给上层(animation_request),避免"验证失败超限"被误判成功
+      if (subErr) return { error: subErr };
     } else if (ev.kind === "decompose_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       const sid = sessionIdRef.current || "";
@@ -404,7 +409,8 @@ export default function ChatPanel() {
       try {
         for await (const sev of explainStep(sid, stepId)) {
           if (consumeRunIdRef.current !== myRun) return;
-          await handleEvent(sev, myRun);
+          const r = await handleEvent(sev, myRun);
+          if (r?.error) errMsg = r.error;
           if (sev.kind === "explain") ok = true;
           if (sev.kind === "error") errMsg = sev.message || "";
         }
@@ -416,8 +422,13 @@ export default function ChatPanel() {
         if (consumeRunIdRef.current !== myRun) return;
         await handleEvent(sub, myRun);
       }
+      // 若本段渲染失败(超 6 次未通过等),把 error 冒泡给更上层调用方(resume_main_agent 递归),别被"无 error 即成功"吞掉
+      if (errMsg) return { error: errMsg };
     } else if (ev.kind === "error") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      // 把 error 冒泡给上层调用方(render_request/animation_request 递归):渲染验证失败超限等若被吞,
+      // 外层 animation_request 的"流正常结束且无 error 即成功"会把失败误判成功
+      return { error: ev.message || "" };
     } else if (ev.kind === "agent_start" || ev.kind === "tool_call" || ev.kind === "tool_result" || ev.kind === "render_result") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
     } else if (ev.kind === "topic_added") {
@@ -641,7 +652,7 @@ export default function ChatPanel() {
   return (
     <div className="flex h-full flex-col">
       {/* 顶栏:会话切换 + 上传 */}
-      <div className="flex items-center gap-2 px-3 h-11 border-b border-[#1e293b] shrink-0 relative">
+      <div className="flex items-center gap-2 px-3 h-11 border-b border-[var(--border)] shrink-0 relative">
         <button onClick={() => setShowSessions((v) => !v)} className="btn-ghost px-2.5 py-1 rounded-md text-[11px] flex items-center gap-1.5">
           <Menu size={13} /> <span className="max-w-[80px] truncate">{sessionList.find((s) => s.session_id === sessionId)?.title || "会话"}</span>
         </button>
@@ -663,19 +674,19 @@ export default function ChatPanel() {
         <button onClick={() => fileInputRef.current?.click()} className="btn-ghost px-2 py-1 rounded-md text-[11px] flex items-center gap-1" title="上传课件">
           {fileName ? <><Paperclip size={13} /> {fileName.slice(0, 12)}</> : <Paperclip size={13} />}
         </button>
-        <span className="text-[10px] text-[#4a5365] flex items-center gap-1 ml-auto" title="右键对话区可导出/笔记/导入/删除会话">
-          {loading ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 生成中</> : sessionId ? <><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" /> 会话中</> : <><span className="w-1.5 h-1.5 rounded-full bg-[#4a5365]" /> 待输入</>}
+        <span className="text-[10px] text-[var(--text-faint)] flex items-center gap-1 ml-auto" title="右键对话区可导出/笔记/导入/删除会话">
+          {loading ? <><span className="w-1.5 h-1.5 rounded-full bg-[var(--blue)] animate-pulse" /> 生成中</> : sessionId ? <><span className="w-1.5 h-1.5 rounded-full bg-[var(--blue)]" /> 会话中</> : <><span className="w-1.5 h-1.5 rounded-full bg-[var(--text-faint)]" /> 待输入</>}
         </span>
 
         {/* 会话下拉列表(搜索/切换/重命名/删除) */}
         {showSessions && (
-          <div className="absolute top-11 left-2 z-20 w-72 rounded-md border border-[#1e293b] bg-[#0b0f18] shadow-xl max-h-80 overflow-hidden flex flex-col">
-            <div className="px-2 pt-1.5 pb-1.5 border-b border-[#1e293b] shrink-0">
+          <div className="absolute top-11 left-2 z-20 w-72 rounded-md border border-[var(--border)] bg-[var(--bg-1)] shadow-xl max-h-80 overflow-hidden flex flex-col">
+            <div className="px-2 pt-1.5 pb-1.5 border-b border-[var(--border)] shrink-0">
               <input
                 value={sessionQuery}
                 onChange={(e) => setSessionQuery(e.target.value)}
                 placeholder="搜索标题或问题…"
-                className="w-full bg-[#0b0f18] text-[#dfe6f0] text-[11px] px-2 py-1 rounded border border-[#1e293b] outline-none placeholder-[#4a5365] focus:border-[#4a9eff]/50"
+                className="w-full bg-[var(--bg-1)] text-[var(--text)] text-[11px] px-2 py-1 rounded border border-[var(--border)] outline-none placeholder-[var(--text-faint)] focus:border-[var(--blue)]/50"
               />
             </div>
             <div className="flex-1 overflow-y-auto">
@@ -683,19 +694,19 @@ export default function ChatPanel() {
                 const q = sessionQuery.trim().toLowerCase();
                 const list = (sessionList || []).filter((s) =>
                   !q || (s.title || "").toLowerCase().includes(q) || (s.question || "").toLowerCase().includes(q));
-                if (list.length === 0) return <div className="px-3 py-2 text-[11px] text-[#4a5365]">无匹配会话</div>;
+                if (list.length === 0) return <div className="px-3 py-2 text-[11px] text-[var(--text-faint)]">无匹配会话</div>;
                 return list.map((s) => (
-                  <div key={s.session_id} className={`flex items-stretch group hover:bg-[#161f2e] ${s.session_id === sessionId ? "bg-[#4a9eff]/10" : ""}`}>
+                  <div key={s.session_id} className={`flex items-stretch group hover:bg-[var(--bg-3)] ${s.session_id === sessionId ? "bg-[var(--blue)]/10" : ""}`}>
                     <button
                       onClick={() => handleSwitchSession(s.session_id)}
                       className="flex-1 min-w-0 text-left px-3 py-1.5 text-[11px]"
                     >
-                      <div className="text-[#dfe6f0] truncate">{s.title}</div>
-                      <div className="text-[9px] text-[#4a5365]">{(s.question || "(空)").slice(0, 34)} · 步 {s.current_step}/{s.step_count}</div>
+                      <div className="text-[var(--text)] truncate">{s.title}</div>
+                      <div className="text-[9px] text-[var(--text-faint)]">{(s.question || "(空)").slice(0, 34)} · 步 {s.current_step}/{s.step_count}</div>
                     </button>
                     <div className="flex items-center pr-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                      <span onClick={() => handleRenameSession(s.session_id, s.title)} title="重命名" className="cursor-pointer px-1 py-1 text-[10px] text-[#6b7686] hover:text-[#5fb0ff]">✎</span>
-                      <span onClick={() => handleDeleteSession(s.session_id)} title="删除" className="cursor-pointer px-1 py-1 text-[10px] text-[#6b7686] hover:text-[#fca5a5]">✕</span>
+                      <span onClick={() => handleRenameSession(s.session_id, s.title)} title="重命名" className="cursor-pointer px-1 py-1 text-[10px] text-[var(--text-mute)] hover:text-[var(--blue-strong)]">✎</span>
+                      <span onClick={() => handleDeleteSession(s.session_id)} title="删除" className="cursor-pointer px-1 py-1 text-[10px] text-[var(--text-mute)] hover:text-[#fca5a5]">✕</span>
                     </div>
                   </div>
                 ));
@@ -707,9 +718,9 @@ export default function ChatPanel() {
 
       {/* 分层知识点 list(新:多主题并列,每个主题可展开看子知识点) */}
       {topics.length > 0 && (
-        <div className="px-3 py-2 border-b border-[#1e293b] bg-[#0b0f18]/60 shrink-0">
+        <div className="px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-1)]/60 shrink-0">
           <div className="flex items-center mb-1">
-            <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">知识点 · {topics.length} 个主题</span>
+            <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">知识点 · {topics.length} 个主题</span>
           </div>
           <div className="space-y-1 max-h-56 overflow-y-auto">
             {topics.map((tp) => (
@@ -721,10 +732,10 @@ export default function ChatPanel() {
 
       {/* 知识点 list(旧:单主题 lesson.steps,兼容旧 session) */}
       {lesson.steps.length > 0 && (
-        <div className="px-3 py-2.5 border-b border-[#1e293b] bg-[#0b0f18]/60 shrink-0">
+        <div className="px-3 py-2.5 border-b border-[var(--border)] bg-[var(--bg-1)]/60 shrink-0">
           <div className="flex items-center mb-1.5">
-            <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">知识点 · {lesson.title}</span>
-            <span className="ml-auto text-[9px] text-[#4a5365]">←/→ 切换 · 点击跳步</span>
+            <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">知识点 · {lesson.title}</span>
+            <span className="ml-auto text-[9px] text-[var(--text-faint)]">←/→ 切换 · 点击跳步</span>
           </div>
           <ol className="space-y-0.5 max-h-44 overflow-y-auto">
             {lesson.steps.map((s) => {
@@ -733,10 +744,10 @@ export default function ChatPanel() {
                 <li
                   key={s.id}
                   onClick={() => handleGoto(s.id)}
-                  className={`flex items-center gap-2 text-[11px] py-0.5 px-1 rounded cursor-pointer hover:bg-[#161f2e] ${st === "active" ? "bg-[#4a9eff]/10" : ""}`}
+                  className={`flex items-center gap-2 text-[11px] py-0.5 px-1 rounded cursor-pointer hover:bg-[var(--bg-3)] ${st === "active" ? "bg-[var(--blue)]/10" : ""}`}
                 >
                   <StepBadge status={st} id={s.id} />
-                  <span className={st === "done" ? "text-[#6b7686]" : st === "active" ? "text-[#dfe6f0]" : "text-[#9aa6b8]"}>{s.title}</span>
+                  <span className={st === "done" ? "text-[var(--text-mute)]" : st === "active" ? "text-[var(--text)]" : "text-[var(--text-dim)]"}>{s.title}</span>
                 </li>
               );
             })}
@@ -749,19 +760,19 @@ export default function ChatPanel() {
         {items.length === 0 && !loading && (
           <div className="empty-state mt-6">
             <div className="empty-icon"><Sparkles size={30} /></div>
-            <div className="text-[12px] text-[#6b7686]">输入要学的 STEM 知识点开始对话</div>
-            <div className="text-[10.5px] text-[#4a5365] max-w-[260px]">可先上传课件。我会拆成知识点 list 逐个用动画 + 公式 + 图文讲解,还能出题考你</div>
+            <div className="text-[12px] text-[var(--text-mute)]">输入要学的 STEM 知识点开始对话</div>
+            <div className="text-[10.5px] text-[var(--text-faint)] max-w-[260px]">可先上传课件。我会拆成知识点 list 逐个用动画 + 公式 + 图文讲解,还能出题考你</div>
           </div>
         )}
         {renderTree(items, setItems)}
         {loading && (
-          <div className="flex items-center gap-2 text-[11px] text-[#6b7686] px-1 py-1 thinking-dot">
+          <div className="flex items-center gap-2 text-[11px] text-[var(--text-mute)] px-1 py-1 thinking-dot">
             <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--blue)]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--blue)]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--blue)]" />
             </span>
-            <Loader2 size={12} className="animate-spin text-[#5fb0ff]" />
+            <Loader2 size={12} className="animate-spin text-[var(--blue-strong)]" />
             <span>主 agent 正在思考…</span>
           </div>
         )}
@@ -771,7 +782,7 @@ export default function ChatPanel() {
       {ctxMenu && (
         <div
           ref={ctxMenuRef}
-          className="fixed z-50 w-48 rounded-md border border-[#1e293b] bg-[#0b0f18] shadow-xl py-1"
+          className="fixed z-50 w-48 rounded-md border border-[var(--border)] bg-[var(--bg-1)] shadow-xl py-1"
           style={{
             left: Math.min(ctxMenu.x, window.innerWidth - 210),
             top: Math.min(ctxMenu.y, window.innerHeight - 200),
@@ -791,7 +802,7 @@ export default function ChatPanel() {
             onClick={() => { setCtxMenu(null); handleExportMd(); }}
             title="导出当前会话为 Markdown 学习笔记"
           />
-          <div className="my-1 border-t border-[#1e293b]" />
+          <div className="my-1 border-t border-[var(--border)]" />
           <MenuRow
             icon={Upload}
             label="导入 JSON 恢复会话"
@@ -810,13 +821,13 @@ export default function ChatPanel() {
       )}
 
       {/* 底部:输入(无上一步/下一步按钮,改用 list 点击或键盘) */}
-      <div className="p-2.5 border-t border-[#1e293b] shrink-0 space-y-1.5">
+      <div className="p-2.5 border-t border-[var(--border)] shrink-0 space-y-1.5">
         {/* 深度选择 + 待发文件 chip */}
         <div className="flex items-center gap-2 flex-wrap">
           <select
             value={depth}
             onChange={(e) => setDepth(e.target.value as any)}
-            className="text-[10px] bg-[#161f2e] border border-[#1e293b] rounded px-1.5 py-0.5 text-[#9aa6b8] outline-none"
+            className="text-[10px] bg-[var(--bg-3)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[var(--text-dim)] outline-none"
             title="学习深度:影响主 agent 拆解粒度与讲解风格"
           >
             <option value="popular">科普</option>
@@ -824,9 +835,9 @@ export default function ChatPanel() {
             <option value="deep">深度理解</option>
           </select>
           {pendingFiles.map((f) => (
-            <span key={f.file_id} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#4a9eff]/10 text-[#5fb0ff] border border-[#4a9eff]/20">
+            <span key={f.file_id} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[var(--blue)]/10 text-[var(--blue-strong)] border border-[var(--blue)]/20">
               <Paperclip size={11} /> {f.name}
-              <button onClick={() => removePendingFile(f.file_id)} className="text-[#5fb0ff]/60 hover:text-[#5fb0ff]"><X size={11} /></button>
+              <button onClick={() => removePendingFile(f.file_id)} className="text-[var(--blue-strong)]/60 hover:text-[var(--blue-strong)]"><X size={11} /></button>
             </span>
           ))}
         </div>
@@ -838,28 +849,28 @@ export default function ChatPanel() {
                 key={i}
                 onClick={() => answerWithOption(opt)}
                 disabled={loading}
-                className="text-left text-[11px] px-2.5 py-1.5 rounded-md bg-[#0d121c] border border-[#1e293b] hover:border-[#4a9eff]/50 hover:bg-[#4a9eff]/10 text-[#9aa6b8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="text-left text-[11px] px-2.5 py-1.5 rounded-md bg-[var(--bg-panel)] border border-[var(--border)] hover:border-[var(--blue)]/50 hover:bg-[var(--blue)]/10 text-[var(--text-dim)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 title="点击即发送此选项作回答"
               >
                 {opt}
               </button>
             ))}
-            <span className="text-[9px] text-[#4a5365] px-1">点选项发送,或在下方输入框自定义回答</span>
+            <span className="text-[9px] text-[var(--text-faint)] px-1">点选项发送,或在下方输入框自定义回答</span>
           </div>
         )}
-        <div className="flex items-end gap-2 rounded-lg bg-[#161f2e] border border-[#1e293b] px-2.5 py-1.5 focus-within:border-[#4a9eff]/50 transition-colors">
+        <div className="flex items-end gap-2 rounded-lg bg-[var(--bg-3)] border border-[var(--border)] px-2.5 py-1.5 focus-within:border-[var(--blue)]/50 transition-colors">
           <textarea
             placeholder={pendingAsk ? "回答主 agent 的问题…" : sessionId ? "追问或更新问题…" : "输入要学的知识点,如:梯度下降、傅里叶变换…"}
             rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
-            className="flex-1 bg-transparent text-[12px] text-[#dfe6f0] resize-none outline-none placeholder:text-[#4a5365] leading-5"
+            className="flex-1 bg-transparent text-[12px] text-[var(--text)] resize-none outline-none placeholder:text-[var(--text-faint)] leading-5"
           />
           {loading ? (
             <button
               onClick={stopGeneration}
-              className="px-3 py-1 rounded-md text-[11px] font-medium bg-[#3a1620] text-[#f87171] border border-[#5a2430] hover:bg-[#4a1c28]"
+              className="px-3 py-1 rounded-md text-[11px] font-medium bg-[var(--danger-bg)] text-[var(--danger-text)] border border-[var(--danger-border)] hover:bg-[var(--danger-bg-hover)]"
               title="打断当前 LLM 生成"
             >■ 停止</button>
           ) : (
@@ -872,19 +883,19 @@ export default function ChatPanel() {
 }
 
 function StepBadge({ status, id }: { status: StepStatus; id: number }) {
-  if (status === "done") return <span className="w-4 h-4 rounded grid place-items-center bg-[#4a9eff] text-[#070a12]"><Check size={11} /></span>;
-  if (status === "active") return <span className="w-4 h-4 rounded grid place-items-center text-[9px] bg-[#4a9eff]/20 text-[#5fb0ff] border border-[#4a9eff]/40 tnum">{id}</span>;
-  return <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[#4a5365] border border-[#1e293b] tnum">{id}</span>;
+  if (status === "done") return <span className="w-4 h-4 rounded grid place-items-center bg-[var(--blue)] text-[var(--on-accent)]"><Check size={11} /></span>;
+  if (status === "active") return <span className="w-4 h-4 rounded grid place-items-center text-[9px] bg-[var(--blue)]/20 text-[var(--blue-strong)] border border-[var(--blue)]/40 tnum">{id}</span>;
+  return <span className="w-4 h-4 rounded grid place-items-center text-[9px] text-[var(--text-faint)] border border-[var(--border)] tnum">{id}</span>;
 }
 
 // 分层知识点主题节点:可折叠,展开显示子知识点(点子知识点触发生成动画)
 function TopicNode({ topic, onStepClick, loading }: { topic: Topic; onStepClick: (stepId: string) => void; loading: boolean }) {
   const [open, setOpen] = useState(true);
   return (
-    <div className="rounded-md border border-[#162032] bg-[#0d121c]/60">
+    <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-panel)]/60">
       <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-1.5 px-2 py-1 text-left">
-        <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
-        <span className="text-[11px] font-medium text-[#dfe6f0] truncate">{topic.title}</span>
+        <span className={`text-[9px] text-[var(--text-mute)] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
+        <span className="text-[11px] font-medium text-[var(--text)] truncate">{topic.title}</span>
         <span className="ml-auto chip">{topic.steps.length} 步</span>
       </button>
       {open && (
@@ -898,12 +909,12 @@ function TopicNode({ topic, onStepClick, loading }: { topic: Topic; onStepClick:
                 key={s.id}
                 onClick={() => onStepClick(s.id)}
                 style={{ paddingLeft: 4 + lvl * 14 }}
-                className={`group flex items-center gap-2 text-[10.5px] py-1 px-1.5 rounded cursor-pointer border border-transparent hover:bg-[#161f2e] hover:border-[#2b3a52] hover:translate-x-0.5 transition-all duration-150 ${loading ? "opacity-50 pointer-events-none" : ""} ${isSum ? "border-t border-[#1e293b] mt-1 pt-1.5 hover:bg-[#2b6cb0]/8 hover:border-[#2b6cb0]/40" : ""}`}
+                className={`group flex items-center gap-2 text-[10.5px] py-1 px-1.5 rounded cursor-pointer border border-transparent hover:bg-[var(--bg-3)] hover:border-[var(--border-hover)] hover:translate-x-0.5 transition-all duration-150 ${loading ? "opacity-50 pointer-events-none" : ""} ${isSum ? "border-t border-[var(--border)] mt-1 pt-1.5 hover:bg-[var(--blue-deep)]/8 hover:border-[var(--blue-deep)]/40" : ""}`}
               >
-                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum transition-transform group-hover:scale-110 ${generated ? "bg-[#4a9eff] text-[#070a12]" : isSum ? "bg-[#2b6cb0]/30 text-[#9ec5ff] border border-[#2b6cb0]" : "text-[#4a5365] border border-[#1e293b] group-hover:border-[#4a9eff]/40 group-hover:text-[#5fb0ff]"}`}>{generated ? <Check size={11} /> : isSum ? "Σ" : i + 1}</span>
-                <span className={`truncate ${generated ? "text-[#9aa6b8]" : isSum ? "text-[#9ec5ff] font-medium" : "text-[#7a8696] group-hover:text-[#9aa6b8]"}`}>{s.title}</span>
-                {generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">已生成</span>}
-                {isSum && !generated && <span className="ml-auto text-[9px] text-[#4a5365] shrink-0">融合</span>}
+                <span className={`w-4 h-4 rounded grid place-items-center text-[9px] shrink-0 tnum transition-transform group-hover:scale-110 ${generated ? "bg-[var(--blue)] text-[var(--on-accent)]" : isSum ? "bg-[var(--blue-deep)]/30 text-[var(--blue-light)] border border-[var(--blue-deep)]" : "text-[var(--text-faint)] border border-[var(--border)] group-hover:border-[var(--blue)]/40 group-hover:text-[var(--blue-strong)]"}`}>{generated ? <Check size={11} /> : isSum ? "Σ" : i + 1}</span>
+                <span className={`truncate ${generated ? "text-[var(--text-dim)]" : isSum ? "text-[var(--blue-light)] font-medium" : "text-[var(--text-mute)] group-hover:text-[var(--text-dim)]"}`}>{s.title}</span>
+                {generated && <span className="ml-auto text-[9px] text-[var(--text-faint)] shrink-0">已生成</span>}
+                {isSum && !generated && <span className="ml-auto text-[9px] text-[var(--text-faint)] shrink-0">融合</span>}
               </li>
             );
           })}
@@ -968,9 +979,9 @@ function ToolGroup({ items, depth, renderNode }: { items: RenderedItem[]; depth:
   const names = items.map((it) => (it.event as any).name).join(" → ");
   return (
     <div style={{ paddingLeft: depth * 0 }}>
-      <div onClick={() => setOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] text-[#6b7686]">
-        <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
-        <Wrench size={12} /> <span className="font-mono">{names}</span> <span className="text-[#4a5365]">· {items.length} 个工具</span>
+      <div onClick={() => setOpen((v) => !v)} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[var(--text-dim)] text-[var(--text-mute)]">
+        <span className={`text-[9px] text-[var(--text-mute)] transition-transform inline-block w-2 ${open ? "rotate-90" : ""}`}>▶</span>
+        <Wrench size={12} /> <span className="font-mono">{names}</span> <span className="text-[var(--text-faint)]">· {items.length} 个工具</span>
       </div>
       {open && items.map((it) => renderNode(it, depth))}
     </div>
@@ -979,7 +990,7 @@ function ToolGroup({ items, depth, renderNode }: { items: RenderedItem[]; depth:
 
 function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed?: boolean; onToggle?: () => void; }) {
   const collapsible = collapsed !== undefined && onToggle;
-  const Twist = () => <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${collapsed ? "" : "rotate-90"}}`}>▶</span>;
+  const Twist = () => <span className={`text-[9px] text-[var(--text-mute)] transition-transform inline-block w-2 ${collapsed ? "" : "rotate-90"}}`}>▶</span>;
   switch (event.kind) {
     case "message": {
       const r = roleStyle[event.role];
@@ -988,8 +999,8 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
         <div className={`flex ${isUser ? "justify-end" : "justify-start"} my-0.5`}>
           <div className={`max-w-[85%] rounded-lg px-2.5 py-1.5 text-[12px] leading-[1.55] transition-shadow duration-200 ${
             isUser
-              ? "bg-[#4a9eff]/15 border border-[#4a9eff]/35 text-[#dfe6f0] shadow-[0_1px_8px_-2px_rgba(74,158,255,0.25)]"
-              : "bg-[#0d121c] border border-[#1e293b] text-[#9aa6b8] hover:border-[#2b3a52] hover:bg-[#101725]"
+              ? "bg-[var(--blue)]/15 border border-[var(--blue)]/35 text-[var(--text)] shadow-[0_1px_8px_-2px_var(--blue-glow)]"
+              : "bg-[var(--bg-panel)] border border-[var(--border)] text-[var(--text-dim)] hover:border-[var(--border-hover)] hover:bg-[var(--bg-2)]"
           }`}>
             {!isUser && <div className="text-[10px] font-medium mb-0.5 flex items-center gap-1.5" style={{ color: r.color }}>
               <span className="w-1 h-1 rounded-full" style={{ background: r.color }} />{r.name}
@@ -1003,25 +1014,25 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     }
     case "plan":
       return (
-        <div className="rounded-lg border border-[#1e293b] bg-[#111827] p-2.5 my-1">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#5fb0ff] mb-1">
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] p-2.5 my-1">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--blue-strong)] mb-1">
             <span>◆</span> {event.title}
             <span className="ml-auto chip">{event.steps.length} 步</span>
           </div>
-          {event.summary && <div className="text-[10.5px] text-[#6b7686] leading-relaxed">{event.summary}</div>}
+          {event.summary && <div className="text-[10.5px] text-[var(--text-mute)] leading-relaxed">{event.summary}</div>}
         </div>
       );
     case "step-start":
-      return <div className="flex items-center gap-1.5 text-[11px] text-[#5fb0ff] py-0.5"><span className="w-1.5 h-1.5 rounded-full bg-[#4a9eff] animate-pulse" /> 第 {event.stepId} 步 · {event.title}</div>;
+      return <div className="flex items-center gap-1.5 text-[11px] text-[var(--blue-strong)] py-0.5"><span className="w-1.5 h-1.5 rounded-full bg-[var(--blue)] animate-pulse" /> 第 {event.stepId} 步 · {event.title}</div>;
     case "agent_start":
       // 主 agent 的 agent_start 不显示(文本消息已带"主 Agent"名,这里冗余);
       // subagent(设计某步动画)的默认折叠,只显一行摘要,点开看工具调用过程(set_title/.../update_animation/渲染结果)
       if (event.agent === "main") return null;
       return (
-        <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] text-[#6b7686] py-0.5 cursor-pointer hover:text-[#9aa6b8]">
-          {collapsible && <span className={`text-[9px] text-[#53606f] transition-transform inline-block w-2 ${collapsed ? "" : "rotate-90"}`}>▶</span>}
+        <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-mute)] py-0.5 cursor-pointer hover:text-[var(--text-dim)]">
+          {collapsible && <span className={`text-[9px] text-[var(--text-mute)] transition-transform inline-block w-2 ${collapsed ? "" : "rotate-90"}`}>▶</span>}
           <Bot size={12} /> <span>{`设计第 ${event.stepId} 步`}</span>
-          <span className="text-[#4a5365] text-[9px]">{collapsed ? "点击展开工具过程" : ""}</span>
+          <span className="text-[var(--text-faint)] text-[9px]">{collapsed ? "点击展开工具过程" : ""}</span>
         </div>
       );
     case "tool_call": {
@@ -1044,13 +1055,13 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       }
       return (
         <div className="my-0.5">
-          <div onClick={onToggle} className={`flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] ${collapsed ? "text-[#6b7686]" : "text-[#9aa6b8]"}`}>
+          <div onClick={onToggle} className={`flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[var(--text-dim)] ${collapsed ? "text-[var(--text-mute)]" : "text-[var(--text-dim)]"}`}>
             {collapsible && <Twist />} <Wrench size={12} /> <span className="font-mono">{event.name}</span>
           </div>
           {!collapsed && (
             <div className="mt-0.5 ml-5">
-              <div className="text-[10px] text-[#4a5365] mb-0.5">{argSummary}</div>
-              <pre className="text-[10px] text-[#7a8696] bg-[#0a0f1a] border border-[#162032] rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+              <div className="text-[10px] text-[var(--text-faint)] mb-0.5">{argSummary}</div>
+              <pre className="text-[10px] text-[var(--text-mute)] bg-[var(--bg-input)] border border-[var(--border-soft)] rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
                 {body}
               </pre>
             </div>
@@ -1062,11 +1073,11 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
       const ok = !/失败|错误|error/i.test(event.output);
       return (
         <div className="my-0.5">
-          <div onClick={onToggle} className={`flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[#9aa6b8] ${collapsed ? "text-[#6b7686]" : "text-[#9aa6b8]"}`}>
-            {collapsible && <Twist />} <span>{ok ? "↳" : "⚠"}</span> <span className="text-[#4a5365]">结果:</span> <span className="truncate">{event.output.slice(0, 60)}</span>
+          <div onClick={onToggle} className={`flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer hover:text-[var(--text-dim)] ${collapsed ? "text-[var(--text-mute)]" : "text-[var(--text-dim)]"}`}>
+            {collapsible && <Twist />} <span>{ok ? "↳" : "⚠"}</span> <span className="text-[var(--text-faint)]">结果:</span> <span className="truncate">{event.output.slice(0, 60)}</span>
           </div>
           {!collapsed && (
-            <pre className="mt-0.5 ml-5 text-[10px] text-[#7a8696] bg-[#0a0f1a] border border-[#162032] rounded px-2 py-1 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">{event.output}</pre>
+            <pre className="mt-0.5 ml-5 text-[10px] text-[var(--text-mute)] bg-[var(--bg-input)] border border-[var(--border-soft)] rounded px-2 py-1 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">{event.output}</pre>
           )}
         </div>
       );
@@ -1074,66 +1085,66 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "render_request":
       return (
         <div className="my-0.5">
-          <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer text-[#5fb0ff] hover:text-[#9aa6b8]">
-            {collapsible && <Twist />} <Code2 size={12} /> <span>渲染请求</span> <span className="text-[#4a5365]">code {event.code.length} 字符</span>
+          <div onClick={onToggle} className="flex items-center gap-1.5 text-[10.5px] py-0.5 cursor-pointer text-[var(--blue-strong)] hover:text-[var(--text-dim)]">
+            {collapsible && <Twist />} <Code2 size={12} /> <span>渲染请求</span> <span className="text-[var(--text-faint)]">code {event.code.length} 字符</span>
           </div>
           {!collapsed && (
-            <pre className="mt-0.5 ml-5 text-[10px] text-[#7a8696] bg-[#0a0f1a] border border-[#162032] rounded px-2 py-1 whitespace-pre-wrap break-all max-h-60 overflow-y-auto">{event.code}</pre>
+            <pre className="mt-0.5 ml-5 text-[10px] text-[var(--text-mute)] bg-[var(--bg-input)] border border-[var(--border-soft)] rounded px-2 py-1 whitespace-pre-wrap break-all max-h-60 overflow-y-auto">{event.code}</pre>
           )}
         </div>
       );
     case "render_result":
       return (
-        <div className={`flex items-center gap-1.5 text-[10.5px] py-0.5 ml-2 ${event.ok ? "text-[#5fb0ff]" : "text-[#e07a5f]"}`}>
-          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.ok ? "渲染通过" : "渲染失败"}</span>{!event.ok && event.error && <span className="text-[#7a8696] truncate">{event.error.slice(0, 60)}</span>}
+        <div className={`flex items-center gap-1.5 text-[10.5px] py-0.5 ml-2 ${event.ok ? "text-[var(--blue-strong)]" : "text-[#e07a5f]"}`}>
+          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.ok ? "渲染通过" : "渲染失败"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
         </div>
       );
     case "explain":
       return (
-        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1.5 my-0.5">
-          <div className="text-[10px] text-[#5fb0ff] mb-0.5">✎ 讲解 · {event.title}</div>
-          <div className="text-[11px] text-[#9aa6b8] leading-relaxed line-clamp-3">{event.narration}</div>
+        <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-panel)] px-2.5 py-1.5 my-0.5">
+          <div className="text-[10px] text-[var(--blue-strong)] mb-0.5">✎ 讲解 · {event.title}</div>
+          <div className="text-[11px] text-[var(--text-dim)] leading-relaxed line-clamp-3">{event.narration}</div>
         </div>
       );
     case "ask":
       return (
-        <div className="rounded-md border border-[#4a9eff]/40 bg-[#4a9eff]/5 px-2.5 py-1.5 my-0.5">
-          <div className="text-[10px] text-[#5fb0ff] mb-0.5">❓ 主 agent 想确认</div>
-          <div className="text-[11.5px] text-[#dfe6f0] leading-relaxed whitespace-pre-wrap">{event.question}</div>
-          <div className="text-[9px] text-[#4a5365] mt-1">{event.options?.length ? "点下方选项按钮或自定义回答" : "在下方输入框回答后发送"}</div>
+        <div className="rounded-md border border-[var(--blue)]/40 bg-[var(--blue)]/5 px-2.5 py-1.5 my-0.5">
+          <div className="text-[10px] text-[var(--blue-strong)] mb-0.5">❓ 主 agent 想确认</div>
+          <div className="text-[11.5px] text-[var(--text)] leading-relaxed whitespace-pre-wrap">{event.question}</div>
+          <div className="text-[9px] text-[var(--text-faint)] mt-1">{event.options?.length ? "点下方选项按钮或自定义回答" : "在下方输入框回答后发送"}</div>
         </div>
       );
     case "topic_added":
       return (
-        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
-          <div className="text-[10px] text-[#5fb0ff] mb-0.5">📚 新增主题 · {event.topic.title}</div>
-          <div className="text-[10.5px] text-[#6b7686]">{event.topic.steps.length} 步:{event.topic.steps.map((s) => s.title).join(" / ")}</div>
+        <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-panel)] px-2.5 py-1 my-0.5">
+          <div className="text-[10px] text-[var(--blue-strong)] mb-0.5">📚 新增主题 · {event.topic.title}</div>
+          <div className="text-[10.5px] text-[var(--text-mute)]">{event.topic.steps.length} 步:{event.topic.steps.map((s) => s.title).join(" / ")}</div>
         </div>
       );
     case "decompose_request":
       return (
-        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
-          <div className="text-[10px] text-[#5fb0ff] mb-0.5">🧩 分解知识图谱 · {event.question}</div>
-          <div className="text-[9px] text-[#4a5365]">主 agent 触发分解 agent,正在跑…</div>
+        <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-panel)] px-2.5 py-1 my-0.5">
+          <div className="text-[10px] text-[var(--blue-strong)] mb-0.5">🧩 分解知识图谱 · {event.question}</div>
+          <div className="text-[9px] text-[var(--text-faint)]">主 agent 触发分解 agent,正在跑…</div>
         </div>
       );
     case "animation_request":
       return (
-        <div className="rounded-md border border-[#162032] bg-[#0d121c] px-2.5 py-1 my-0.5">
-          <div className="text-[10px] text-[#5fb0ff] flex items-center gap-1"><Play size={11} /> 生成动画 · 第 {(event as any).step_id || event.stepId} 步</div>
-          <div className="text-[9px] text-[#4a5365]">主 agent 触发 subagent,浏览器在环验证中…</div>
+        <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-panel)] px-2.5 py-1 my-0.5">
+          <div className="text-[10px] text-[var(--blue-strong)] flex items-center gap-1"><Play size={11} /> 生成动画 · 第 {(event as any).step_id || event.stepId} 步</div>
+          <div className="text-[9px] text-[var(--text-faint)]">主 agent 触发 subagent,浏览器在环验证中…</div>
         </div>
       );
     case "stage_switch":
       return (
-        <div className="text-[10px] text-[#6b7686] py-0.5 pl-1">
+        <div className="text-[10px] text-[var(--text-mute)] py-0.5 pl-1">
           🔄 切换中间舞台 → {(event as any).stage === "graph" ? "知识分解图" : "动画舞台"}
         </div>
       );
     case "done":
       return null;
     case "error":
-      return <div className="rounded-md border border-[#2b3a52] bg-[#0f1828] px-2.5 py-1.5 text-[11px] text-[#9aa6b8]"><span className="text-[#5fb0ff]">!</span> {event.message}</div>;
+      return <div className="rounded-md border border-[var(--border-hover)] bg-[var(--bg-row)] px-2.5 py-1.5 text-[11px] text-[var(--text-dim)]"><span className="text-[var(--blue-strong)]">!</span> {event.message}</div>;
     default:
       return null;
   }
@@ -1151,9 +1162,9 @@ function MenuRow({ icon: Icon, label, onClick, disabled, title, danger }: {
       disabled={disabled}
       title={title}
       className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 disabled:opacity-30
-        ${danger ? "text-[#fca5a5] hover:bg-[#ef4444]/10" : "text-[#dfe6f0] hover:bg-[#161f2e]"}`}
+        ${danger ? "text-[#fca5a5] hover:bg-[#ef4444]/10" : "text-[var(--text)] hover:bg-[var(--bg-3)]"}`}
     >
-      <Icon size={12} className={danger ? "text-[#fca5a5]" : "text-[#6b7686]"} />
+      <Icon size={12} className={danger ? "text-[#fca5a5]" : "text-[var(--text-mute)]"} />
       {label}
     </button>
   );

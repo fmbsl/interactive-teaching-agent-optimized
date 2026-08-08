@@ -32,6 +32,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from .manim_lesson import _get_runtime_cfg
+from .app_settings import get_decompose_budget
 from .debug_log import dlog
 import threading as _threading
 
@@ -182,7 +183,7 @@ def _add_node(sid: str, title: str, mastery: bool, aliases: list[str] | None,
             "sets": list(nd["sets"]), "aliases": list(nd["aliases"]), "merged": True}})
         return nid
     # 新建
-    if len(G["nodes"]) >= MAX_NODES:
+    if len(G["nodes"]) >= G.get("budget", {}).get("max_nodes", MAX_NODES):
         # 触顶:强制并入一个虚拟叶(不进 frontier),避免丢概念
         nid = "n" + _uuid.uuid4().hex[:8]
         G["nodes"][nid] = {"title": title, "aliases": list(aliases), "sets": list(sets),
@@ -429,11 +430,11 @@ def _split_replace(sid: str, target_id: str, children: list[dict], prereqs: list
     # --- F. 非 mastery 子/prereq 进 frontier ---
     for (_ct, cid) in child_ids:
         nd = nodes.get(cid)
-        if nd and not nd["mastery"] and nd["depth"] < MAX_DEPTH and cid not in G["frontier"]:
+        if nd and not nd["mastery"] and nd["depth"] < G.get("budget", {}).get("max_depth", MAX_DEPTH) and cid not in G["frontier"]:
             G["frontier"].append(cid)
     for (_pt, pid) in prereq_ids:
         nd = nodes.get(pid)
-        if nd and not nd["mastery"] and nd["depth"] < MAX_DEPTH and pid not in G["frontier"]:
+        if nd and not nd["mastery"] and nd["depth"] < G.get("budget", {}).get("max_depth", MAX_DEPTH) and pid not in G["frontier"]:
             G["frontier"].append(pid)
     if target_id in G["frontier"]:
         G["frontier"].remove(target_id)
@@ -476,9 +477,9 @@ def _build_tools(sid: str):
             if target_id not in G["frontier"]:
                 ft = [G["nodes"][fid]["title"] for fid in G["frontier"] if fid in G["nodes"]]
                 return f"错误:「{tgt}」不在 frontier(可能已拆分)。当前 frontier:{ft[:10]}"
-            if G.get("expand_count", 0) >= MAX_EXPAND:
+            if G.get("expand_count", 0) >= G.get("budget", {}).get("max_expand", MAX_EXPAND):
                 G["frontier"] = []
-                return (f"已达到本次分解的展开上限({MAX_EXPAND} 次)。"
+                return (f"已达到本次分解的展开上限({G.get('budget', {}).get('max_expand', MAX_EXPAND)} 次)。"
                         f"frontier 已清空以控制分解耗时,请调 finish() 输出当前知识谱系图。")
             events, msg = _split_replace(sid, target_id, children or [], prereqs or [], deps or [], prune=True)
             G["expand_count"] = G.get("expand_count", 0) + 1
@@ -528,7 +529,7 @@ def run_decompose_agent(sid: str, question: str, file_text: Optional[str] = None
     # 初始化该 session 的图草稿 + root 节点(root 是普通节点,拆则消失,不拆则留作叶)
     # 复位整图要在 _LOCKS 内进行,防与并行编辑/edit_* 竞态(swap 瞬间短暂持锁,不阻塞后续工具)
     with _LOCKS[sid]:
-        _GRAPHS[sid] = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}, "expand_count": 0}
+        _GRAPHS[sid] = {"nodes": {}, "edges": set(), "frontier": [], "title_index": {}, "expand_count": 0, "budget": get_decompose_budget()}
         _EMIT[sid] = []
     G = _GRAPHS[sid]
     root_title = question.strip()[:40] or "知识点"
@@ -753,6 +754,7 @@ def ensure_graph_loaded(sid: str) -> bool:
             G["title_index"][a] = n["id"]
     for e in snap.get("edges", []):
         G["edges"].add((e["from"], e["to"]))
+    G["budget"] = get_decompose_budget()  # 预算不从快照恢复,改为读当前设置(档位随时可调)
     _GRAPHS[sid] = G
     dlog(f"ENSURE_GRAPH_LOADED sid={sid} rebuilt nodes={len(G['nodes'])} edges={len(G['edges'])}")
     return True

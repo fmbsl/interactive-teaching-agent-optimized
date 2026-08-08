@@ -65,22 +65,22 @@ export default function MermaidPanel() {
     return (
       <div className="stage-transition empty-state h-full">
         <div className="empty-icon">◊</div>
-        <div className="text-[12px] text-[#6b7686]">主 agent 会按知识点类型自选展示方式</div>
-        <div className="text-[10.5px] text-[#4a5365] max-w-[280px]">数学/物理 → manim 动画 · 流程/结构/分类/关系 → mermaid 图示(生物分类、历史脉络、软件架构、状态机等)</div>
+        <div className="text-[12px] text-[var(--text-mute)]">主 agent 会按知识点类型自选展示方式</div>
+        <div className="text-[10.5px] text-[var(--text-faint)] max-w-[280px]">数学/物理 → manim 动画 · 流程/结构/分类/关系 → mermaid 图示(生物分类、历史脉络、软件架构、状态机等)</div>
       </div>
     );
   }
 
   return (
     <div className="stage-transition flex h-full flex-col">
-      <div className="px-4 h-9 border-b border-[#1e293b] flex items-center shrink-0 gap-2">
-        <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">Diagram</span>
-        <span className="text-[12px] text-[#9aa6b8] truncate">{title}</span>
-        <span className="ml-auto text-[10px] text-[#4a5365]">{(diagram as any)?.diagram_type || "mermaid"}</span>
+      <div className="px-4 h-9 border-b border-[var(--border)] flex items-center shrink-0 gap-2">
+        <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">Diagram</span>
+        <span className="text-[12px] text-[var(--text-dim)] truncate">{title}</span>
+        <span className="ml-auto text-[10px] text-[var(--text-faint)]">{(diagram as any)?.diagram_type || "mermaid"}</span>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto grid place-items-center p-4 bg-[#0b0f18]">
+      <div className="flex-1 min-h-0 overflow-auto grid place-items-center p-4 bg-[var(--bg-1)]">
         {rendering ? (
-          <div className="text-[11px] text-[#6b7686]">渲染图中…</div>
+          <div className="text-[11px] text-[var(--text-mute)]">渲染图中…</div>
         ) : err ? (
           <div className="text-[11px] text-[#fca5a5] max-w-full whitespace-pre-wrap font-mono p-3 rounded border border-[#ef4444]/30 bg-[#ef4444]/8">
             渲染失败:{err}
@@ -90,15 +90,15 @@ export default function MermaidPanel() {
         )}
       </div>
       {explanation && (
-        <div className="flex-0 border-t border-[#1e293b] px-4 py-2 max-h-[40%] overflow-y-auto bg-[#0d121c]/80">
+        <div className="flex-0 border-t border-[var(--border)] px-4 py-2 max-h-[40%] overflow-y-auto bg-[var(--bg-panel)]/80">
           <div className="md-prose text-[11px]">
             <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{explanation}</ReactMarkdown>
           </div>
         </div>
       )}
-      <details className="flex-0 border-t border-[#1e293b] px-4 py-1.5">
-        <summary className="text-[10px] text-[#4a5365] cursor-pointer">mermaid 源码</summary>
-        <pre className="text-[10px] text-[#6b7686] font-mono whitespace-pre-wrap mt-1">{code}</pre>
+      <details className="flex-0 border-t border-[var(--border)] px-4 py-1.5">
+        <summary className="text-[10px] text-[var(--text-faint)] cursor-pointer">mermaid 源码</summary>
+        <pre className="text-[10px] text-[var(--text-mute)] font-mono whitespace-pre-wrap mt-1">{code}</pre>
       </details>
     </div>
   );

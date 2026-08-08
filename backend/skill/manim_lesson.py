@@ -417,11 +417,17 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 4. **Transform 只在同类间用**:点数结构要匹配,跨类(如 Dot↔Text)会报 `alignVmobjectPair ... does not match point count`。跨类用先 `scene.remove(old)` 再 `new FadeIn(new)`。
 5. **`addFixedInFrameMobjects` 只钉 2D**:Text/MathTex 可钉;Dot3D/Sphere/Arrow3D 等 3D 对象不要钉,直接 `scene.add`。钉了即加入场景,勿重复 add。
 6. **不要用未实现的**:`Intersection`/`Union`/`Exclusion`/`Difference`(布尔运算)、`set_fill_by_checkerboard`(用 `checkerboardColors` 选项替代)、`alwaysRedraw` 的每帧重算(用 `addUpdater`)。
-7. **解构行必须包含代码里用到的所有标识符**(不仅是 `params`):代码里出现 `params.lr`、`AnimationGroup`、`Write`、`BLUE_C`、`easeOut` 等任何从 ctx 取的名字,开头的 `const { scene, ..., params } = ctx;` 就必须列出它。漏了会 `ReferenceError: XXX is not defined`。**局部改(update_animation old_str/new_str)时若新代码引入了新标识符,务必同步加进解构行**(高频坑:加了 `new AnimationGroup(...)` 却没把 `AnimationGroup` 加进解构)。若该步无参数,就完全不要引用 `params`。
+7. **解构行必须包含代码里用到的所有标识符**(不仅是 `params`):代码里出现 `params.lr`、`AnimationGroup`、`Write`、`BLUE_C`、`easeOut` 等任何从 ctx 取的名字,开头的 `const { scene, ..., params } = ctx;` 就必须列出它。**方向常量 `LEFT/RIGHT/UP/DOWN/UL/UR/DL/DR/ORIGIN/IN/OUT` 用到 `shift/nextTo/moveTo` 方向时必解构(高频漏,报 `LEFT is not defined`);颜色 `BLUE/RED/YELLOW/WHITE/...`、类名 `Dot/Line/Axes/...` 同理。** 漏了会 `ReferenceError: XXX is not defined`。**局部改(update_animation old_str/new_str)时若新代码引入了新标识符,务必同步加进解构行**(高频坑:加了 `new AnimationGroup(...)` 却没把 `AnimationGroup` 加进解构)。若该步无参数,就完全不要引用 `params`。
 8. **`new VGroup(...)` 不要在空/未填充时取中心或边界**:`vg.getCenter()`/`getBoundingBox()` 在 group 无子元素时抛 `cannot compute center of an empty group`。要么构造时直接传入子元素 `new VGroup(a, b, c)`,要么先 `vg.add(x)` 再取中心;不要 `new VGroup()` 后立刻 `getCenter()`。
 9. **代码是纯 JS,不是 TS——任何类型注解都会 `Unexpected token ':'` 直接报错**:禁止 `(x: number)`、`function f(a: number): any[]`、`const arr: any[] = []`、`x as number`、`interface`/`type` 声明、泛型 `<T>`。参数和变量一律不加类型,靠默认值/注释即可。这是高频错误,务必逐行检查有没有残留的 `: 类型`。
+10. **ValueTracker + addUpdater 必防首帧 NaN(高频,会让标签显示 "NaN°"、对象坐标变 NaN 被打回)**:
+   - `new ValueTracker(初值)` **必须给初值**;创建后立刻 `scene.add(tracker)`(未 add 的 tracker 在 updater 首帧 `getValue()` 返回 undefined -> 级联 NaN)。
+   - `mob.addUpdater(() => f(tracker.getValue()))` 里,`getValue()` 首帧可能未就绪 -> **必须兜底**:`const v = tracker.getValue() ?? 初值;`,用 v 参与运算,不要把 getValue() 直接喂给 Math.sin/cos/atan2/round/坐标。
+   - **不要传 `params.xxx` 给函数却没在 set_step 的 params 里声明该字段**:`params.angle` 未声明 = undefined,进 `deg * Math.PI/180` = NaN。用到的 params 字段必须在 set_step 里声明;代码里读前可 `const a = params.angle ?? 0;` 兜底。
+   - 任何进 Math.sin/cos/atan2/坐标的值,先确保是有限数(`Number.isFinite(x)` 不成立就回退初值),别让 NaN 流进 Text/坐标。
 10. **改透明度统一用 `setFillOpacity`,`setOpacity` 完全不要用**:实测 `setOpacity` **两处都报错**——普通 mobject 无此方法(`is not a function`)、`.animate.setOpacity` 转发时报 `AnimateProxy: method "setOpacity" not found`。改透明度:动画过渡用 `mob.animate.setFillOpacity(o)`,即时改用 `mob.setFillOpacity(o)` / `mob.setStrokeOpacity(o)` / `mob.opacity = o`。注意 `setStrokeOpacity` 只在普通 mobject 上(不能 `.animate.setStrokeOpacity`)。`withDuration` 是小写 `w`(不是 `WithDuration`)。
-11. **构图用相对定位,不要手算 `shift` 坐标**:文字/标签/矩阵用 `mob.nextTo(ref, dir, buff)` 相对参照物定位(`dir` 用 `UP/DOWN/LEFT/RIGHT/UL..`,`buff` 用 `SMALL_BUFF`/`MED_SMALL_BUFF` 或 0.1-0.3);整组用 `new Group(a, b, c)` 或 `new VGroup(...)` 包起来再整体 `moveTo`/`toEdge`。**禁止靠 `toEdge(UP).shift([4.4, -0.55, 0])` 这种硬算偏移凑位置**——画面会拥挤错位、易重叠(触发 BB 检测打回)。
+11. **构图用相对定位,不要手算 `shift`/`moveTo` 世界坐标**:文字/标签/矩阵用 `mob.nextTo(ref, dir, buff)` 相对参照物定位(`dir` 用 `UP/DOWN/LEFT/RIGHT/UL..`,`buff` 用 `SMALL_BUFF`/`MED_SMALL_BUFF` 或 0.1-0.3);整组用 `new Group(a, b, c)` 或 `new VGroup(...)` 包起来再整体 `moveTo`/`toEdge`。**禁止靠 `toEdge(UP).shift([4.4, -0.55, 0])` 或 `moveTo([-5.4, 1.8, 0])` 这种硬算偏移凑位置**——画面会拥挤错位、易重叠(触发 BB 检测打回;报错会带文字坐标 `@(≈x,y)`,据此往反方向移)。
+12. **坐标轴(Axes)场景的轴标签/标注必须用轴的坐标系,不要用全局世界坐标**:`Axes` 旁边手动摆文字时,永远是 `label.nextTo(ax.c2p(x, y), dir, buff)`(`c2p` 把数据坐标转成轴内 world 坐标)或用 `ax.getAxisLabels(xLabel, yLabel)` 自动放;曲线上的点/标签也一样 `nextTo(ax.c2p(...))`。**禁止用 `moveTo`/`shift` 直接给一个全局数值坐标**——轴经过 `ax.shift(...)` 后全局原点变了,你手算的坐标几乎必然压在曲线/刻度/网格上,导致「文字与图形对象重叠」反复打回且越改越乱。以曲线 `curve` 上的 peak/trough 标注为例:`dot.nextTo(peakPoint, UP, 0.15)`、`label.nextTo(peakPoint, RIGHT, 0.2)`,`peakPoint` 来自 `ax.c2p(peakX, curveFn(peakX))`,不是手写数组。
 12. **三区分明 + 公式独占行**:画面分顶部标题、中部主体、底部说明三区,**同一区不要堆 3 个以上文字**;公式块(MathTex)单独占一行、用 `toEdge` 或 `nextTo` 与图形分开,**不要和图形/标签挤在同一位置**。临时说明文字(caption)切阶段时先 `await scene.play(new FadeOut(old))` 再进新的,不要同位叠放。
 13. **动画前对象必须先在场景里**:`ApplyFunction`/`Transform`/`.animate` 等动画只对**已在场景中的 mobject** 有效。`const x = obj.copy()` 复制出的副本若没 `scene.add(x)`(或经 `FadeIn`/`Create`/`GrowArrow` 进场),对其做动画**屏幕上看不到**——点会变但画面不变。**每次 `copy()` 出副本要立刻想着"它怎么进场景"**(`scene.add` 或进场动画),否则白做。典型坑:用副本演示"原图 → 变换后",原图和副本都要进场景,只进原图、对副本 ApplyFunction 就只看到原图不动。
 14. **`waitForRender()` 只用于公式对象**:只有 `MathTexImage`/`MathTex`/`Tex`/`Variable` 有此方法(异步 LaTeX 渲染需等待)。**`Text`/`Dot`/`Arrow`/`Line`/`Circle`/`VGroup` 等普通 mobject 没有 `waitForRender`**,对它们调会报 `Cannot read properties of undefined (reading 'waitForRender')`。公式才 `await eq.waitForRender()` 后再 `scene.add`/`play`;Text 等直接 `scene.add`,不要 waitForRender。
@@ -721,9 +727,14 @@ const axes = new ThreeDAxes({
 ═══════════════════════════════════════════
 五、教学与视觉规范
 ═══════════════════════════════════════════
-- **配色可以丰富(多色更好)**:允许红/绿/橙/黄/紫/青等,用不同色相区分不同元素/曲线/对比,教学上更清楚。要点:
-  ① 同一画面里同类元素用一致的色;② 主体用高对比亮色、辅助/背景/网格用低饱和中性色;③ 背景保持深色(`#0a0c14` 附近)、浅色文字;④ 别让文字与底色或同色线混在一起。可参考官方 example 的多色用法。
+- **配色可以丰富但有纪律**:允许红/绿/橙/黄/紫/青等,用不同色相区分不同元素/曲线/对比,教学上更清楚。要点:
+  ① 同一画面里同类元素用一致的色;② 主体用高对比亮色、辅助/背景/网格用低饱和中性色;③ **背景跟随当前主题(深色或浅色都可能),文字/主体必须与背景高对比**——浅色背景避免白/浅字,深色背景避免黑字(运行时已自动把 WHITE 等亮色在浅背景压暗,你也可直接选深色);④ 别让文字与底色或同色线混在一起。可参考官方 example 的多色用法。
+- **与主题协调的调色板**(浅/深背景都清晰,整步风格统一即可):
+  · 主体/高亮:`#4a9eff` 蓝、`#f6a04b` 橙、`#e05b5b` 红、`#54c58a` 绿(浅背景仍清晰)
+  · 辅助/网格/次要:降饱和中性(深背景 `#5f7487`,浅背景 `#8896a6`)
+  · 文字:深背景用浅色 `#e8edf2`,浅背景用深色 `#2b2b2b`
 - 主体图形 strokeWidth 3-4;辅助线/标注 1-2 且用中性或浅色。
+- **布局与层级(信息一眼可读)**:一图一主题,标题/轴标签/公式/主体分区摆放、留白、别贴边被裁切;字号分级(标题 > 轴标签/公式 > 说明);每步给一句话关键标注(概念名/公式/结论),别为凑数堆文字。
 - **每步建议有文字标注**(显示关键概念名/公式/轴标签,帮助理解),但不要为凑数堆砌——画面简洁清晰优先。中文 Text 必带 fontFamily。数学公式另用 MathTex/Tex(见下)。
 - 动画节奏**按需**:简单概念不必硬拆多步,但**进场别只用裸 `Create`/`FadeIn`**——文字/公式用 `Write`、向量用 `GrowArrow`、几何形用 `DrawBorderThenFill`,关键量用 `Indicate`/`Circumscribe` 强调(见 API REF 动画段 + 编排与节奏)。多元素进场用 `AnimationGroup`/`LaggedStart` 错峰,别一次性 `scene.add` 瞬切。需要分步演示的才用多个 `await scene.play(...)`;不要只画静态图(除非该步本就是静态结论)。
 - 3D 场景的标题/标注用 `scene.addFixedInFrameMobjects(text)` 钉到屏幕帧;3D 对象(Dot3D/Sphere/Arrow3D)直接 `scene.add`。
@@ -921,9 +932,9 @@ SCENE_SYSTEM_PROMPT = """你是一个 manim-web(浏览器版 Manim,TypeScript)�
 - **数学公式用 `MathTex`/`Tex`**(真 LaTeX,ctx 已提供),不要把公式塞进 Text;Text 只用于普通文字/标注。MathTex 用前 `await eq.waitForRender()`。
 
 视觉要求(重要,避免简陋):
-- 配色可丰富(多色区分元素/曲线/对比),背景保持深色、浅色文字;主体 strokeWidth 3-4,辅助中性。
+- 配色可丰富(多色区分元素/曲线/对比),**背景跟随当前主题(深/浅都可能),文字/主体与背景高对比**(浅背景避免白/浅字、深背景避免黑字);主体 strokeWidth 3-4,辅助中性。
 - 主体图形 strokeWidth 3-4;辅助线/标注 strokeWidth 1-2 且用中性色。
-- **每步代码必须包含至少 1 个 Text 作为标题或标注**(显示该步关键概念名/公式/坐标轴标签),不能只画几何图形没有文字。所有 Text 必须带 fontFamily: '"Times New Roman","SimSun",serif',否则中文不显示。文字 fontSize 0.25-0.4,用亮蓝/浅蓝色让标注醒目。
+- **每步代码必须包含至少 1 个 Text 作为标题或标注**(显示该步关键概念名/公式/坐标轴标签),不能只画几何图形没有文字。所有 Text 必须带 fontFamily: '"Times New Roman","SimSun",serif',否则中文不显示。文字 fontSize 0.25-0.4,用与背景**高对比**的强调色让标注醒目(深背景用亮色、浅背景用深/浓色,别用会被压暗的白字)。
 - 用 VGroup 分组相关元素,一起 Create 或 FadeIn。
 - 至少 2 个 play 步骤(如:Create 主体 → FadeIn 标注),不要只画静态图。
 

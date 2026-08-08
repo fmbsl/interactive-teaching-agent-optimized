@@ -28,16 +28,16 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.error) {
       return (
-        <div className="grid place-items-center h-screen w-screen bg-[#0a0c14] text-[#dfe6f0]">
+        <div className="grid place-items-center h-screen w-screen bg-[var(--bg-deepest)] text-[var(--text)]">
           <div className="max-w-md mx-auto p-6 text-center">
             <div className="text-[40px] mb-3">⚠️</div>
             <div className="text-[15px] font-medium mb-2">页面渲染出错了</div>
-            <div className="text-[11px] text-[#6b7686] mb-4 break-all">
+            <div className="text-[11px] text-[var(--text-mute)] mb-4 break-all">
               {String(this.state.error.message || this.state.error)}
             </div>
             <button
               onClick={this.handleReload}
-              className="px-4 py-2 rounded-md bg-[#4a9eff] text-[#0a0c14] text-[12px] font-medium hover:bg-[#5fb0ff]"
+              className="px-4 py-2 rounded-md bg-[var(--blue)] text-[var(--bg-deepest)] text-[12px] font-medium hover:bg-[var(--blue-strong)]"
             >
               重新加载
             </button>

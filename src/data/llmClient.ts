@@ -351,6 +351,34 @@ export async function setActiveLlmConfig(id: string): Promise<LlmConfigState> {
   return r.json();
 }
 
+// ---------- 应用级设置 ----------
+
+export interface AppSettings {
+  decompose_effort: string;          // 知识分解力度档位: low / mid / high
+  effort_presets?: Record<string, { max_depth: number; max_nodes: number; max_expand: number }>;
+}
+
+/** 取应用级设置(当前:知识分解力度档位 + 档位→预算映射)。 */
+export async function getAppSettings(): Promise<AppSettings> {
+  const r = await apiFetch(`${API_BASE}/api/settings`);
+  if (!r.ok) throw new Error(`取设置失败 ${r.status}`);
+  return r.json();
+}
+
+/** 保存应用级设置。当前支持 {decompose_effort: "low"|"mid"|"high"}。 */
+export async function saveAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  const r = await apiFetch(`${API_BASE}/api/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!r.ok) {
+    const m = (await r.json().catch(() => ({}))).error;
+    throw new Error(m || `保存设置失败 ${r.status}`);
+  }
+  return r.json();
+}
+
 // ---------- 知识分解 ----------
 
 /** 知识分解 agent:SSE 流(原始 dict,不经 parseSSE)。sid 给则用主 session(图挂其上),不给后端自建。
@@ -417,15 +445,32 @@ export async function decomposeAutoSplit(sid: string, target: string): Promise<{
   return r.json();
 }
 
+/** 带有限重试的 POST fetch,用于 SSE 流。
+ * 仅对"连接建立失败"(请求还没发出、后端未产生副作用)自动重试——如后端刚重启/短暂网络抖动;
+ * 流读到一半断线不重试(后端可能已产生副作用,重发会重复生成)。用户主动中断则不重试。 */
+async function fetchSSE(url: string, body: any, signal?: AbortSignal, retries = 2): Promise<Response> {
+  let lastErr: any;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await apiFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (e: any) {
+      if (signal?.aborted) throw e;
+      lastErr = e;
+      if (i < retries) await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 async function* streamSSE(url: string, body: any, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   let resp: Response;
   try {
-    resp = await apiFetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
+    resp = await fetchSSE(url, body, signal);
   } catch (e: any) {
     if (signal?.aborted) { yield { kind: "error", message: "已打断" }; return; }
     yield { kind: "error", message: `无法连接后端:${e.message}` };
@@ -467,12 +512,7 @@ async function* streamSSE(url: string, body: any, signal?: AbortSignal): AsyncGe
 export async function* streamRawSSE(url: string, body: any, signal?: AbortSignal): AsyncGenerator<any> {
   let resp: Response;
   try {
-    resp = await apiFetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
+    resp = await fetchSSE(url, body, signal);
   } catch (e: any) {
     if (signal?.aborted) { yield { kind: "error", message: "已打断" }; return; }
     yield { kind: "error", message: `无法连接后端:${e.message}` };

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { makeManimCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn, exposeManimGlobals } from "../manimCtx";
 import { useApp } from "../store";
 import { regenerateScene } from "../data/llmClient";
-import { SkipBack, Play, Pause, SkipForward, RotateCcw } from "lucide-react";
-import { is3DCode, detectOverlap, detectMathTexError } from "../sceneCheck";
+import { SkipBack, Play, Pause, SkipForward, RotateCcw, Camera, Square, Video } from "lucide-react";
+import { is3DCode, detectOverlap, detectMathTexError, detectOutOfBounds, detectNaN } from "../sceneCheck";
 import { execScript, isSelfBuildCode } from "../runScript";
 
 // 转换器路线:后端把 Python Manim → TS,再拼成 `const {...} = ctx; <body>`。
@@ -16,6 +16,37 @@ import { execScript, isSelfBuildCode } from "../runScript";
 // η 与起点由滑块通过 ValueTracker 实时驱动(不重跑 construct)——"实时可交互"落点。
 // 后端 agent 改某一步时,只替换本组件构造逻辑——"对话式局部重生成"落点。
 
+/** 解析 CSS 变量为实际颜色值(供 manim-web/three 用——它们只认具体颜色,不认 var())。 */
+function cssVar(name: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || name;
+}
+
+// ---------- 动画导出(截图 / 录制 WebM) ----------
+function stageCanvas(scene: any, container: HTMLElement | null): HTMLCanvasElement | null {
+  try { const cv = scene?.renderer?.getCanvas?.(); if (cv) return cv; } catch { /* ignore */ }
+  // 自建场景(脚本里自己 new Scene)渲染进 container,取它下面的 canvas
+  return container ? container.querySelector("canvas") : null;
+}
+function downloadDataUrl(dataUrl: string, name: string) {
+  const a = document.createElement("a");
+  a.href = dataUrl; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+function pickVideoMime(): string {
+  for (const m of ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]) {
+    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch { /* ignore */ }
+  }
+  return "";
+}
+
 export default function StagePanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   // 舞台铺满:不传 width/height,useScene 默认用容器尺寸,并随容器 resize 自适应。
@@ -25,7 +56,55 @@ export default function StagePanel() {
   // 断点进度:breakpoints=该步动画的断点总数(预扫 await scene.play/wait 估);currentBp=已到达的断点序号(1-based)
   const [breakpoints, setBreakpoints] = useState(0);
   const [currentBp, setCurrentBp] = useState(0);
-  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled } = useApp();
+  // 动画导出:截图(即时)/ 录制 WebM(MediaRecorder,点击开始→再点停止并下载)
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recChunksRef = useRef<Blob[]>([]);
+  const recRafRef = useRef<number | null>(null);
+
+  const handleScreenshot = () => {
+    const cv = stageCanvas(scene, containerRef.current);
+    if (!cv) return;
+    try {
+      const data = cv.toDataURL("image/png");
+      if (data.length > 22) downloadDataUrl(data, `manim_${Date.now()}.png`);
+    } catch { /* ignore */ }
+  };
+  const handleRecord = () => {
+    if (recorderRef.current) {
+      recorderRef.current.stop(); // 再点 → 停止并下载(onstop 里收尾)
+      return;
+    }
+    const cv = stageCanvas(scene, containerRef.current);
+    if (!cv || typeof (cv as any).captureStream !== "function") return;
+    try {
+      const stream = (cv as any).captureStream(30);
+      const mime = pickVideoMime();
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      recChunksRef.current = [];
+      rec.ondataavailable = (e: BlobEvent) => { if (e.data && e.data.size) recChunksRef.current.push(e.data); };
+      rec.onstop = () => {
+        // 录制期间用 rAF 强制 scene.render() 驱动重绘,否则 WebGL captureStream 静止时抓不到帧(录成空)。
+        if (recRafRef.current != null) { cancelAnimationFrame(recRafRef.current); recRafRef.current = null; }
+        const blob = new Blob(recChunksRef.current, { type: rec.mimeType || "video/webm" });
+        if (blob.size) downloadBlob(blob, `manim_${Date.now()}.webm`);
+        recorderRef.current = null;
+        setRecording(false);
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+      // 注入 scene 才有 render();自建场景脚本自己驱动绘制,无法强制(依赖其自身)。
+      if (typeof (scene as any)?.render === "function") {
+        const tick = () => {
+          try { (scene as any).render(); } catch { /* ignore */ }
+          if (recorderRef.current) recRafRef.current = requestAnimationFrame(tick);
+        };
+        recRafRef.current = requestAnimationFrame(tick);
+      }
+    } catch { /* 不支持则静默 */ }
+  };
+  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled, theme } = useApp();
 
   // 当前步骤标题/序号标签:字符串 stepId(topicid-N,新流程)从 topics 找;数字从 lesson.steps 找
   // lesson 可能为 null(分解建的空 session),此时用空数组兜底
@@ -59,14 +138,14 @@ export default function StagePanel() {
     // 自建场景代码不需要注入 scene(自己在 container 上 new Scene)
     if (isSelfBuildCode(sceneCode)) { setScene(null); return; }
     const want3D = is3DCode(sceneCode);
-    const opts = { backgroundColor: "#0a0c14", width: containerSize.w, height: containerSize.h };
+    const opts = { backgroundColor: cssVar("--bg-deepest"), width: containerSize.w, height: containerSize.h };
     const s = want3D ? new ThreeDScene(container, opts) : new Scene(container, opts);
     setScene(s);
     return () => {
       try { (s as any).dispose?.(); } catch { /* ignore */ }
       setScene(null);
     };
-  }, [sceneCode, stageResetKey, containerSize.w, containerSize.h]);
+  }, [sceneCode, stageResetKey, containerSize.w, containerSize.h, theme]);
 
   const lrTrackerRef = useRef<InstanceType<typeof ValueTracker> | null>(null);
   const startTrackerRef = useRef<InstanceType<typeof ValueTracker> | null>(null);
@@ -109,7 +188,7 @@ export default function StagePanel() {
           const rr = await execScript(cc, code, 30000);
           if (disposed) return;
           if (!rr.ok) throw new Error(rr.error);
-          reportVerifyResult(true);
+          reportVerifyResult(true, "");
         } catch (e: any) {
           if (!disposed) reportVerifyResult(false, String(e?.message || e));
         } finally {
@@ -119,7 +198,7 @@ export default function StagePanel() {
       }
       const want3D = is3DCode(code);
       // 用一个离屏容器跑验证,不污染主舞台
-      const opts = { backgroundColor: "#0a0c14", width: 800, height: 450 };
+      const opts = { backgroundColor: cssVar("--bg-deepest"), width: 800, height: 450 };
       const s = want3D ? new ThreeDScene(offscreen, opts) : new Scene(offscreen, opts);
       try {
         const ctx: any = makeManimCtx(s, paramValues);
@@ -141,11 +220,23 @@ export default function StagePanel() {
           reportVerifyResult(false, `公式渲染失败(MathJax 字体异步加载问题,改用 MathTexImage 或简化 LaTeX 避开 \\overrightarrow/\\mathcal 等需动态字体的命令):${texErr}`);
           return;
         }
+        // NaN 检测(硬错误,不受 BB 开关控制):标签/坐标含 NaN -> 打回自修
+        const nan = detectNaN(s);
+        if (nan) {
+          reportVerifyResult(false, nan);
+          return;
+        }
         // 渲染成功后:2D BB 重叠检测(开关开且非 3D)
         if (bbCheckEnabled && !want3D) {
           const overlap = detectOverlap(s);
           if (overlap) {
             reportVerifyResult(false, `文字/形状重叠:${overlap}`);
+            return;
+          }
+          // 文字/标注越界检测:文字飘出画布边缘被裁 → 打回自修
+          const ob = detectOutOfBounds(s);
+          if (ob) {
+            reportVerifyResult(false, ob);
             return;
           }
         }
@@ -265,23 +356,24 @@ export default function StagePanel() {
       buildDefaultScene(s);
     }
 
-    function buildDefaultScene(s: any) {
+    /** 解析 CSS 变量为实际颜色值(供 manim-web/three 用——它们只认具体颜色,不认 var())。 */
+function buildDefaultScene(s: any) {
       const axes = new Axes({
         xRange: [-4, 4, 1],
         yRange: [0, 5, 1],
         xLength: 10,
         yLength: 4,
-        axisConfig: { color: "#2b3a52", strokeWidth: 2 },
+        axisConfig: { color: cssVar("--border-hover"), strokeWidth: 2 },
       });
       const curve = axes.plot((w: number) => 0.5 * (w - 1) ** 2, {
         xRange: [-3.5, 3.5],
-        color: "#4a9eff",
+        color: cssVar("--blue"),
         strokeWidth: 3,
       });
-      const titleLabel = new Text({ text: "L(w) = ½(w − 1)²", fontSize: 0.32, color: "#9aa6b8", fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' });
+      const titleLabel = new Text({ text: "L(w) = ½(w − 1)²", fontSize: 0.32, color: cssVar("--text-dim"), fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' });
       titleLabel.moveTo([-3.2, 2.0, 0]);
-      const minDot = new Dot({ point: axes.c2p(1, 0), radius: 0.07, color: "#5fb0ff" });
-      const minLabel = new Text({ text: "min", fontSize: 0.22, color: "#5fb0ff", fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' });
+      const minDot = new Dot({ point: axes.c2p(1, 0), radius: 0.07, color: cssVar("--blue-strong") });
+      const minLabel = new Text({ text: "min", fontSize: 0.22, color: cssVar("--blue-strong"), fontFamily: '"Microsoft YaHei","PingFang SC",sans-serif' });
       minLabel.moveTo(axes.c2p(1, 0)).shift([0.25, 0.2, 0]);
 
       const lrTracker = new ValueTracker((paramValues.lr ?? 0.1));
@@ -295,7 +387,7 @@ export default function StagePanel() {
       const ball = new Dot({
         point: axes.c2p((paramValues.start ?? -2.5), 0.5 * ((paramValues.start ?? -2.5) - 1) ** 2),
         radius: 0.1,
-        color: "#5fb0ff",
+        color: cssVar("--blue-strong"),
       });
       ball.addUpdater(() => {
         const w = wTracker.getValue();
@@ -304,11 +396,11 @@ export default function StagePanel() {
       const trail = new Line({
         start: axes.c2p((paramValues.start ?? -2.5), 0.5 * ((paramValues.start ?? -2.5) - 1) ** 2),
         end: axes.c2p((paramValues.start ?? -2.5), 0.5 * ((paramValues.start ?? -2.5) - 1) ** 2),
-        color: "#5fb0ff",
+        color: cssVar("--blue-strong"),
         strokeWidth: 2,
       });
       s.add(trail);
-      const info = new Text({ text: "η=0.10  w=0.00", fontSize: 0.24, color: "#dfe6f0" });
+      const info = new Text({ text: "η=0.10  w=0.00", fontSize: 0.24, color: cssVar("--text") });
       info.moveTo([2.4, 2.0, 0]);
       info.addUpdater(() => {
         const eta = lrTracker.getValue();
@@ -404,21 +496,21 @@ export default function StagePanel() {
   return (
     <div className="flex h-full flex-col stage-transition">
       {/* 舞台上方加一行步骤标题,让中栏有"标题感" */}
-      <div className="flex items-center px-4 h-9 border-b border-[#1e293b] shrink-0">
-        <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">Stage</span>
-        <span className="ml-2 text-[12px] text-[#9aa6b8]">{stageStepTitle || "等待提问…"}</span>
-        <span className="ml-auto text-[10px] text-[#4a5365] tnum">{stageStepLabel}</span>
+      <div className="flex items-center px-4 h-9 border-b border-[var(--border)] shrink-0">
+        <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">Stage</span>
+        <span className="ml-2 text-[12px] text-[var(--text-dim)]">{stageStepTitle || "等待提问…"}</span>
+        <span className="ml-auto text-[10px] text-[var(--text-faint)] tnum">{stageStepLabel}</span>
       </div>
       <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden relative">
         {!sceneCode && (
           <div className="empty-state absolute inset-0">
             <div className="empty-icon">▷</div>
-            <div className="text-[12px] text-[#6b7686]">在左侧输入一个 STEM 知识点开始</div>
-            <div className="text-[10.5px] text-[#4a5365]">主 agent 会拆解知识点,逐个用动画 + 讲解带你学</div>
+            <div className="text-[12px] text-[var(--text-mute)]">在左侧输入一个 STEM 知识点开始</div>
+            <div className="text-[10.5px] text-[var(--text-faint)]">主 agent 会拆解知识点,逐个用动画 + 讲解带你学</div>
           </div>
         )}
       </div>
-      <div className="border-t border-[#1e293b] px-4 py-3 space-y-3 shrink-0">
+      <div className="border-t border-[var(--border)] px-4 py-3 space-y-3 shrink-0">
         <div className="flex items-center gap-2">
           {/* 左:知识点导航(整个 step 切换) */}
           <button
@@ -467,8 +559,21 @@ export default function StagePanel() {
               title="重置舞台"
               onClick={bumpStageReset}
             ><RotateCcw size={15} /></button>
-            <label className="flex items-center gap-1 text-[10px] text-[#6b7686] cursor-pointer select-none ml-1" title="通过后截最后一帧给视觉模型检查画面(需在设置里配视觉辅助模型)">
-              <input type="checkbox" checked={visionCheckEnabled} onChange={(e) => setVisionCheckEnabled(e.target.checked)} className="accent-[#4a9eff]" />
+            <span className="w-px h-4 bg-[var(--border)] mx-0.5" />
+            <button
+              className="btn-ghost px-2 py-1.5 rounded-md leading-none disabled:opacity-30"
+              title="下载当前帧为 PNG 图片"
+              disabled={!sceneCode}
+              onClick={handleScreenshot}
+            ><Camera size={14} /></button>
+            <button
+              className={`px-2 py-1.5 rounded-md leading-none disabled:opacity-30 flex items-center gap-1 text-[10px] ${recording ? "bg-[var(--danger-bg)] text-[var(--danger-text)]" : "btn-ghost"}`}
+              title={recording ? "停止录制并下载 WebM 视频" : "录制动画为 WebM 视频(配合点\"播放\"效果最佳);再点一次停止并下载"}
+              disabled={!sceneCode}
+              onClick={handleRecord}
+            >{recording ? <><Square size={11} /> 停止</> : <><Video size={14} /></>}</button>
+            <label className="flex items-center gap-1 text-[10px] text-[var(--text-mute)] cursor-pointer select-none ml-1" title="通过后截最后一帧给视觉模型检查画面(需在设置里配视觉辅助模型)">
+              <input type="checkbox" checked={visionCheckEnabled} onChange={(e) => setVisionCheckEnabled(e.target.checked)} className="accent-[var(--blue)]" />
               视觉检查
             </label>
           </div>
@@ -476,7 +581,7 @@ export default function StagePanel() {
         {/* 断点进度条:每个 ● 是一个 await scene.play/wait 断点;亮=已过,蓝=当前停住,暗=未到 */}
         {breakpoints > 0 && (
           <div className="flex items-center gap-1.5 px-0.5">
-            <span className="text-[9px] text-[#4a5365] tnum shrink-0">{currentBp}/{breakpoints}</span>
+            <span className="text-[9px] text-[var(--text-faint)] tnum shrink-0">{currentBp}/{breakpoints}</span>
             <div className="flex-1 flex items-center gap-[3px] min-w-0">
               {Array.from({ length: breakpoints }, (_, i) => {
                 const idx = i + 1;
@@ -486,7 +591,7 @@ export default function StagePanel() {
                   <span
                     key={i}
                     title={`断点 ${idx}`}
-                    className={`h-1.5 flex-1 rounded-full transition-colors ${done ? "bg-[#4a9eff]" : cur ? "bg-[#5fb0ff] shadow-[0_0_4px_#4a9eff]" : "bg-[#1e293b]"}`}
+                    className={`h-1.5 flex-1 rounded-full transition-colors ${done ? "bg-[var(--blue)]" : cur ? "bg-[var(--blue-strong)] shadow-[0_0_4px_var(--blue)]" : "bg-[var(--border)]"}`}
                   />
                 );
               })}
@@ -518,7 +623,7 @@ function ParamSliders() {
         const v = paramValues[p.name] ?? p.default ?? p.min ?? 0;
         return (
         <label key={p.name} className="flex items-center gap-2.5 text-[11px]">
-          <span className="w-16 text-[#6b7686] shrink-0">{p.label}</span>
+          <span className="w-16 text-[var(--text-mute)] shrink-0">{p.label}</span>
           <input
             type="range"
             min={p.min}
@@ -528,7 +633,7 @@ function ParamSliders() {
             onChange={(e) => setParam(p.name, parseFloat(e.target.value))}
             className="flex-1"
           />
-          <span className="w-10 text-right tnum text-[#5fb0ff]">{v.toFixed(2)}</span>
+          <span className="w-10 text-right tnum text-[var(--blue-strong)]">{v.toFixed(2)}</span>
         </label>
         );
       })}

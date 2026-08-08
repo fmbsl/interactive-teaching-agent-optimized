@@ -39,18 +39,18 @@ export default function ExplainPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="px-4 h-9 border-b border-[#1e293b] flex items-center shrink-0">
-        <span className="text-[10px] text-[#4a5365] uppercase tracking-wider">Explain</span>
-        {step && <span className="ml-2 text-[12px] text-[#9aa6b8]">{step.title}</span>}
-        {step && <span className="ml-auto text-[10px] text-[#4a5365] tnum">{step.id} / {lessonSteps.length}</span>}
+      <div className="px-4 h-9 border-b border-[var(--border)] flex items-center shrink-0">
+        <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">Explain</span>
+        {step && <span className="ml-2 text-[12px] text-[var(--text-dim)]">{step.title}</span>}
+        {step && <span className="ml-auto text-[10px] text-[var(--text-faint)] tnum">{step.id} / {lessonSteps.length}</span>}
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-5">
         {!step ? (
           <div className="empty-state min-h-[140px]">
             <div className="empty-icon">¶</div>
-            <div className="text-[12px] text-[#6b7686]">在左侧输入知识点后,这里会显示讲解</div>
-            <div className="text-[10.5px] text-[#4a5365]">含公式推导、Markdown 图文</div>
+            <div className="text-[12px] text-[var(--text-mute)]">在左侧输入知识点后,这里会显示讲解</div>
+            <div className="text-[10.5px] text-[var(--text-faint)]">含公式推导、Markdown 图文</div>
           </div>
         ) : (<>
         {/* 讲解(含公式,Markdown 渲染) */}
@@ -69,7 +69,7 @@ export default function ExplainPanel() {
               {(step.paramsUsed ?? []).map((name) => {
                 const p = (lesson?.params ?? []).find((x) => x.name === name);
                 return (
-                  <span key={name} className="text-[10px] px-2 py-0.5 rounded-md bg-[#4a9eff]/10 text-[#5fb0ff] border border-[#4a9eff]/20">
+                  <span key={name} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--blue)]/10 text-[var(--blue-strong)] border border-[var(--blue)]/20">
                     {p?.label ?? name}
                   </span>
                 );
@@ -81,21 +81,21 @@ export default function ExplainPanel() {
 
         {/* 考题区:主 agent 出的选择题,用户作答考察是否学懂 */}
         {pendingQuiz && (
-          <div className="rounded-lg border border-[#2b6cb0]/40 bg-[#0d1626]/60 p-3 space-y-2 panel-anim">
+          <div className="rounded-lg border border-[var(--blue-deep)]/40 bg-[var(--bg-panel)]/60 p-3 space-y-2 panel-anim">
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-medium text-[#9ec5ff] uppercase tracking-wider">考题</span>
-              {pendingQuiz.step_title && <span className="text-[10px] text-[#6b7686]">· {pendingQuiz.step_title}</span>}
+              <span className="text-[10px] font-medium text-[var(--blue-light)] uppercase tracking-wider">考题</span>
+              {pendingQuiz.step_title && <span className="text-[10px] text-[var(--text-mute)]">· {pendingQuiz.step_title}</span>}
             </div>
-            <div className="text-[12px] text-[#dfe6f0] leading-relaxed">{pendingQuiz.question}</div>
+            <div className="text-[12px] text-[var(--text)] leading-relaxed">{pendingQuiz.question}</div>
             <div className="space-y-1.5">
               {pendingQuiz.options.map((opt, i) => {
                 const chosen = quizResult?.choice === i;
                 const isAnswer = pendingQuiz.answer === i;
-                let cls = "border-[#1e293b] hover:border-[#4a9eff]/50 hover:bg-[#4a9eff]/8 hover:translate-x-0.5 text-[#9aa6b8]";
+                let cls = "border-[var(--border)] hover:border-[var(--blue)]/50 hover:bg-[var(--blue)]/8 hover:translate-x-0.5 text-[var(--text-dim)]";
                 if (quizResult) {
                   if (isAnswer) cls = "border-[#16a34a] bg-[#16a34a]/15 text-[#86efac] shadow-[0_0_0_1px_rgba(22,163,74,0.3)]";
                   else if (chosen) cls = "border-[#ef4444] bg-[#ef4444]/12 text-[#fca5a5]";
-                  else cls = "border-[#1e293b] text-[#6b7686] opacity-60";
+                  else cls = "border-[var(--border)] text-[var(--text-mute)] opacity-60";
                 }
                 return (
                   <button
@@ -115,7 +115,7 @@ export default function ExplainPanel() {
             {!quizResult && (
               <button
                 onClick={skipQuiz}
-                className="w-full text-[10px] text-[#4a5365] hover:text-[#9aa6b8] border border-[#1e293b] hover:border-[#2b6cb0]/40 rounded-md px-2 py-1 transition-colors"
+                className="w-full text-[10px] text-[var(--text-faint)] hover:text-[var(--text-dim)] border border-[var(--border)] hover:border-[var(--blue-deep)]/40 rounded-md px-2 py-1 transition-colors"
               >
                 跳过此题,继续对话
               </button>
@@ -123,7 +123,7 @@ export default function ExplainPanel() {
             {quizResult && (
               <div className={`text-[11px] leading-relaxed rounded-md p-2 ${quizResult.correct ? "bg-[#16a34a]/10 text-[#86efac]" : "bg-[#ef4444]/8 text-[#fca5a5]"}`}>
                 <span className="font-medium">{quizResult.correct ? "答对啦!" : "答错了"}</span>
-                <span className="text-[#9aa6b8]"> 解析:{quizResult.explanation}</span>
+                <span className="text-[var(--text-dim)]"> 解析:{quizResult.explanation}</span>
               </div>
             )}
           </div>
@@ -137,9 +137,9 @@ function Section({ label, hint, children }: { label: string; hint?: string; chil
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-[10px] font-medium text-[#9aa6b8] uppercase tracking-wider">{label}</span>
-        {hint && <span className="text-[9px] text-[#4a5365] border border-[#1e293b] rounded px-1.5 py-px">{hint}</span>}
-        <span className="flex-1 h-px bg-[#1e293b]" />
+        <span className="text-[10px] font-medium text-[var(--text-dim)] uppercase tracking-wider">{label}</span>
+        {hint && <span className="text-[9px] text-[var(--text-faint)] border border-[var(--border)] rounded px-1.5 py-px">{hint}</span>}
+        <span className="flex-1 h-px bg-[var(--border)]" />
       </div>
       {children}
     </div>

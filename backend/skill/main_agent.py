@@ -150,6 +150,10 @@ def _build_tools(sid: str):
             s.setdefault("topics", []).append(topic)
             _agent()._persist_state(sid)
         draft.setdefault("topics", []).append(topic)
+        # 立即经 _EMIT side-channel 推 topic_added 事件:下一个 ToolMessage drain 时发给前端,list 马上出现。
+        # 否则 add_topic 后紧接 generate_animation 的 interrupt 会提前 return,等到 resume 段结束才发,
+        # 用户看到"已放到左边"却要等第一个动画生成完 list 才刷新。
+        _EMIT[sid].append({"kind": "topic_added", "payload": topic})
         # 返回各 step 的 id(形如 topicid-N)+ 标题,供主 agent 调 generate_animation(step_id) 时用
         steps_info = "; ".join(f"{st['id']}={st['title']}" for st in topic["steps"])
         return f"已添加主题「{title}」· {len(steps or [])} 步。子知识点 id(调 generate_animation 时传这个 step_id):{steps_info}"

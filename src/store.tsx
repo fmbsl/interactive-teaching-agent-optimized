@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { emptyLesson, type Lesson } from "./data/lesson";
-import { listLlmConfigs, type EndpointConfig, type SessionSummary } from "./data/llmClient";
+import { listLlmConfigs, getAppSettings, type EndpointConfig, type SessionSummary } from "./data/llmClient";
+import { loadTheme, saveTheme, loadCustomCss, saveCustomCss, applyTheme, type ThemeId } from "./theme";
 
 type ParamValues = Record<string, number>;
 export type StepStatus = "pending" | "active" | "done";
@@ -77,6 +78,15 @@ interface AppState {
   // mermaid 图展示(非数学/物理类知识点):{step_title, diagram_type, code, explanation} | null
   diagram: { step_title: string; diagram_type: string; code: string; explanation: string } | null;
   setDiagram: (d: { step_title: string; diagram_type: string; code: string; explanation: string } | null) => void;
+  // 主题 + 自定义 CSS(localStorage 持久化;App 挂载 effect 负责 applyTheme/applyCustomCss)
+  theme: string;
+  setTheme: (id: string) => void;
+  customCss: string;
+  setCustomCss: (css: string) => void;
+  // 知识分解力度档位(low/mid/high,后端持久化,一并控制深度/节点数/展开上限)
+  decomposeEffort: string;
+  setDecomposeEffort: (level: string) => void;
+  loadAppSettings: () => Promise<void>;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -101,6 +111,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [quizResult, setQuizResult] = useState<{ choice: number; correct: boolean; explanation: string } | null>(null);
   const [pendingResume, setPendingResume] = useState<{ answer?: string; result?: any } | null>(null);
   const [diagram, setDiagram] = useState<{ step_title: string; diagram_type: string; code: string; explanation: string } | null>(null);
+  // 主题 + 自定义 CSS(初始从 localStorage 恢复)
+  const [theme, setThemeState] = useState<string>(loadTheme);
+  const [customCss, setCustomCssState] = useState<string>(loadCustomCss);
+  const [decomposeEffort, setDecomposeEffortState] = useState<string>("mid");
+  const setTheme = (id: string) => {
+    // 立即同步改 DOM(applyTheme 先于任何 useEffect 执行)。否则切主题时子组件(如 StagePanel
+    // 用 cssVar 读 --bg-deepest 建场景)的 effect 先于父组件 AppShell 的 applyTheme 执行,
+    // 会读到旧主题色。同步应用后,react 提交渲染时读到的已是最新主题。
+    applyTheme(id as ThemeId);
+    setThemeState(id);
+    saveTheme(id as ThemeId);
+  };
+  const setCustomCss = (css: string) => { setCustomCssState(css); saveCustomCss(css); };
+  const setDecomposeEffort = (level: string) => setDecomposeEffortState(level);
+  const loadAppSettings = async () => {
+    try {
+      const s = await getAppSettings();
+      setDecomposeEffortState(s.decompose_effort || "mid");
+    } catch (e) {
+      console.warn("[settings] 加载应用设置失败:", e);
+    }
+  };
   const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number } | null>(null);
   const verifyResultHandler = useRef<((ok: boolean, error: string, frame: string) => void) | null>(null);
   const requestVerify = (stepId: number, code: string) => setVerifyRequest({ stepId, code, nonce: Date.now() });
@@ -254,8 +286,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       quizResult, setQuizResult,
       pendingResume, setPendingResume,
       diagram, setDiagram,
+      theme, setTheme,
+      customCss, setCustomCss,
+      decomposeEffort, setDecomposeEffort, loadAppSettings,
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, view, decomposeGraph, pendingQuiz, quizResult, pendingResume, diagram]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, view, decomposeGraph, pendingQuiz, quizResult, pendingResume, diagram, theme, customCss, decomposeEffort]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
