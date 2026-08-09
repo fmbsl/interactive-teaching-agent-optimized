@@ -67,11 +67,13 @@ export function detectTsSyntax(code: string): string {
 //   ① 聚合最多 3 条重叠一起报,减少来回轮数;
 //   ② 报"往哪个方向移多少"(最小分离向量:沿重叠最浅的轴推出 + 边距),而非只给坐标;
 //   ③ 误报过滤:只有交叠面积 > 文字面积 12% 或 文字中心压进图形 bbox(确定压住)才报。
-// 实测(δ 采样/δ 逼近动画)暴露的假阳性重灾区,全部跳过作为重叠目标:
+// 实测(δ 采样/δ 逼近/均匀抽样动画)暴露的假阳性重灾区,全部跳过作为重叠目标:
 //   - 曲线/折线(getPoints 顶点 > 40):细描边,bbox 是大包络,文字在旁边不是"压住";
 //   - 线段/箭头(getStart/getEnd):细描边,水平线 bbox 高为 0 本就被 collect 跳过;
 //   - MathTexImage 公式(getLatex):渲染成纹理平面,验证环境下 getBoundingBox 尺寸失真
 //     (实测"高度=1/ε"标签 bbox 高≈5.7 world 单位),当重叠目标必然误报;
+//   - 组合/VGroup(自身无几何点 + 有子对象):bbox 是子对象并集大包络(如 getAxisLabels
+//     轴标签组,实测 bbox 罩住右上角),文字压"空角落"也误报且挪不动;
 //   - 整屏大背景(bbox 面积 > 45% 画布):文字压上去是正常布局。
 // 保留:实心图形(圆/矩形/多边形/点) + 文字-文字,这两类 bbox 可靠且重叠真有意义。
 export function detectOverlap(scene: any): string {
@@ -91,6 +93,12 @@ export function detectOverlap(scene: any): string {
         try { const t = m.getLatex(); if (typeof t === "string") lx = t.slice(0, 20); } catch { /* ignore */ }
         return { label: `公式(${lx})`, skip: true };
       }
+      // 组合/VGroup(自身无几何点、有子对象):bbox 是子对象的并集大包络(如 getAxisLabels 返回的
+      // 轴标签组,实测 bbox 罩住右上角整个区域),文字压"空角落"也误报且挪不动;子对象会被
+      // collect 单独遍历检查,组合本身不作重叠目标。
+      const kids = m.submobjects || m._submobjects;
+      if (Array.isArray(pts) && pts.length === 0 && Array.isArray(kids) && kids.length > 0)
+        return { label: "组合/分组", skip: true };
       if (w * h > 0.45 * frameArea) return { label: "大背景", skip: true };
       if (typeof m.getRadius === "function") {
         const r = m.getRadius();
@@ -126,9 +134,12 @@ export function detectOverlap(scene: any): string {
             mobs.push({ label, isText, isAxes, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
           } else {
             const cl = classify(m, bb.width, bb.height);
-            if (cl.skip) return; // 曲线/线/公式/大背景不作重叠目标
-            const cx = c[0].toFixed(1), cy = c[1].toFixed(1);
-            mobs.push({ label: `${cl.label}@(${cx},${cy})`, isText, isAxes, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
+            // skip 只是不把该 mobject 作为重叠目标(组/曲线/公式/线/背景),
+            // 不能 return——否则连子对象遍历也跳过,组里实心图形就漏检了
+            if (!cl.skip) {
+              const cx = c[0].toFixed(1), cy = c[1].toFixed(1);
+              mobs.push({ label: `${cl.label}@(${cx},${cy})`, isText, isAxes, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
+            }
           }
         }
       }
