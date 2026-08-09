@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TEMPLATES } from "./library";
 import { OFFICIAL_TEMPLATES } from "./official";
-import { makeManimCtx, Scene, ThreeDScene, exposeManimGlobals } from "../manimCtx";
+import { makeManimCtx, makeSelfBuildCtx, Scene, ThreeDScene, exposeManimGlobals } from "../manimCtx";
 import { is3DCode, detectOverlap, detectMathTexError } from "../sceneCheck";
 import { execScript } from "../runScript";
 import { Play, RotateCcw } from "lucide-react";
@@ -70,7 +70,7 @@ export default function TemplateReview() {
           host.style.cssText = "width:100%;height:100%;";
           stage.appendChild(host);
           exposeManimGlobals(host);
-          const ctx: any = { container: host, params: paramValues };
+          const ctx: any = makeSelfBuildCtx(host, paramValues);
           const r = await execScript(ctx, tpl.sceneCode, 40000);
           if (rid !== runIdRef.current) return;
           if (!r.ok) throw new Error(r.error);

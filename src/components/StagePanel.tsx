@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { makeManimCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn, exposeManimGlobals } from "../manimCtx";
+import { makeManimCtx, makeSelfBuildCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn, exposeManimGlobals } from "../manimCtx";
 import { useApp } from "../store";
 import { regenerateScene } from "../data/llmClient";
 import { SkipBack, Play, Pause, SkipForward, RotateCcw, Camera, Square, Video } from "lucide-react";
@@ -184,7 +184,7 @@ export default function StagePanel() {
       if (isSelfBuildCode(code)) {
         try {
           exposeManimGlobals(offscreen);
-          const cc: any = { container: offscreen, params: paramValues };
+          const cc: any = makeSelfBuildCtx(offscreen, paramValues);
           const rr = await execScript(cc, code, 30000);
           if (disposed) return;
           if (!rr.ok) throw new Error(rr.error);
@@ -434,7 +434,7 @@ function buildDefaultScene(s: any) {
       host.style.cssText = "width:100%;height:100%;";
       stage.appendChild(host);
       exposeManimGlobals(host);
-      const ctx: any = { container: host, params };
+      const ctx: any = makeSelfBuildCtx(host, params);
       const r = await execScript(ctx, code, 40000);
       if (!r.ok) throw new Error(r.error);
     }

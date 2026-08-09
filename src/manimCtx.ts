@@ -50,6 +50,15 @@ export function exposeManimGlobals(container: HTMLElement) {
   (window as any).container = container;
 }
 
+/** 自建场景(自由脚本)执行 ctx:manim-web 全部导出 + container + params。
+ * ⚠️ 自建代码开头 `const { ThreeDScene, Sphere, ..., container, params } = ctx` 会从 ctx 解构类/方向/颜色,
+ * 所以 ctx 必须带 manim-web 全量导出(和 makeManimCtx 一样),否则 `new ThreeDScene(container,...)` 解构出
+ * undefined → "ThreeDScene is not a constructor"(实测 step agent 自建 3D 场景反复踩)。 */
+export function makeSelfBuildCtx(container: HTMLElement, params: Record<string, number>) {
+  const alwaysRedraw = (fn: any) => fn(); // 同 makeManimCtx
+  return { ...manimWeb, ...adaptedColors(), matMul, np, alwaysRedraw, container, params };
+}
+
 /** 矩阵乘法:支持矩阵×矩阵、矩阵×向量(JS 没有 @ 运算符,py2ts 也不转,
  * 转换器路线下 LLM 常写 A @ B,适配层把 ` @ ` 替换成 matMul 调用)。
  * M 为二维数组,v 为一维数组。 */
