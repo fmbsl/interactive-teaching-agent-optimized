@@ -63,8 +63,37 @@ export function detectTsSyntax(code: string): string {
 // 只检测有几何(非空)的 mobject。返回重叠描述字符串(无重叠返回 "")。
 // ⚠️ 与 detectOutOfBounds 同理:判断"是文字"用 getText()/._text 能力探测(构造名会被压缩);
 //    边界用 getCenter() ± getBoundingBox() 尺寸的一半(后者返回 {width,height} 尺寸,不是 {min,max})。
+// 相比早期"报第一个就停 + 只给坐标"的三处改进(针对 agent 反复盲调打回的经典死循环):
+//   ① 聚合最多 3 条重叠一起报,减少来回轮数;
+//   ② 报"往哪个方向移多少"(最小分离向量:沿重叠最浅的轴推出 + 边距),而非只给坐标;
+//   ③ 误报过滤:薄字形"1"的 bbox 很宽,图形只擦到 bbox 角落不该算——只有交叠面积 > 文字面积
+//      12% 或 文字中心压进图形 bbox(确定压住)才报。
 export function detectOverlap(scene: any): string {
-  const mobs: { label: string; isText: boolean; isAxes: boolean; b: { min: { x: number; y: number }; max: { x: number; y: number } } }[] = [];
+  // 给"图形对象"一个可定位的标签:构造名打包后是 t9/e62 之类,靠能力探测分类
+  // (线段/箭头有 getStart/getEnd、圆/弧有 getRadius、其余按 getPoints 顶点数),再附中心坐标。
+  const shapeLabel = (m: any): string => {
+    let label = "图形对象";
+    try {
+      if (typeof m.getStart === "function" && typeof m.getEnd === "function") {
+        label = "线段/箭头";
+      } else if (typeof m.getRadius === "function") {
+        const r = m.getRadius();
+        if (typeof r === "number" && isFinite(r)) label = `圆/弧(r≈${r.toFixed(2)})`;
+      } else {
+        const pts = m.getPoints?.();
+        if (Array.isArray(pts) && pts.length > 0) label = `图形(${pts.length}顶点)`;
+      }
+      const c = m.getCenter?.();
+      if (c && Array.isArray(c)) label += `@(${c[0].toFixed(1)},${c[1].toFixed(1)})`;
+    } catch { /* 分类失败退化为"图形对象" */ }
+    return label;
+  };
+
+  const mobs: {
+    label: string; isText: boolean; isAxes: boolean;
+    c: { x: number; y: number };
+    b: { min: { x: number; y: number }; max: { x: number; y: number } };
+  }[] = [];
   try {
     const collect = (m: any) => {
       if (!m) return;
@@ -79,41 +108,62 @@ export function detectOverlap(scene: any): string {
           const isText = typeof m.getText === "function" || typeof m._text === "string";
           // 坐标轴/数平面特有 c2p/p2c(坐标<->点转换),用它识别以忽略"轴标签相邻"误报(构造名被压缩,不能靠 name 判)
           const isAxes = typeof m.c2p === "function" || typeof m.p2c === "function";
-          // 非文字没有可读名(构造名会被压缩成 t9/e62 之类),统一报"图形对象";文字带内容
-          let label = isText ? "文字" : "图形对象";
+          // 非文字靠能力探测分类(构造名被压缩),文字带内容
+          let label = isText ? "文字" : shapeLabel(m);
           if (isText) { try { const tx = m.getText?.(); if (typeof tx === "string") label = `文字“${tx.slice(0, 8)}”`; } catch { /* ignore */ } }
-          mobs.push({ label, isText, isAxes, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
+          mobs.push({ label, isText, isAxes, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
         }
       }
       if (subs && Array.isArray(subs)) subs.forEach(collect);
     };
     (Array.from(scene._mobjects || []) as any[]).forEach(collect);
   } catch { return ""; }
+
   // 只报 Text 相关重叠(Text-Text 或 Text-几何),避免相邻几何误报
   const texts = mobs.filter((m) => m.isText);
   if (texts.length === 0) return "";
-  const overlap = (a: any, b: any) =>
-    a.min.x < b.max.x && a.max.x > b.min.x && a.min.y < b.max.y && a.max.y > b.min.y;
+
+  const oX = (a: any, b: any) => Math.min(a.b.max.x, b.b.max.x) - Math.max(a.b.min.x, b.b.min.x);
+  const oY = (a: any, b: any) => Math.min(a.b.max.y, b.b.max.y) - Math.max(a.b.min.y, b.b.min.y);
+  const hit = (a: any, b: any) => oX(a, b) > 0 && oY(a, b) > 0;
+  const centerInside = (a: any, b: any) => a.c.x >= b.b.min.x && a.c.x <= b.b.max.x && a.c.y >= b.b.min.y && a.c.y <= b.b.max.y;
+  // 最小分离向量:沿重叠最浅的轴把文字推出 + 边距;方向 = 文字中心相对图形中心在哪侧就往哪侧继续移
+  const sep = (a: any, b: any) => {
+    const pX = oX(a, b), pY = oY(a, b);
+    const margin = 0.15;
+    if (pX <= pY) return { dirCn: a.c.x <= b.c.x ? "左" : "右", dist: pX + margin };
+    return { dirCn: a.c.y <= b.c.y ? "下" : "上", dist: pY + margin };
+  };
+
+  const reports: { msg: string; sev: number }[] = [];
+  const addReport = (msg: string, a: any, b: any) => {
+    const areaFrac = (oX(a, b) * oY(a, b)) / ((a.b.max.x - a.b.min.x) * (a.b.max.y - a.b.min.y));
+    // 文字中心压进图形 = 确定重叠(sev 更高);否则要交叠面积 > 文字面积 12% 才报,过滤"薄字形擦边"误报
+    const inside = centerInside(a, b);
+    if (!inside && areaFrac < 0.12) return;
+    reports.push({ msg, sev: inside ? 2 + areaFrac : areaFrac });
+  };
+
   // Text-Text 重叠
   for (let i = 0; i < texts.length; i++) {
     for (let j = i + 1; j < texts.length; j++) {
-      if (overlap(texts[i].b, texts[j].b)) return `${texts[i].label} 与 ${texts[j].label} 重叠`;
+      if (!hit(texts[i], texts[j])) continue;
+      const r = sep(texts[i], texts[j]);
+      addReport(`${texts[i].label} 与 ${texts[j].label} 重叠:建议往${r.dirCn}移 ${r.dist.toFixed(2)}`, texts[i], texts[j]);
     }
   }
   // Text 与非 Text 重叠(文字压在图形上),但忽略 axes(坐标轴常与标签相邻)
   for (const t of texts) {
     for (const m of mobs) {
-      if (m.isText) continue;
-      if (m.isAxes) continue;
-      if (overlap(t.b, m.b)) {
-        // 报出文字的中心坐标,让 agent 知道往哪个方向挪(盲调坐标轴标签是反复打回的经典死循环)
-        const cx = ((t.b.min.x + t.b.max.x) / 2).toFixed(1);
-        const cy = ((t.b.min.y + t.b.max.y) / 2).toFixed(1);
-        return `${t.label}@(≈${cx},${cy}) 与 ${m.label} 重叠`;
-      }
+      if (m.isText || m.isAxes) continue;
+      if (!hit(t, m)) continue;
+      const r = sep(t, m);
+      addReport(`${t.label}@(≈${t.c.x.toFixed(1)},${t.c.y.toFixed(1)}) 压住 ${m.label}:建议往${r.dirCn}移 ${r.dist.toFixed(2)}`, t, m);
     }
   }
-  return "";
+  if (!reports.length) return "";
+  reports.sort((x, y) => y.sev - x.sev);
+  return reports.slice(0, 3).map((r) => r.msg).join("; ");
 }
 
 // 检测文字/标注是否超出画布边缘(用户高频痛点:文字飘到可视图外被裁掉)。
