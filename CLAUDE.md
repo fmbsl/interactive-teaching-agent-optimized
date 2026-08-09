@@ -147,7 +147,8 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 `src/components/ChatPanel.tsx`:**对话气泡 + 流式 + 工具折叠**。
 - 消息渲染:用户消息右气泡(蓝边)、agent 左气泡(灰边),agent 回复用 `react-markdown`+`remark-math`+`remark-gfm`+`rehype-katex` 渲染(支持公式/表格/列表)。
 - 流式:`consume` 收 `message_delta` 事件(同 id 增量)找同 id 的 message item 追加 text(无则新建带 id 的 message)。parseSSE 有 `message_delta` case(streamSSE 用)。
-- ask_user 选项:收到 `ask` 事件(带 `options?`)记 `pendingAsk={question,options}`,输入框上方渲染可点击选项按钮(点击即发送该选项文本,`answerWithOption`),也可自定义输入。
+- ask_user 选项:收到 `ask` 事件(带 `options?`)记 `pendingAsk={question,options}`(**按 session 持久化**在 `pendingAskBySid`,切走再切回仍可见),输入框上方渲染可点击选项按钮(点击即发送该选项文本,`answerWithOption`),也可自定义输入。
+- **用户可自由忽视任何问题(设计原则)**:pendingAsk 只是软提示,不是硬门槛。① 有"跳过这个问题 →"按钮(`skipQuestion` 发空 answer 让 ask_user 返回"用户未回答(跳过)");② 直接发新消息=自动放弃当前问题——后端 `run_main_agent` 检测到孤儿 tool_call(interrupt 未 resume)不再报错挡住,改 `Command(resume="", update={messages:[新消息]})` 一次完成"跳过旧问题+注入新消息"(经独立脚本+真实 langgraph 验证:孤儿被 ToolMessage 闭环、新消息进历史、agent 正常回应、不抛 INVALID_CHAT_HISTORY)。
 - 分层 topics list:`TopicNode` 可折叠,子知识点按 `explanation||sceneCode` 判断已缓存(✓ 蓝底 + "已生成"标记)vs 未生成(数字灰边)。**多级缩进**:`step.level`(sets 链长)控制 paddingLeft(level 0=4px,每级 +14px)。**融合总结节点**(`is_summary`):badge 显示 `Σ`,标题"总结:XXX",上方分隔线,"融合"标记,蓝边样式。点击 → `handleTopicStep` → `/api/explain`(已缓存 HIT cache 不重跑,后端缓存命中时不发 step-start 不重复加卡片)。
 - 工具调用折叠:`makeItem` 对 subagent 的 `agent_start` 默认折叠(藏其下 tool_call 组),主 agent 的不折叠。tool_call collapsed 只显 `Wrench 图标 + 工具名`(藏 argSummary,展开看 args)。连续 tool_call 用 `ToolGroup` 聚合成一行"Wrench t1 → t2 · N 个工具"。step subagent 段整体折叠成一行"Bot 图标 + 设计第 X 步",点开看工具过程。图标用 `lucide-react`(Wrench/Bot/Code2/Play/Check/X/Menu/Plus/Paperclip/Download/Upload/Settings/SkipBack/Play/Pause/SkipForward/RotateCcw/Sparkles/Loader2)。
 - **思考动效**:`loading` 时对话末尾显示 `.thinking-dot`(三点错峰脉冲 + 旋转 Loader2 + "主 agent 正在思考…"),表示等 LLM 回答/拆解/生成。

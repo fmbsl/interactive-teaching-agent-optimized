@@ -47,6 +47,8 @@ export default function ChatPanel() {
   // 打断:每次生成一个 AbortController;点"■ 停止"→ abort fetch + 通知后端停 run。
   const abortRef = useRef<AbortController | null>(null);
   const [pendingAsk, setPendingAsk] = useState<{ question: string; options?: string[] } | null>(null); // 主 agent 问的问题(+可选预设选项);非 null 时发送=回答该问题
+  // 每个 session 的待回答问题:切走再切回仍可见(用户可自由忽略/作答/跳过),发新消息时自动放弃
+  const pendingAskBySid = useRef<Record<string, { question: string; options?: string[] }>>({});
   const [fileName, setFileName] = useState<string | null>(null);
   const [, setFileText] = useState<string | null>(null); // fileText 值未读(仅 setter 兼容旧接口),取值弃用
   const [showSessions, setShowSessions] = useState(false);
@@ -440,9 +442,35 @@ export default function ChatPanel() {
       setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
     } else if (ev.kind === "ask") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
-      setPendingAsk({ question: ev.question, options: (ev as any).options });
+      const pa = { question: ev.question, options: (ev as any).options };
+      const sid = sessionIdRef.current;
+      if (sid) pendingAskBySid.current[sid] = pa;
+      setPendingAsk(pa);
     } else if (ev.kind === "done" || ev.kind === "plan" || ev.kind === "step-start") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+    }
+  }
+
+  // 清掉当前 session 的待回答问题(状态 + 按 session 的记忆):作答/跳过/发新消息时都清,防切回后又冒出来
+  const clearPendingAsk = () => {
+    const sid = sessionIdRef.current;
+    if (sid) delete pendingAskBySid.current[sid];
+    setPendingAsk(null);
+  };
+
+  // 显式"跳过"主 agent 的问题:发空 answer 让 ask_user 工具返回"用户未回答(跳过)",agent 继续
+  async function skipQuestion() {
+    const sid = sessionIdRef.current;
+    if (!sid || loading) return;
+    setLoading(true);
+    clearPendingAsk();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    try {
+      await consume(chatAnswer(sid, "", null, ac.signal));
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null;
+      setLoading(false);
     }
   }
 
@@ -457,7 +485,7 @@ export default function ChatPanel() {
     try {
       // 若有 pendingAsk(主 agent 问了问题),发送=回答该问题;否则正常对话
       if (pendingAsk) {
-        setPendingAsk(null);
+        clearPendingAsk();
         await consume(chatAnswer(sessionIdRef.current || "", q, null, ac.signal));
       } else {
         const fileIds = pendingFiles.map((f) => f.file_id);
@@ -493,7 +521,7 @@ export default function ChatPanel() {
     const ac = new AbortController();
     abortRef.current = ac;
     try {
-      setPendingAsk(null);
+      clearPendingAsk();
       await consume(chatAnswer(sessionIdRef.current || "", text, null, ac.signal));
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
@@ -575,7 +603,8 @@ export default function ChatPanel() {
       }
       setTopics((detail as any).topics || []);
       setDecomposeGraph((detail as any).graph || null);
-      setPendingAsk(null);
+      // 恢复该 session 的待回答问题(若之前问过且没作答),切走再切回不丢
+      setPendingAsk(pendingAskBySid.current[sid] ?? null);
       clearPendingFiles();
       setFileName(null);
       setFileText(null);
@@ -856,6 +885,17 @@ export default function ChatPanel() {
               </button>
             ))}
             <span className="text-[9px] text-[var(--text-faint)] px-1">点选项发送,或在下方输入框自定义回答</span>
+          </div>
+        )}
+        {/* 跳过按钮:用户可自由忽视任何问题,点它即显式放弃当前问题继续对话 */}
+        {pendingAsk && (
+          <div className="flex items-center justify-end px-1 pb-0.5">
+            <button
+              onClick={skipQuestion}
+              disabled={loading}
+              className="text-[10px] text-[var(--text-faint)] hover:text-[var(--text-dim)] underline-offset-2 hover:underline transition-colors disabled:opacity-40"
+              title="忽略这个问题,直接继续对话"
+            >跳过这个问题 →</button>
           </div>
         )}
         <div className="flex items-end gap-2 rounded-lg bg-[var(--bg-3)] border border-[var(--border)] px-2.5 py-1.5 focus-within:border-[var(--blue)]/50 transition-colors">

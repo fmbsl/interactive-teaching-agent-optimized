@@ -448,19 +448,17 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
     thread_id = f"main#{sid}"
     agent_obj = _build_agent(cfg, sid, cur_depth)
     config = {"configurable": {"thread_id": thread_id}}
-    # 防止 INVALID_CHAT_HISTORY:若上一回合有"未完成的工具调用"(ask_user/生成题/动画/分解用
-    # interrupt() 暂停后,用户没走 resume(答题/跳过)而是直接发了条新消息),这个孤儿 tool_call
-    # 没有对应的 ToolMessage。此时在本线程上再注入新的 user 消息,langgraph 会抛
-    # "Found AIMessages with tool_calls that do not have a corresponding ToolMessage" 把主 agent 崩掉。
-    # 检测到就给出干净错误并提示先完成(答完题/点「跳过」),而不是让 agent 抛异常。
+    # 用户可自由忽视任何问题:若上一回合有孤儿 tool_call(ask_user/生成题/动画/分解用 interrupt()
+    # 暂停后,用户没 resume 而是切走/直接发了条新消息),不再报错挡住,而是自动跳过该 interrupt
+    # 并注入新消息。空串 resume 让被 interrupt 的工具安全收尾(ask_user→"用户未回答(跳过)"、
+    # quiz→"未作答(跳过)"、generate/decompose→返回失败串),Command.update 把新消息追加进对话,
+    # agent 下一轮就能看到并正常回应,且不抛 INVALID_CHAT_HISTORY。
+    # (机制已用独立脚本 + 真实 langgraph 验证:孤儿 tool_call 被 ToolMessage 闭环、新消息进历史、agent 正常回应)
+    skip_orphan = False
     try:
         _st = agent_obj.get_state(config)
         _hist = ((_st.values or {}).get("messages") or []) if _st else []
-        if _has_orphan_tool_call(_hist):
-            yield {"kind": "error", "id": _new_id(sid), "parentId": None, "agent": "main",
-                   "stepId": None,
-                   "payload": {"message": "上一步还有一个待完成的任务(题目/提问/生成动画/分解)。请先完成它(答题或点「跳过」),再继续对话。"}}
-            return
+        skip_orphan = _has_orphan_tool_call(_hist)
     except Exception:
         pass  # get_state 失败不阻塞主流程
     agent_evt_id = _new_id(sid)
@@ -474,8 +472,12 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
     # 多 stream_mode 时 chunk 是 (mode, data) 元组。messages data 是 (AIMessageChunk, metadata)。
     streaming_msg_id = None  # 当前正在流式的 message id(同 id 增量追加,前端不重复建项)
     try:
+        # 孤儿 interrupt:Command(resume="", update={messages:[新消息]}) 一次完成"跳过旧问题 + 注入新消息";
+        # 正常情况直接注入新消息
+        agent_input = (Command(resume="", update={"messages": [{"role": "user", "content": user_text}]})
+                       if skip_orphan else {"messages": [{"role": "user", "content": user_text}]})
         for mode, data in agent_obj.stream(
-            {"messages": [{"role": "user", "content": user_text}]},
+            agent_input,
             config, stream_mode=["messages", "updates"],
         ):
             if mode == "messages":
