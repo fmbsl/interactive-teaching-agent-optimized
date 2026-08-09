@@ -1,7 +1,7 @@
 """Step 生成 agent:tool-calling + 浏览器在环验证。
 
 用 LangGraph create_react_agent 编排:LLM 调 set_step(title+讲解+可选 params)/
-update_animation / read_animation / lookup_example / finish 等工具逐项设计一个教学 step。其中 update_animation(code) 通过 interrupt() 暂停,等前端真渲染回传结果(ok/error)后 resume,LLM 据此修正 code 重调,直到跑通。
+write(首次写)/patch(修改不提交)/commit(提交验证)/finish 等工具逐项设计一个教学 step。其中 commit() 通过 interrupt() 暂停,等前端真渲染回传结果(ok/error)后 resume,LLM 据此 patch 修正 code 重调,直到跑通。
 
 对比旧的 generate_step(一次性 JSON + 单次重试),这里是多轮 tool loop,运行时错就地修。
 
@@ -30,7 +30,7 @@ from .llm_config_store import _get_vision_cfg
 
 _DRAFTS: dict[tuple[str, str], dict] = defaultdict(lambda: {
     "title": "", "intent": "", "explanation": "", "formula": "", "narration": "",
-    "params": [], "sceneCode": "", "renderAttempts": 0,
+    "params": [], "sceneCode": "", "draftCode": "", "renderAttempts": 0,
 })
 
 # 事件 id 生成(无 Date.now/random 限制只针对 workflow 脚本;这里是后端 Python,可用 uuid)
@@ -47,7 +47,7 @@ def _thread_id(sid: str, step_id: int, nonce: str) -> str:
     return f"{sid}#{step_id}#{nonce}"
 
 
-# ---------- 系统提示词:复用 STEP_PROMPT 的 API REF / 铁律 / FEW SHOT / 教学规范 ----------
+# ---------- 系统提示词:组合 manim_lesson 的 API REF / 铁律 / FEW SHOT / 教学规范 各独立块 ----------
 
 STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知识点逐步设计浏览器讲解:标题、讲解、(可选)可调参数、动画代码。
 
@@ -56,18 +56,12 @@ STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知�
   - title:简短标题。
   - explanation:讲解正文,**Markdown 格式**,文字与公式混排。公式用 `$...$`(行内)或 `$$...$$`(独占一行),会被 KaTeX 渲染。可含标题/列表/段落。这是该步的完整讲解,讲清来龙去脉,承接上文。
   - params:**仅当这一步确实需要用户交互调节参数时才给**(如"拖动看角度变化"),JSON 数组字符串,每项 `{{name,label,min,max,step,default}}`,如 `[{{"name":"lr","label":"学习率","min":0.01,"max":1,"step":0.01,"default":0.1}}]`。无需参数就传 `'[]'` 或省略,不要硬凑。
-- update_animation(code, old_str?, new_str?):提交或修改动画代码,浏览器真渲染验证。**一个工具两种用法**:
-  - 整段提交(首次或大改):只给 `code`(完整 manim-web TS 函数体),不传 old_str/new_str。
-  - 局部改(小修,省 token):传 `old_str`+`new_str`(不传 code)。在当前代码里定位 old_str(必须**唯一**匹配,含缩进,从当前代码原样复制一段),替换成 new_str(空串=删除),整段送验证。找不到/不唯一会报错——补上下文或改整段提交。
-  - 返回 {{ok: true}} 渲染通过、动画定稿;{{ok: false, error}} 报错,按 error 继续调本工具。**渲染失败后必须先用 `old_str`/`new_str` 局部改**(只发改动片段,省 token),不要整段重写。只有以下情况才用整段提交(只给 code):(1) 首次提交;(2) 改动超过约 1/3 代码;(3) old_str 连续两次匹配不上(找不到/不唯一);(4) 需大范围重构。最多重试 5 次。
-- read_animation():返回当前动画代码全文。做局部改(old_str)前建议先调它确认当前代码长什么样、要改哪段。
-- finish():所有字段就绪且动画 ok 后收尾。
+- write(code):**首次写**完整动画代码(manim-web TS 函数体)到工作草稿。**只写不验证**,可先写一版再逐步改。仅在还没有代码、或要大范围重写时调用;已有代码的小改动用 patch。
+- patch(old_str, new_str):**修改**工作草稿,不触发验证。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进;old_str 可从你自己刚写的那版代码里原样复制一段,new_str 空串=删除),替换成 new_str 存回草稿。找不到/不唯一会报错——补几行上下文让它唯一。可连续 patch 多次,全部改完再统一 commit。想改的代码不在自己上下文里时,先 write 一版完整代码再 patch。
+- commit():把当前工作草稿的完整代码一次性送浏览器真渲染验证。返回 {{ok: true}} 渲染通过、动画**定稿**;{{ok: false, error}} 报错,草稿仍是你送检的那版,继续用 patch 改(改完再 commit)。**必须**在 write(或首次直接给完整代码)之后才能 commit。渲染失败不要整段重写,用 patch 只发改动片段(省 token),除非改动超约 1/3 或 patch 连续两次匹配不上才 write 整段。最多重试 12 次。
+- finish():所有字段就绪且动画已定稿(commit 返回 ok=true)后收尾。
 
-工具调用顺序自由发挥,不强制先设哪个。但动画 code 必须经 update_animation 验证通过(ok=true)才能 finish。
-
-**想参考别人怎么写?用 lookup_example(query)**:写动画前,若这一镜需要某种手法(可拖拽点看变化、
-定积分/切线/线性变换、3D 相机旋转、多镜头分镜节奏、点选高亮),先调它检索最相关的范例(会返回
-完整可运行代码),学它的 API 用法与分镜/交互思路,再自己写。概念不同就别硬套/照抄。
+工具调用顺序自由发挥,不强制先设哪个。工作流:**write**(首次整段)→ 反复 `patch` 改 → `commit` 验证定稿 → `finish`。动画 code 必须经 commit 验证通过(ok=true)写入定稿才能 finish。
 
 sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`)。用 `await scene.play(...)` / `scene.add(...)` 驱动。
 
@@ -94,7 +88,7 @@ sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;
 (配色可丰富/fontFamily 中文/教学公式);需要 3D 相机或多视角时可按官方样式在代码里 `new ThreeDScene(container,...)` 自建 scene。
 {OFFICIAL_EXAMPLES_BLOCK}
 
-记住:动画 code 必须先经 add_animation 验证通过(ok=true)才算数;不要凭空写完就 finish。
+记住:动画 code 必须先经 commit 验证通过(ok=true)定稿才算数;不要凭空写完就 finish。
 """
 
 
@@ -151,57 +145,62 @@ def _build_tools(sid: str, step_id: int):
         return f"已设置:标题={title[:20]}…,讲解 {len(explanation)} 字"
 
     @tool
-    def update_animation(code: str = "", old_str: str = "", new_str: str = "") -> str:
-        """提交或修改动画代码(manim-web TS 函数体),浏览器真渲染验证。两种用法:
+    def write(code: str) -> str:
+        """**首次写**完整动画代码(manim-web TS 函数体)到工作草稿,不触发验证。可整段覆盖草稿。
+        仅在还没有代码、或要大范围重写时调用;已有代码的小改动请用 patch。"""
+        if not code:
+            return "write 失败:code 为空。请传入完整的 manim-web TS 函数体。"
+        draft["draftCode"] = code
+        return f"已写入工作草稿(code_len={len(code)})。可先 patch 修改再 commit,或直接 commit 提交验证。"
 
-        1) **整段提交**:只给 `code`(完整函数体),不传 old_str/new_str。**仅用于**:首次提交、改动超 1/3 代码、old_str 连续两次匹配不上、或大范围重构。
-        2) **局部改**(默认首选,省 token):传 `old_str` + `new_str`(不传 code)。在当前代码里定位 old_str(必须**唯一**匹配,含缩进),替换成 new_str,整段送验证。
-           - **渲染失败后必须先用本方式局部改**,不要整段重写。
-           - old_str 要从当前代码里**原样复制一段**(带足够上下文保证唯一),new_str 是替换后内容(空串=删除)。
-           - 找不到/不唯一/无变化会报错——补上下文让它唯一;连续两次匹配不上再改用整段提交(只给 code)。
+    @tool
+    def patch(old_str: str, new_str: str = "") -> str:
+        """**修改**工作草稿,不触发验证。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进,
+        old_str 从你写的最近一版代码里原样复制一段),替换成 new_str(空串=删除),存回草稿。
+        找不到/不唯一会报错——补几行上下文让它唯一。可连续 patch 多次,全部改完再统一 commit。"""
+        current = draft.get("draftCode") or ""
+        if not current:
+            return "patch 失败:工作草稿为空,还没有可改的代码。先调 write(code) 写一版完整代码。"
+        if not old_str:
+            return "patch 失败:old_str 为空。请从当前草稿代码里原样复制一段要替换的内容。"
+        n = current.count(old_str)
+        if n == 0:
+            return f"patch 失败:old_str 在当前草稿里找不到。检查缩进/拼写,或把整段代码用 write 重写一版再 patch。"
+        if n > 1:
+            return f"patch 失败:old_str 在草稿里出现 {n} 次,不唯一。多带几行上下文让它唯一,或改用 write 整段重写。"
+        new_code = current.replace(old_str, new_str, 1)
+        if new_code == current:
+            return "patch 失败:替换后代码无变化(old_str == new_str?)。"
+        draft["draftCode"] = new_code
+        return f"patch 已生效(draftCode 已更新,code_len={len(new_code)})。未触发验证,可继续 patch 或调 commit 提交验证。"
 
-        返回:ok=true 渲染通过、动画定稿;ok=false 给出 error,按错误继续调本工具修(优先局部改)。
-        最多重试 5 次。"""
-        # 决定本次提交的完整代码:传了 old_str 走局部改,否则用 code 整段
-        if old_str:
-            current = draft.get("sceneCode") or draft.get("_lastSubmittedCode") or ""
-            if not current:
-                return "渲染失败:当前没有可局部改的代码(还没提交过)。改用整段提交:只给 code,不传 old_str。"
-            n = current.count(old_str)
-            if n == 0:
-                return f"渲染失败:old_str 在当前代码里找不到。检查缩进/拼写,或调 read_animation 看当前代码,或改用整段提交(只给 code)。"
-            if n > 1:
-                return f"渲染失败:old_str 在代码里出现 {n} 次,不唯一。多带几行上下文让它唯一,或改用整段提交(只给 code)。"
-            new_code = current.replace(old_str, new_str, 1)
-            if new_code == current:
-                return "渲染失败:替换后代码无变化(old_str == new_str?)。"
-        else:
-            new_code = code
-            if not new_code:
-                return "渲染失败:既没给 code(整段),也没给 old_str(局部改)。二选一。"
-            # 整段提交:new_code 就是全新当前代码,失败也以它为准(下次 edit 基于它)。提前设。
-            draft["_lastSubmittedCode"] = new_code
-
+    @tool
+    def commit() -> str:
+        """把当前工作草稿的完整代码一次性送浏览器真渲染验证。返回 {{ok: true}} 渲染通过、动画**定稿**;
+        {{ok: false, error}} 报错,草稿仍是送检的那版,继续用 patch 改(改完再 commit)。
+        必须在 write 之后才能 commit。渲染失败不要整段重写,用 patch 只发改动片段;
+        仅当改动超约 1/3 或 patch 连续两次匹配不上时才 write 整段。最多重试 12 次。"""
+        new_code = draft.get("draftCode") or ""
+        if not new_code:
+            return "commit 失败:工作草稿为空,没东西可提交。先调 write(code) 写一版完整代码。"
         draft["renderAttempts"] += 1
         # 落盘每次提交的完整代码(临时调试:看 LLM 实际生成/合成什么)
         try:
             import os as _os, datetime as _dt
             _p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "step_codes.log")
             with open(_p, "a", encoding="utf-8") as _f:
-                _f.write(f"\n===== {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} sid={sid} step={step_id} attempt={draft['renderAttempts']} code_len={len(new_code)} mode={'edit' if old_str else 'full'} =====\n")
+                _f.write(f"\n===== {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} sid={sid} step={step_id} attempt={draft['renderAttempts']} code_len={len(new_code)} mode=commit =====\n")
                 _f.write(new_code)
                 _f.write("\n")
         except Exception:
             pass
-        # ⚠️ 不能在 interrupt 前就把 _lastSubmittedCode 设成 new_code!
-        # langgraph resume 会从工具入口重跑(不是从 interrupt 处继续),重跑时 current=_lastSubmittedCode,
-        # 若已是替换后的 new_code,old_str 已被换掉 → count=0 报"找不到"(实测高频 bug)。
-        # 所以 _lastSubmittedCode 只在渲染**通过**时才更新(sceneCode 同)。失败时保持旧版,重跑/重试都基于旧版。
+        # ⚠️ 不要在 interrupt 前改动 draftCode/sceneCode!
+        # langgraph resume 会从 commit 工具入口重跑(不是从 interrupt 处继续),重跑时仍读同样的 draftCode,
+        # 直接送同一段代码验证,无副作用;定稿状态只在渲染**通过**后(interrupt 返回)才写 sceneCode。
         # 暂停,等前端渲染回传。interrupt 的值会作为 SSE render_request 推给前端。
         result = interrupt({"code": new_code})
         if isinstance(result, dict) and result.get("ok"):
-            draft["sceneCode"] = new_code
-            draft["_lastSubmittedCode"] = new_code  # 通过才更新:下次 edit/read 基于定稿版
+            draft["sceneCode"] = new_code  # 定稿:与工作草稿一致
             # 视觉检查(仅提示不阻塞):若前端截了最后一帧(framePath),调视觉辅助模型描述画面。
             # 主模型 supports_vision 时本可直接看图,但 langchain tool 返回是字符串,当下走辅助模型描述。
             frame_path = result.get("framePath", "")
@@ -209,43 +208,28 @@ def _build_tools(sid: str, step_id: int):
             if frame_path:
                 vision_desc = _run_vision_check(frame_path, sid, step_id)
             if vision_desc:
-                return (f"渲染通过,动画已定稿。视觉检查(辅助模型看最后一帧):{vision_desc}\n"
-                        f"如发现文字重叠、动画没真正实现(关键对象没进场景/没动)、或效果差,**可再调 update_animation 修改**(局部改用 old_str/new_str);否则可 finish。")
-            return "渲染通过,动画已定稿。可以继续设其它字段或 finish。"
+                return (f"commit 通过,动画已定稿。视觉检查(辅助模型看最后一帧):{vision_desc}\n"
+                        f"如发现文字重叠、动画没真正实现(关键对象没进场景/没动)、或效果差,**可再 patch 修改**(改完再 commit);否则可 finish。")
+            return "commit 通过,动画已定稿。可以继续设其它字段或 finish。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
         # waitForRender 错误常是 manim-web 内部抛的(非你代码直接调),给针对性指引
         if "waitForRender" in err:
             err += "。这是 manim-web 内部渲染错,常见原因:(1)对 Text/Dot/Arrow 等非公式对象调了 waitForRender(只有 MathTexImage/MathTex/Variable 有此方法,删掉该调用);(2)MathTexImage/MathTex 构造失败(检查 latex 字符串是否合法、解构行是否含 MathTexImage);(3)mobject 构造后状态异常。尝试简化:去掉可疑的 waitForRender 调用,或减少当步 mobject 数。"
-        return f"渲染失败:{err}。**下一步必须先用 old_str/new_str 局部改**(只发改动片段,从当前代码原样复制 old_str),不要整段重写;除非改动超 1/3 或 old_str 两次匹配不上才用整段提交(只给 code)。"
-
-    @tool
-    def read_animation() -> str:
-        """返回当前动画代码全文(渲染通过版 sceneCode,或最近一次提交但未通过的版本)。当你不确定当前代码长什么样、要改哪一段时调用;update_animation 做局部改(old_str)前建议先调它确认当前代码。"""
-        return draft.get("sceneCode") or draft.get("_lastSubmittedCode") or "(尚无动画代码,先调 update_animation 只给 code 提交完整代码)"
-
-    @tool
-    def lookup_example(query: str) -> str:
-        """在"人工手写 + 官方 manim-web"模板库里检索与本镜最相关的动画范例(含完整可运行代码)。
-        当这一镜想参考别人怎么写"某个概念/题型"(切线、积分、线性变换、3D 相机旋转、可拖拽点、
-        分镜节奏等)时调用。返回匹配度最高的前几个范例(含意图 + 完整 sceneCode),学习它的
-        API 用法、分镜/交互手法后,再写你自己的 update_animation 代码。"""
-        try:
-            from . import example_library
-        except Exception as e:
-            return f"(范例库不可用:{type(e).__name__}:{e})"
-        return example_library.lookup_example(query, n=3)
+        return f"commit 失败:{err}。草稿仍是送检那版,**下一步先用 patch 局部改**(从草稿原样复制 old_str),改完再 commit;仅当改动超 1/3 或 patch 两次匹配不上才用 write 整段重写。"
 
     @tool
     def finish() -> str:
-        """所有字段就绪且动画已验证通过后调用,结束本步设计。"""
+        """所有字段就绪且动画已定稿(commit 返回 ok=true)后调用,结束本步设计。"""
         missing = [k for k in ("title", "explanation") if not draft.get(k)]
         if not draft.get("sceneCode"):
-            return "尚未通过动画验证(update_animation 未返回 ok=true),不能 finish。先调 update_animation。"
+            return "尚未动画定稿(commit 未返回 ok=true),不能 finish。先调 commit。"
         if missing:
             return f"缺少必填字段:{missing},请先设置。"
+        if draft.get("draftCode") != draft.get("sceneCode"):
+            return "工作草稿与定稿不一致(你在最近一次 commit 后又 patch 改了代码未重新 commit),不能 finish。先调 commit 提交最新草稿。"
         return "FINISHED"
 
-    return [set_step, update_animation, read_animation, lookup_example, finish]
+    return [set_step, write, patch, commit, finish]
 
 
 # ---------- agent 构造(每会话每步一个,带 MemorySaver)----------
@@ -282,7 +266,7 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
                    question: str, outline_titles: list, cfg: Optional[LLMConfig] = None):
     """运行 step agent,生成器 yield 事件 dict。
     流程:
-      1. 首次 invoke → 若 agent 在 add_animation 处 interrupt,yield {"kind":"render_request","code":...}
+      1. 首次 invoke → 若 agent 在 commit 处 interrupt,yield {"kind":"render_request","code":...}
          并等待(生成器暂停);外部拿到前端回传后调 resume_step_agent 传入结果,再 next() 推进。
       2. 若 agent 跑完(无 interrupt),yield {"kind":"explain","step": <草稿>}。
       3. 若超 max_attempts 或异常,yield {"kind":"error","message":...}。
@@ -293,7 +277,7 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
     # 重置草稿
     _DRAFTS[(sid, step_id)] = {
         "title": step_title, "intent": "", "explanation": "", "formula": "", "narration": "",
-        "params": [], "sceneCode": "", "renderAttempts": 0, "failCount": 0,
+        "params": [], "sceneCode": "", "draftCode": "", "renderAttempts": 0, "failCount": 0,
     }
     run_nonce = _uuid.uuid4().hex[:8]
     _DRAFTS[(sid, step_id)]["runNonce"] = run_nonce
@@ -304,7 +288,7 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
         f"整体知识点拆解:{outline_titles}\n"
         f"现在设计第 {step_id} 步:{step_title}\n\n"
         f"上文上下文:\n{prev_ctx}\n\n"
-        f"请逐步调用工具设计这一步。先设标题/意图/公式/讲解/参数,再 add_animation 验证动画,最后 finish。"
+        f"请逐步调用工具设计这一步。先 set_step 设标题/讲解/参数,再 write 写动画代码并(必要时)patch 修改,最后 commit 验证定稿,再 finish。"
     )
 
     config = {"configurable": {"thread_id": tid}}
@@ -387,12 +371,12 @@ def resume_step_agent(sid: str, step_id, cfg: Optional[LLMConfig] = None):
     agent_obj = _build_agent(cfg, sid, step_id)
     config = {"configurable": {"thread_id": tid}}
     draft = _DRAFTS[(sid, step_id)]
-    # 失败计数:只在回传 ok=False 时累计,> 6 次拦截(避免 renderAttempts 被 resume 重复执行 tool 翻倍)
+    # 失败计数:只在回传 ok=False 时累计,> 12 次拦截(避免 renderAttempts 被 resume 重复执行 tool 翻倍)
     if not result.get("ok", False):
         draft["failCount"] = draft.get("failCount", 0) + 1
-    if draft.get("failCount", 0) > 6:
+    if draft.get("failCount", 0) > 12:
         yield {"kind": "error", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
-               "agent": "step", "stepId": step_id, "payload": {"message": "动画验证失败超过 6 次仍未通过"}}
+               "agent": "step", "stepId": step_id, "payload": {"message": "动画验证失败超过 12 次仍未通过"}}
         return
 
     agent_evt_id = draft.get("agentEvtId")
