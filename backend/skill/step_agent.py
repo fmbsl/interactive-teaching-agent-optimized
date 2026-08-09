@@ -227,7 +227,14 @@ def _build_tools(sid: str, step_id: int):
             return "工作草稿与定稿不一致(你在最近一次 commit 后又 patch 改了代码未重新 commit),不能 finish。先调 commit 提交最新草稿。"
         return "FINISHED"
 
-    return [set_step, write, patch, commit, finish]
+    @tool
+    def read_animation() -> str:
+        """读取当前工作草稿的完整动画代码 + 标题/讲解/参数。**修改现有动画时**先用它看清当前代码再 patch;
+        首次从零设计时也可用它确认已写的内容。返回全文。"""
+        return (f"标题:{draft.get('title','')}\n讲解:{draft.get('explanation','')}\n"
+                f"参数:{draft.get('params',[])}\n当前动画代码:\n{draft.get('draftCode') or '(空)'}")
+
+    return [set_step, write, patch, read_animation, commit, finish]
 
 
 # ---------- agent 构造(每会话每步一个,带 MemorySaver)----------
@@ -263,33 +270,58 @@ def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: 
 
 
 def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
-                   question: str, outline_titles: list, cfg: Optional[LLMConfig] = None):
+                   question: str, outline_titles: list, cfg: Optional[LLMConfig] = None,
+                   modify_feedback: Optional[str] = None):
     """运行 step agent,生成器 yield 事件 dict。
     流程:
       1. 首次 invoke → 若 agent 在 commit 处 interrupt,yield {"kind":"render_request","code":...}
          并等待(生成器暂停);外部拿到前端回传后调 resume_step_agent 传入结果,再 next() 推进。
       2. 若 agent 跑完(无 interrupt),yield {"kind":"explain","step": <草稿>}。
       3. 若超 max_attempts 或异常,yield {"kind":"error","message":...}。
-    """
+    modify_feedback 非空时进入**修改模式**:预填草稿 = 现有 step_cache(改现有动画/讲解/标题),
+    feedback 描述用户要改什么,agent 用 read_animation 看清当前代码后 patch/write/set_step,再 commit 验证定稿。"""
     cfg = cfg or _get_runtime_cfg()
     # step_id 键统一为字符串(旧整数流是 int,新 topic 流是 str),run 与 resume 一致才能命中 _DRAFTS/_RESUMES
     step_id = str(step_id)
-    # 重置草稿
-    _DRAFTS[(sid, step_id)] = {
-        "title": step_title, "intent": "", "explanation": "", "formula": "", "narration": "",
-        "params": [], "sceneCode": "", "draftCode": "", "renderAttempts": 0, "failCount": 0,
-    }
+    if modify_feedback is not None:
+        # 修改模式:草稿预填 = 现有 step_cache(工作缓冲 draftCode = 现有 sceneCode,供 patch/read_animation)
+        import agent as _a
+        _sc = _a.get_step_cache(sid, step_id) or {}
+        _DRAFTS[(sid, step_id)] = {
+            "title": _sc.get("title") or step_title,
+            "intent": _sc.get("intent", ""),
+            "explanation": _sc.get("explanation", ""),
+            "formula": _sc.get("formula", ""),
+            "narration": _sc.get("narration", ""),
+            "params": list(_sc.get("params", []) or []),
+            "sceneCode": "",  # 未定稿,commit 验证通过后才落
+            "draftCode": _sc.get("sceneCode", ""),  # 工作缓冲 = 现有代码
+            "renderAttempts": 0, "failCount": 0,
+        }
+    else:
+        # 重置草稿(从零生成)
+        _DRAFTS[(sid, step_id)] = {
+            "title": step_title, "intent": "", "explanation": "", "formula": "", "narration": "",
+            "params": [], "sceneCode": "", "draftCode": "", "renderAttempts": 0, "failCount": 0,
+        }
     run_nonce = _uuid.uuid4().hex[:8]
     _DRAFTS[(sid, step_id)]["runNonce"] = run_nonce
     tid = _thread_id(sid, step_id, run_nonce)
     agent_obj = _build_agent(cfg, sid, step_id)
-    user_msg = (
-        f"用户要学的总知识点:{question}\n"
-        f"整体知识点拆解:{outline_titles}\n"
-        f"现在设计第 {step_id} 步:{step_title}\n\n"
-        f"上文上下文:\n{prev_ctx}\n\n"
-        f"请逐步调用工具设计这一步。先 set_step 设标题/讲解/参数,再 write 写动画代码并(必要时)patch 修改,最后 commit 验证定稿,再 finish。"
-    )
+    if modify_feedback is not None:
+        user_msg = (f"用户要对第 {step_id} 步「{_DRAFTS[(sid, step_id)]['title']}」做修改,反馈如下:\n{modify_feedback}\n\n"
+                    f"这一步当前已有动画代码/讲解/标题(已放进工作草稿)。**先用 read_animation 看清当前内容**,"
+                    f"再按反馈修改:改标题/讲解/参数用 set_step,改代码用 patch(局部改,从现有代码原样复制 old_str)"
+                    f"或 write(大改),最后 commit 验证定稿,再 finish。如果反馈只涉及讲解/标题、代码不用动,"
+                    f"直接 set_step 后 commit(浏览器验证)即可定稿。")
+    else:
+        user_msg = (
+            f"用户要学的总知识点:{question}\n"
+            f"整体知识点拆解:{outline_titles}\n"
+            f"现在设计第 {step_id} 步:{step_title}\n\n"
+            f"上文上下文:\n{prev_ctx}\n\n"
+            f"请逐步调用工具设计这一步。先 set_step 设标题/讲解/参数,再 write 写动画代码并(必要时)patch 修改,最后 commit 验证定稿,再 finish。"
+        )
 
     config = {"configurable": {"thread_id": tid}}
     # yield agent_start(本步 subagent 开始),作为后续 tool_call 的父

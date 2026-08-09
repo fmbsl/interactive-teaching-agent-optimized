@@ -6,11 +6,11 @@ import rehypeKatex from "rehype-katex";
 import {
   nextStep, prevStep, gotoStep,
   postRenderResult, getTrace,
-  chat, chatAnswer, chatStop, uploadForSession, decompose,
+  chat, chatAnswer, chatStop, uploadForSession, graphCommand,
   listSessions, newSession, getSession, exportSession, importSessionFromFile,
   exportSessionMarkdown,
   deleteSession, renameSession,
-  explainStep,
+  explainStep, modifyStep,
   type ChatEvent, type AgentRole, type Topic,
 } from "../data/llmClient";
 import { useApp, type StepStatus } from "../store";
@@ -226,7 +226,7 @@ export default function ChatPanel() {
         setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
       }
       if (ev.kind === "graph") {
-        // 主 agent 图编辑工具(split_graph_node/remove_graph_node/...)改图后推的快照:刷新分解图画布(不进对话栏)
+        // 图 agent(经 graph_command)改图后推的快照:刷新分解图画布(不进对话栏)
         const snap = (ev as any).payload || (ev as any).snapshot;
         if (snap) {
           const prev = decomposeGraphRef.current;
@@ -290,18 +290,20 @@ export default function ChatPanel() {
           await handleEvent(sub, myRun);
         }
       }
-      if (ev.kind === "decompose_request") {
-        // 主 agent 要分解知识图谱:调 /api/decompose 跑分解 agent。每个 graph 事件实时更新分解图(用户看到节点逐个出现),
+      if (ev.kind === "graph_command_request") {
+        // 主 agent 调图 agent(分解建图 / 编辑改图):调 /api/graph_command。每个 graph 事件实时更新分解图,
         // 跑完收最后一个 graph 快照,再 chatAnswer resume
         const sid = sessionIdRef.current || "";
+        const instruction = (ev as any).instruction || "";
+        const prevRoot = decomposeGraphRef.current?.root_title || "";
         let graph: any = null, ok = false, errMsg = "";
         try {
-          for await (const dev of decompose(sid, ev.question)) {
+          for await (const dev of graphCommand(sid, instruction)) {
             if (consumeRunIdRef.current !== myRun) return;
             if (dev?.kind === "graph") {
-              graph = dev?.payload;  // 保留最后一个 graph 快照
-              // 实时更新 store.decomposeGraph:GraphApp effect 监听变化,每次 split 末尾重建画布(节点逐步增加)
-              setDecomposeGraph({ question: ev.question, root_title: `知识分解 · ${ev.question}`, snapshot: graph });
+              graph = dev?.payload;
+              // 实时更新 store.decomposeGraph:GraphApp effect 监听变化重建画布;编辑模式保留原 root_title
+              setDecomposeGraph({ question: prevRoot || instruction, root_title: prevRoot || `知识分解 · ${instruction.slice(0, 20)}`, snapshot: graph });
             }
             if (dev?.kind === "error") errMsg = dev?.message || dev?.payload?.message || "";
           }
@@ -312,7 +314,7 @@ export default function ChatPanel() {
         const subStream = chatAnswer(sid, "", { ok, graph: ok ? graph : null, error: errMsg });
         for await (const sub of subStream) {
           if (consumeRunIdRef.current !== myRun) return;
-          await handleEvent(sub, myRun);  // resume 后可能再来 ask/decompose_request/topic_added
+          await handleEvent(sub, myRun);  // resume 后可能再来 ask/graph_command_request/topic_added
         }
       }
       if (ev.kind === "animation_request") {
@@ -340,6 +342,30 @@ export default function ChatPanel() {
         for await (const sub of subStream) {
           if (consumeRunIdRef.current !== myRun) return;
           await handleEvent(sub, myRun);  // resume 后可能再来 ask/animation_request/topic_added
+        }
+      }
+      if (ev.kind === "modify_request") {
+        // 主 agent 改某步动画:调 /api/modify_step 跑 step_agent 修改模式(浏览器在环),跑完 resume 主 agent 传 {ok, step_id}
+        const sid = sessionIdRef.current || "";
+        const stepId = (ev as any).step_id || ev.stepId || "";
+        const feedback = (ev as any).feedback || "";
+        if (stepId) setCurrentStep(stepId as any);
+        let ok = false, errMsg = "";
+        try {
+          for await (const sev of modifyStep(sid, stepId, feedback)) {
+            if (consumeRunIdRef.current !== myRun) return;
+            const r = await handleEvent(sev, myRun);
+            if (r?.error) errMsg = r.error;
+            if (sev.kind === "explain") ok = true;
+            if (sev.kind === "error") errMsg = sev.message || "";
+          }
+          if (!errMsg) ok = true;
+        } catch (e: any) { errMsg = e.message; }
+        if (consumeRunIdRef.current !== myRun) return;
+        const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });
+        for await (const sub of subStream) {
+          if (consumeRunIdRef.current !== myRun) return;
+          await handleEvent(sub, myRun);
         }
       }
     }
@@ -381,16 +407,18 @@ export default function ChatPanel() {
       }
       // 把本段(含递归渲染回传流)遇到的 error 冒泡给上层(animation_request),避免"验证失败超限"被误判成功
       if (subErr) return { error: subErr };
-    } else if (ev.kind === "decompose_request") {
+    } else if (ev.kind === "graph_command_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       const sid = sessionIdRef.current || "";
+      const instruction = (ev as any).instruction || "";
+      const prevRoot = decomposeGraphRef.current?.root_title || "";
       let graph: any = null, ok = false, errMsg = "";
       try {
-        for await (const dev of decompose(sid, ev.question)) {
+        for await (const dev of graphCommand(sid, instruction)) {
           if (consumeRunIdRef.current !== myRun) return;
           if (dev?.kind === "graph") {
             graph = dev?.payload;
-            setDecomposeGraph({ question: ev.question, root_title: `知识分解 · ${ev.question}`, snapshot: graph });  // 实时更新
+            setDecomposeGraph({ question: prevRoot || instruction, root_title: prevRoot || `知识分解 · ${instruction.slice(0, 20)}`, snapshot: graph });  // 实时更新
           }
           if (dev?.kind === "error") errMsg = dev?.message || dev?.payload?.message || "";
         }
@@ -398,6 +426,29 @@ export default function ChatPanel() {
       } catch (e: any) { errMsg = e.message; }
       if (consumeRunIdRef.current !== myRun) return;
       const subStream = chatAnswer(sid, "", { ok, graph: ok ? graph : null, error: errMsg });
+      for await (const sub of subStream) {
+        if (consumeRunIdRef.current !== myRun) return;
+        await handleEvent(sub, myRun);
+      }
+    } else if (ev.kind === "modify_request") {
+      setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      const sid = sessionIdRef.current || "";
+      const stepId = (ev as any).step_id || ev.stepId || "";
+      const feedback = (ev as any).feedback || "";
+      if (stepId) setCurrentStep(stepId as any);
+      let ok = false, errMsg = "";
+      try {
+        for await (const sev of modifyStep(sid, stepId, feedback)) {
+          if (consumeRunIdRef.current !== myRun) return;
+          const r = await handleEvent(sev, myRun);
+          if (r?.error) errMsg = r.error;
+          if (sev.kind === "explain") ok = true;
+          if (sev.kind === "error") errMsg = sev.message || "";
+        }
+        if (!errMsg) ok = true;
+      } catch (e: any) { errMsg = e.message; }
+      if (consumeRunIdRef.current !== myRun) return;
+      const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });
       for await (const sub of subStream) {
         if (consumeRunIdRef.current !== myRun) return;
         await handleEvent(sub, myRun);

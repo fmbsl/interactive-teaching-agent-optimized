@@ -79,6 +79,17 @@ DECOMPOSE_PROMPT = """你是知识点分解 agent。把用户给的 STEM 知识�
     例:矩阵 需先学 行列式 -> {"from":"行列式","to":"矩阵"};旋度 需先学 矢量场 -> {"from":"矢量场","to":"旋度"}。
 - finish():frontier 空了调,完成。
 
+**编辑模式(图已存在时)**:若当前已有一张知识图,用户/主 agent 会要求直接修改它(如"把X拆细""去掉X""加个Y""X是Y的前置""X我会了")。此时不用 expand_node/finish,而是用以下编辑工具按标题改图:
+- split_graph_node(target, children, prereqs?, deps?):把 target 拆成 children(拆后 target 消失变集合标签,依赖自动改接+剪枝)。原子概念给 []。
+- remove_graph_node(title):删节点及其关联边。
+- add_graph_node(title, mastery?, aliases?):加孤立节点(再用 add_graph_dependency 连边)。
+- rename_graph_node(title, new_title):改节点标题。
+- add_graph_dependency(from, to):加前置依赖(先学 from 才能学 to),成环自动拒绝。
+- remove_graph_dependency(from, to):删依赖边。
+- set_graph_mastered(title, mastered):标记/取消已掌握。
+- list_graph_nodes():列当前图所有节点(改图前或不确定图内容时先调它看清楚)。
+编辑工具按标题匹配节点(支持别名)。改完图会自动刷新前端画布。
+
 **同物异名(关键)**:
 - 同一事物的不同称呼(如 PCA = 主成分分析)用**同一个标题**+ aliases 列出别名,系统会合并,不要建两个节点。
 - **相关但不同**的概念(如 PCA 和 SVD:PCA 用 SVD 实现,但二者是不同算法)应建**两个节点**,用 deps 连依赖。不要把相关概念强行合并成同一个。
@@ -455,6 +466,22 @@ def _split_replace(sid: str, target_id: str, children: list[dict], prereqs: list
 
 # ---------------- 工具(LLM) ----------------
 
+def _push_graph(sid: str, msg: str, snapshot: dict) -> str:
+    """把图快照写回 session.graph(持久化)+ 往 _EMIT 推 graph 事件(前端刷新画布)。返回 msg。
+    供编辑工具(编辑模式)用:改图后调它,快照落盘 + 前端实时刷新。"""
+    import agent as _a
+    s = _a.get_session(sid)
+    old_graph = (s or {}).get("graph") or {}
+    graph_obj = {
+        "question": old_graph.get("question", (s or {}).get("question", "")),
+        "root_title": old_graph.get("root_title", ""),
+        "snapshot": snapshot,
+    }
+    _a.set_graph(sid, graph_obj)
+    _EMIT[sid].append({"kind": "graph", "payload": snapshot})
+    dlog(f"PUSH_GRAPH sid={sid} nodes={len(snapshot.get('nodes', []))} edges={len(snapshot.get('edges', []))} emit_len={len(_EMIT[sid])}")
+    return msg
+
 def _build_tools(sid: str):
     G = _GRAPHS[sid]
 
@@ -492,7 +519,72 @@ def _build_tools(sid: str):
         _EMIT[sid].append({"kind": "graph", "payload": _snapshot_graph(sid)})
         return "已完成分解,知识谱系图已生成。"
 
-    return [expand_node, finish]
+    # ---------- 编辑模式工具(图已存在时,主 agent 经 graph_command 间接驱动) ----------
+    # 改图后 _push_graph 写回 session.graph + 推 graph 事件(前端刷新画布)。
+
+    @tool
+    def split_graph_node(target: str, children: list[dict] = None, prereqs: list[dict] = None, deps: list[dict] = None) -> str:
+        """拆分当前分解图里的一个节点 target(标题)。target 拆成 children 后从图里消失(变集合标签贴在子节点身上),
+        其依赖自动改接到子节点并剪枝。用于"把X拆细一点""X还能再分"时。
+        children:target 拆出的子概念。每项 {"title":str,"mastery":bool,"aliases":[str,...](可选)}。原子概念给 []。
+        prereqs:外部前置知识(不在 children 里)。deps:显式依赖 {"from","to"}。可省略。会切到分解图并刷新。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        events, msg, snapshot = manual_split(sid, target, children or [], prereqs or [], deps or [], prune=True)
+        _EMIT[sid].extend(events)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def remove_graph_node(title: str) -> str:
+        """从分解图删除节点 title(及其所有关联边)。用于"去掉X""X不用学"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = edit_remove_node(sid, title)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def add_graph_node(title: str, mastery: bool = False, aliases: list[str] = None) -> str:
+        """往分解图新增一个孤立节点 title(暂不连边,后续用 add_graph_dependency 连)。用于"加个X""漏了X"时。
+        mastery=是否已掌握(默认否);aliases=别名数组(可选)。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = edit_add_node(sid, title, mastery, aliases)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def rename_graph_node(title: str, new_title: str) -> str:
+        """把分解图里的节点 title 改名为 new_title。用于"X应该叫Y""名字不对"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = edit_rename_node(sid, title, new_title)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def add_graph_dependency(from_title: str, to_title: str) -> str:
+        """加一条前置依赖边:先学 from_title 才能学 to_title(from 是基础,to 是高级)。用于"X是Y的前置""学Y得先学X"时。
+        自动环检测,成环会拒绝。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = edit_add_edge(sid, from_title, to_title)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def remove_graph_dependency(from_title: str, to_title: str) -> str:
+        """删除一条前置依赖边 from_title->to_title。用于"X不是Y的前置""这条依赖不对"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = edit_remove_edge(sid, from_title, to_title)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def set_graph_mastered(title: str, mastered: bool) -> str:
+        """把分解图里的节点 title 标记为已掌握(mastered=true)或取消(mastered=false)。用于"X我会了""X不用学了"或"X其实我没学过"时。会刷新分解图。"""
+        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "graph"}})
+        msg, snapshot = edit_set_mastered(sid, title, mastered)
+        return _push_graph(sid, msg, snapshot)
+
+    @tool
+    def list_graph_nodes() -> str:
+        """列出当前分解图所有节点(标题+是否已掌握+depth+集合标签)。改图前或用户问"图里有哪些知识点"时调,据实决策。不切换舞台。"""
+        return edit_list_nodes(sid)
+
+    return [expand_node, finish,
+            split_graph_node, remove_graph_node, add_graph_node, rename_graph_node,
+            add_graph_dependency, remove_graph_dependency, set_graph_mastered, list_graph_nodes]
 
 
 _SAVER = MemorySaver()
@@ -595,6 +687,68 @@ def run_decompose_agent(sid: str, question: str, file_text: Optional[str] = None
         return
 
     # 兜底:若 LLM 没调 finish(没 emit graph),补发完整 graph 快照
+    if not graph_emitted:
+        yield {"kind": "graph", "id": _new_id(), "parentId": agent_evt_id, "agent": "decompose",
+               "stepId": None, "payload": _snapshot_graph(sid)}
+
+
+def run_graph_agent(sid: str, instruction: str, cfg=None):
+    """图 agent 统一入口(主 agent graph_command 触发):生成器 yield 事件 dict。
+    无图(该 session 还没分解过)→ 委托 run_decompose_agent 建图(instruction 即用户知识点);
+    有图 → 编辑模式:把 instruction 作为新 user 消息 stream,agent 用编辑工具改图(_push_graph 落盘+推 graph 事件)。"""
+    cfg = cfg or _get_runtime_cfg()
+    with _LOCKS[sid]:
+        ensure_graph_loaded(sid)  # 有 session.graph 快照则重建内存图(重启后也能编辑)
+    if not _GRAPHS[sid].get("nodes"):
+        yield from run_decompose_agent(sid, instruction, None, cfg)
+        return
+    # ---------- 编辑模式 ----------
+    agent_obj = _build_agent(cfg, sid)
+    config = {"configurable": {"thread_id": f"decompose#{sid}"}}
+    agent_evt_id = _new_id()
+    yield {"kind": "graph_edit_start", "id": agent_evt_id, "parentId": None, "agent": "decompose",
+           "stepId": None, "payload": {"title": f"知识图编辑 · {instruction[:30]}"}}
+    user_msg = (f"用户/主 agent 要求修改当前知识图:\n{instruction}\n\n"
+                f"当前图里已有节点:{_current_node_list(sid)}。用编辑工具(split/remove/add/rename/"
+                f"dependency/mastery/list)按指令修改,完成后返回一句简短结果。")
+    tcid_to_evt: dict = {}
+    current_tc_evt: Optional[str] = None
+    graph_emitted = False
+    try:
+        for chunk in agent_obj.stream({"messages": [{"role": "user", "content": user_msg}]}, config, stream_mode="updates"):
+            for node, state in chunk.items():
+                if node == "__interrupt__":
+                    continue
+                msgs = state.get("messages", []) if isinstance(state, dict) else []
+                for m in msgs:
+                    nm = type(m).__name__
+                    if nm == "AIMessage" and getattr(m, "tool_calls", None):
+                        for tc in m.tool_calls:
+                            eid = _new_id()
+                            tcid_to_evt[tc.get("id")] = eid
+                            current_tc_evt = eid
+                            yield {"kind": "tool_call", "id": eid, "parentId": agent_evt_id,
+                                   "agent": "decompose", "stepId": None,
+                                   "payload": {"name": tc.get("name"), "args": tc.get("args", {})}}
+                    elif nm == "ToolMessage":
+                        # 先 drain _EMIT:把 tool 执行期间产生的事件挂到当前 tool_call 下
+                        while _EMIT[sid]:
+                            ev = _EMIT[sid].pop(0)
+                            if ev["kind"] == "graph":
+                                graph_emitted = True
+                            yield {"kind": ev["kind"], "id": _new_id(),
+                                   "parentId": current_tc_evt, "agent": "decompose", "stepId": None,
+                                   "payload": ev["payload"]}
+                        tcid = getattr(m, "tool_call_id", None)
+                        parent = tcid_to_evt.get(tcid, current_tc_evt)
+                        yield {"kind": "tool_result", "id": _new_id(), "parentId": parent,
+                               "agent": "decompose", "stepId": None,
+                               "payload": {"toolCallId": tcid, "output": str(getattr(m, "content", ""))[:2000]}}
+    except Exception as e:
+        yield {"kind": "error", "id": _new_id(), "parentId": agent_evt_id, "agent": "decompose",
+               "stepId": None, "payload": {"message": f"图 agent 异常:{type(e).__name__}: {e}"}}
+        return
+    # 兜底:若编辑过程没 emit graph,补发完整快照
     if not graph_emitted:
         yield {"kind": "graph", "id": _new_id(), "parentId": agent_evt_id, "agent": "decompose",
                "stepId": None, "payload": _snapshot_graph(sid)}

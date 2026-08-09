@@ -1,5 +1,5 @@
 from django.urls import path
-from api.views import start, next_step, prev_step, goto_step, update, regenerate, render_result, upload, sessions, session_detail, trace, export_session, export_session_md, import_session, health, llm_config, decompose, decompose_trace, decompose_split, decompose_to_topics, decompose_edit, decompose_auto_split, chat, chat_answer, chat_stop, user_preferences, explain, session_delete, session_rename, app_settings
+from api.views import start, next_step, prev_step, goto_step, update, regenerate, render_result, upload, sessions, session_detail, trace, export_session, export_session_md, import_session, health, llm_config, decompose, decompose_trace, decompose_split, decompose_to_topics, decompose_edit, decompose_auto_split, chat, chat_answer, chat_stop, user_preferences, explain, session_delete, session_rename, app_settings, graph_command, modify_step
 
 urlpatterns = [
     path("", health, name="health"),
@@ -9,6 +9,8 @@ urlpatterns = [
     path("api/prev", prev_step, name="prev"),
     path("api/goto", goto_step, name="goto"),
     path("api/explain", explain, name="explain"),
+    path("api/modify_step", modify_step, name="modify-step"),
+    path("api/graph_command", graph_command, name="graph-command"),
     path("api/update", update, name="update"),
     path("api/regenerate", regenerate, name="regenerate"),
     path("api/render_result", render_result, name="render-result"),

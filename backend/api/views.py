@@ -123,7 +123,8 @@ def llm_config(request):
     return JsonResponse(data)
 
 
-def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, session_id: str | None = None):
+def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, session_id: str | None = None,
+                   modify_feedback: str | None = None):
     """下游 agent:为某步设计完整讲解。生成器,yield 执行树事件 dict(executor 负责落盘)。
 
     缓存命中 → yield explain + done(dict)。
@@ -131,7 +132,7 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
       - agent 请求渲染 → yield render_request(本段结束,前端跑完 POST /api/render_result 触发新 run 续流)
       - agent 完成 → yield explain + done
       - 失败 → 回退旧 generate_step(一次性 JSON);仍失败 yield error
-    """
+    modify_feedback 非空 = 修改模式:跳过缓存短路,预填现有代码让 step_agent 改(见 run_step_agent)。"""
     outline_step = _step(lesson, step_id) if not isinstance(step_id, str) else {}
     session = agent.get_session(session_id) if session_id else None
     if isinstance(step_id, str) and session:
@@ -142,8 +143,8 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
         prev_step_id = step_id - 1 if (not isinstance(step_id, str) and step_id > 1) else None
         outline_titles = [st.get("title", "") for st in lesson.get("steps", [])]
 
-    # 先查缓存
-    if session_id and not prev_error:
+    # 先查缓存(修改模式 modify_feedback 非空时跳过:永远重跑 step_agent 改)
+    if session_id and not prev_error and modify_feedback is None:
         cached = agent.get_step_cache(session_id, step_id)
         if cached and cached.get("sceneCode"):
             dlog(f"explain sid={session_id} step={step_id} HIT cache sceneCode_len={len(cached.get('sceneCode',''))}")
@@ -178,7 +179,8 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
         )
 
     try:
-        for ev in run_step_agent(session_id or "anon", step_id, step_title, prev_ctx, question, outline_titles):
+        for ev in run_step_agent(session_id or "anon", step_id, step_title, prev_ctx, question, outline_titles,
+                                 modify_feedback=modify_feedback):
             kind = ev.get("kind")
             if kind in ("agent_start", "tool_call", "tool_result", "render_result", "error"):
                 yield ev  # step_agent 已构造好 id/parentId/agent/stepId/payload
@@ -1075,6 +1077,83 @@ def decompose(request):
             yield _new_evt(final_sid, "error", {"message": f"分解失败: {e}"}, agent_name="decompose")
 
     run = start_run(sid, "decompose", gen_factory, sub_dir="decompose")
+    return _streaming_response(_stream_run(sid, run.run_id))
+
+
+@csrf_exempt
+def graph_command(request):
+    """图 agent 统一入口(主 agent graph_command 工具触发):POST {sid, instruction} -> SSE。
+    无图(该 session 还没分解过)→ 图 agent 建图(instruction 即用户知识点,递归分解+找前置);
+    有图 → 编辑模式(instruction 描述怎么改,agent 用编辑工具改图)。事件 kind 同 decompose。
+    每次 graph 事件把快照写回 session.graph(随 session 走,重启可恢复)。"""
+    if request.method != "POST":
+        return _streaming_response(iter([_sse("error", {"message": "POST only"})]))
+    try:
+        body = json.loads(request.body or b"{}")
+        sid = body.get("sid", "") or ""
+        instruction = body.get("instruction", "").strip()
+    except Exception:
+        sid, instruction = "", ""
+    if not sid or not agent.get_session(sid):
+        return _streaming_response(iter([_sse("error", {"message": "缺少有效 sid"})]))
+    if not instruction:
+        return _streaming_response(iter([_sse("error", {"message": "缺少 instruction"})]))
+    dlog(f"GRAPH_COMMAND sid={sid} instruction={instruction!r}")
+
+    def gen_factory():
+        try:
+            yield {"kind": "session", "session_id": sid}
+            from skill.decompose_agent import run_graph_agent, _snapshot_graph, _GRAPHS
+            for ev in run_graph_agent(sid, instruction):
+                yield ev  # decompose_agent 已构造好 id/parentId/agent/stepId/payload
+                # 每次 graph 事件把快照写回主 session(编辑模式工具已写,这里兜底/幂等)
+                if ev.get("kind") == "graph":
+                    try:
+                        if sid in _GRAPHS and _GRAPHS[sid].get("nodes"):
+                            _s = agent.get_session(sid) or {}
+                            _old_g = _s.get("graph") or {}
+                            agent.set_graph(sid, {
+                                "question": _old_g.get("question") or _s.get("question", "") or instruction,
+                                "root_title": _old_g.get("root_title") or f"知识分解 · {instruction[:40]}",
+                                "snapshot": _snapshot_graph(sid),
+                            })
+                    except Exception as e:
+                        dlog(f"GRAPH_COMMAND set_graph fail: {e!r}")
+        except Exception as e:
+            dlog(f"GRAPH_COMMAND EXCEPTION: {type(e).__name__}: {e}")
+            yield _new_evt(sid, "error", {"message": f"图操作失败: {e}"}, agent_name="decompose")
+
+    run = start_run(sid, "graph_command", gen_factory, sub_dir="decompose")
+    return _streaming_response(_stream_run(sid, run.run_id))
+
+
+@csrf_exempt
+def modify_step(request):
+    """根据用户反馈修改某步动画(主 agent modify_step 工具触发):POST {sid, step_id, feedback} -> SSE。
+    跑 step_agent 修改模式(预填现有代码 → read_animation/patch/write/set_step → commit 浏览器验证),
+    结果写 step_cache+step_status。step_id 为字符串 'topicid-N'。"""
+    if request.method != "POST":
+        return _streaming_response(iter([_sse("error", {"message": "POST only"})]))
+    try:
+        body = json.loads(request.body or b"{}")
+        sid = body.get("sid", "")
+        step_id = body.get("step_id", "")
+        feedback = body.get("feedback", "").strip()
+    except Exception:
+        sid, step_id, feedback = "", "", ""
+    session = agent.get_session(sid)
+    if not session:
+        return _streaming_response(iter([_sse("error", {"message": "会话不存在"})]))
+    if not step_id or not feedback:
+        return _streaming_response(iter([_sse("error", {"message": "缺少 step_id 或 feedback"})]))
+    if not agent.get_step_cache(sid, str(step_id)):
+        return _streaming_response(iter([_sse("error", {"message": f"步骤 {step_id} 还没有已生成的动画可改,先生成"})]))
+    dlog(f"MODIFY_STEP sid={sid} step={step_id} feedback={feedback!r}")
+
+    def gen_factory():
+        yield from _explain_event(session.get("lesson") or {}, step_id, session_id=sid, modify_feedback=feedback)
+
+    run = start_run(sid, f"modify-{step_id}", gen_factory)
     return _streaming_response(_stream_run(sid, run.run_id))
 
 

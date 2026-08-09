@@ -28,15 +28,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `read(file_id, offset=0, limit=100)` —— 读上传文件片段(仿 Claude Code Read,带行号,分片)。
   - `grep(pattern, file_id?)` —— 正则搜文件内容(仿 Claude Code Grep,返回匹配行+行号)。
   - `generate_animation(step_id)` —— 触发 subagent 生成某步的**完整讲解**(动画代码 + 教学意图 + Markdown 讲解 + 公式 + 可调参数)。**interrupt()** 暂停等 subagent 跑完(浏览器在环验证),结果写 step_cache+step_status。已生成过的步直接返回不重跑(查 step_cache)。调一次等于讲完那一步,不要调完又自己讲。
-  - `decompose_knowledge(question)` —— 触发知识分解 agent 跑知识图谱(递归分解+找前置,产出 DAG)。**interrupt()** 暂停等分解完。返回图摘要。**调前先 `switch_stage("graph")`** 让用户实时看节点逐个出现。
+  - `graph_command(instruction)` —— 调用**知识图 agent**(`decompose_agent.py`)操作知识谱系图(DAG)。instruction 用自然语言描述:**还没有图**时传用户知识点(递归分解+找前置建图);**有图**时描述怎么改(拆/删/加/改名/依赖/标掌握)。**interrupt()** 暂停等图 agent 跑完。返回图摘要。**调前先 `switch_stage("graph")`** 让用户实时看节点逐个出现。
+  - `search_step(query)` —— 按指令搜索某步动画,返回 {step_id, 标题, 动画代码, 讲解}(匹配标题/讲解/代码)。定位"某步讲什么""某步代码怎么写的"。
+  - `delete_step(step_id)` / `rename_step(step_id, new_title)` / `add_step(topic_id, title)` —— 知识点清单增删改(删一步/改名/往主题末尾加一步)。
+  - `modify_step(step_id, feedback)` —— **根据用户反馈修改某步动画(代码/讲解/标题)**。**interrupt()** 暂停,把任务交给动画 agent(step_agent 修改模式,浏览器在环验证)改。**主 agent 只描述要改什么,不自己改代码、不接触渲染/验证细节(不给 webAPI 信息)**。
   - `switch_stage(stage)` —— 切换中间舞台:`"graph"`(分解图)/`"animation"`(动画舞台)/`"mermaid"`(mermaid 图示)。工具内往 `_EMIT[sid]`(side-channel)append `stage_switch` 事件,`run_main_agent`/`resume_main_agent` 在每个 ToolMessage 前 drain yield(仿 decompose_agent)。
   - `set_depth(level)` —— 调整学习深度(科普/理解/深度理解)。
   - `generate_quiz(step_title, question, options, answer, explanation)` —— 出选择题考察用户。主 agent 直接产题(题干+4选项+正确答案下标+解析),**interrupt()** 暂停,前端右边栏 ExplainPanel 显示题+选项按钮,用户点选项 → `/api/chat_answer` 带 `answer=idx` resume,工具对比 answer 判对错返回给主 agent,主 agent 据此反馈。answer 传字符串下标,后端 `set_chat_answer(sid, idx)` → `Command(resume=idx)` → 工具 `interrupt()` 返回 idx。
   - `generate_diagram(step_title, diagram_type, code, explanation)` —— 用 **mermaid 图**展示知识点(补 manim 之短,适合流程/结构/分类/关系/状态/时序类:生物分类、历史脉络、软件架构、状态机)。主 agent 直接产 mermaid 源码(`code` 以 `graph`/`flowchart`/`sequenceDiagram`/`mindmap` 等开头,**不要包```围栏**)+ Markdown 讲解。工具内 `_EMIT` append `stage_switch(mermaid)` + `diagram` 事件(前端 consume setDiagram,MermaidPanel 渲染)。**不走 interrupt**(无需用户交互,主 agent 一次产完)。渲染失败前端显示语法错,主 agent 可改 code 重调。**知识点类型选择**:数学/物理/几何→`generate_animation`(manim);流程/结构/分类/关系→`generate_diagram`(mermaid)。
-  - **分解图编辑(8 工具,复用 `decompose_agent` 的 `edit_*` 核心函数)**:`split_graph_node(target, children, prereqs?)` 拆节点、`remove_graph_node(title)` 删节点(连边一起删)、`add_graph_node(title, mastery?, aliases?)` 加节点、`rename_graph_node(title, new_title)` 改名、`add_graph_dependency(from_title, to_title)` 加依赖边(带环检测)、`remove_graph_dependency(from_title, to_title)` 删边、`set_graph_mastered(title, mastered)` 标记已掌握/取消、`list_graph_nodes()` 列所有节点(改图前先调,防 MemorySaver 上下文记错幻觉)。每个改图工具(除 list)开头先 `switch_stage("graph")` 往 `_EMIT` append stage_switch,再调 `edit_*` 拿快照,最后 `_push_graph(msg, snapshot)`:写回 `session.graph`(持久化)+ 往 `_EMIT` append `graph` 事件(前端 consume 收到刷新画布)。返回工具结果给 LLM。
+  - **知识图 agent(独立,`decompose_agent.py`)**:图工具全在它这边,主 agent **不直接持有**。它的 react agent 工具 = `expand_node`(递归分解)/`finish` + 8 个编辑工具(`split_graph_node`/`remove_graph_node`/`add_graph_node`/`rename_graph_node`/`add_graph_dependency`(带环检测)/`remove_graph_dependency`/`set_graph_mastered`/`list_graph_nodes`)。统一入口 `run_graph_agent(sid, instruction)`:无图 → 委托 `run_decompose_agent` 建图;有图 → 编辑模式(instruction 作新消息 stream,agent 用编辑工具改)。编辑工具:开头 `_EMIT` append `stage_switch(graph)`,调 `edit_*` 拿快照,`_push_graph(sid,msg,snapshot)` 写回 `session.graph`(持久化)+ append `graph` 事件(前端刷新画布)。主 agent 经 `graph_command(instruction)` 间接驱动,前端 `graph_command_request` 事件 → 调 `/api/graph_command`。
   - 系统提示词:身份 + **系统认知**(三栏 UI/中间舞台可切换/典型工作流)+ 用户偏好(`backend/user_prefs.json`)+ depth 指引 + 工具说明 + "拆解前必须先问用户(传 options)" + "文件不给全文,用 read/grep 按需读"。
   - **流式回复**:用 `stream(stream_mode=["messages","updates"])` 多模式。messages 模式拿 LLM token 增量,yield `message_delta` 事件(同 id,增量 text);updates 模式拿 tool_call/interrupt,文本不重发(已流式)。前端 consume 收到 message_delta 找同 id 的 message item 追加 text(无则新建)。
-- **step subagent**(`backend/skill/step_agent.py`):设计单个子知识点。工具 `set_title`/`set_intent`/`set_explanation`(md,含 `$...$` 公式)/`set_params`/`update_animation(code, old_str, new_str)`(合并的提交+局部改,见下)/`read_animation`/**`lookup_example(query)`**(在范例库检索与本镜最相关的手写/官方示例代码,学习其 API/交互/分镜手法后再写)/`finish`。
+- **step subagent**(`backend/skill/step_agent.py`):设计/修改单个子知识点。工具 `set_step(title, explanation, params_json)`(标题+讲解+参数)/`write(code)`(整段写草稿)/`patch(old_str, new_str?)`(局部改草稿,唯一匹配)/`read_animation()`(读当前草稿代码+讲解,修改现有动画时先看)/`commit()`(送浏览器验证,通过才定稿 sceneCode)/`finish()`。**修改模式**:`run_step_agent(..., modify_feedback=feedback)` 时草稿预填=现有 `step_cache`(draftCode=现有 sceneCode),agent 用 read_animation 看清当前代码后 patch/write/set_step,再 commit 验证定稿(主 agent 经 `modify_step` 工具间接触发,前端 `modify_request` 事件 → 调 `/api/modify_step`)。
 
 ### 浏览器在环验证(step agent 核心)
 
@@ -67,15 +70,17 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 
 ### 执行树(前后端共享事件模型)
 
-事件扁平 list + `parentId` 建树:`{id,parentId,sid,ts,kind,agent,stepId,payload}`。kind:session/agent_start/tool_call/tool_result/topic_added/ask/render_request/render_result/explain/step-start/stage_switch/graph/quiz/diagram/done/error。id 后端 uuid 生成,SSE 带上。
+事件扁平 list + `parentId` 建树:`{id,parentId,sid,ts,kind,agent,stepId,payload}`。kind:session/agent_start/tool_call/tool_result/topic_added/ask/render_request/render_result/explain/step-start/stage_switch/graph/quiz/diagram/graph_command_request/modify_request/done/error。id 后端 uuid 生成,SSE 带上。
 - 落盘:`backend/skill/session_store.py` → `backend/sessions/<sid>.jsonl`(追加事件)+ `<sid>.state.json`(快照,覆盖写,含所有新字段)
 - 重建:`GET /api/sessions/<sid>/trace` 读 jsonl;`session_detail` 内存无则 `load_state`+`restore_session`;Django 启动 `load_sessions_on_startup()` 扫 state.json 重建 `_SESSIONS`
 - 前端 `ChatPanel.renderTree` 按 parentId 建子列表 + 递归渲染 + 缩进;tool_call/render_request 默认折叠(点开看 code/args)
 
 ### 端点(`backend/api/views.py` + `backend/urls.py`)
 
-- **新主流程**:`/api/chat`(用户发消息,跑主 agent,带 depth+file_ids)、`/api/chat_answer`(回答 ask_user 或回传 generate_animation 结果,resume 主 agent)、`/api/upload`(传文件返回 file_id)
+- **新主流程**:`/api/chat`(用户发消息,跑主 agent,带 depth+file_ids)、`/api/chat_answer`(回答 ask_user 或回传 generate_animation/graph_command/modify_step 结果,resume 主 agent)、`/api/upload`(传文件返回 file_id)
 - **点 list 生动画**(不经主 agent):`/api/explain`(step_id 可 int 或 str `topicid-N`,跑 step_agent,结果写 step_cache+step_status)
+- **图 agent**(主 agent graph_command 触发):`/api/graph_command`(POST {sid, instruction},无图建图/有图编辑,graph 事件写 session.graph)
+- **改动画**(主 agent modify_step 触发):`/api/modify_step`(POST {sid, step_id, feedback},step_agent 修改模式浏览器验证)
 - **浏览器在环**:`/api/render_result`(前端回传渲染结果,字符串 step_id,恢复 step_agent)
 - **打断生成**:`/api/chat_stop`(POST `{sid}` → `current_run(sid).finish()` 停推 SSE;配合前端 AbortController 让对话框生成可被打断)
 - **旧/兼容**:`/api/start`/`/api/next`/`/api/prev`/`/api/goto`/`/api/update`/`/api/regenerate`(旧 lesson 数字 step 流程,保留)、`/api/sessions`/`/api/sessions/<sid>`/`/api/sessions/<sid>/trace`、`/api/llm/config`、`/api/user_prefs`、`/api/decompose`(知识谱系图,独立功能)

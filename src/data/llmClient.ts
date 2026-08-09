@@ -33,6 +33,8 @@ export type ChatEvent = {
   | { kind: "quiz"; step_title: string; question: string; options: string[]; answer: number; explanation: string }  // 主 agent 出的选择题,右边栏显示,用户作答后 resume
   | { kind: "diagram"; step_title: string; diagram_type: string; code: string; explanation: string }  // 主 agent 产的 mermaid 图,中间舞台 MermaidPanel 渲染
   | { kind: "decompose_request"; question: string }
+  | { kind: "graph_command_request"; instruction: string }  // 主 agent 调图 agent(分解/编辑)
+  | { kind: "modify_request"; stepId: string; step_id: string; feedback: string }  // 主 agent 改某步动画
   | { kind: "done"; message: string }
   | { kind: "error"; message: string }
 );
@@ -133,6 +135,18 @@ export async function* explainStep(sessionId: string, stepId: number | string): 
   yield* streamSSE(`${API_BASE}/api/explain`, { session_id: sessionId, step_id: stepId });
 }
 
+/** 根据用户反馈修改某步动画(主 agent modify_step 工具触发,step_id 为字符串 'topicid-N'):SSE 流。
+ * step_agent 修改模式:预填现有代码 → 改 → 浏览器在环验证 → 落盘。 */
+export async function* modifyStep(sessionId: string, stepId: string, feedback: string): AsyncGenerator<ChatEvent> {
+  yield* streamSSE(`${API_BASE}/api/modify_step`, { sid: sessionId, step_id: stepId, feedback });
+}
+
+/** 图 agent 统一入口(主 agent graph_command 工具触发):POST /api/graph_command,SSE 流。
+ * 无图 → 建图(instruction 即知识点);有图 → 编辑。yield 的 graph 事件驱动前端画布刷新。 */
+export async function* graphCommand(sid: string, instruction: string): AsyncGenerator<any> {
+  yield* streamSSE(`${API_BASE}/api/graph_command`, { sid, instruction });
+}
+
 /** 更新问题(重新拆解):SSE 流。 */
 export async function* updateQuestion(sessionId: string, question: string, fileText?: string): AsyncGenerator<ChatEvent> {
   yield { kind: "message", role: "orchestrator", text: "已更新问题,重新拆解…" };
@@ -230,6 +244,8 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
       case "quiz": return { ...base, kind: "quiz", step_title: p.step_title || "", question: p.question || "", options: p.options || [], answer: p.answer ?? 0, explanation: p.explanation || "" };
     case "diagram": return { ...base, kind: "diagram", step_title: p.step_title || "", diagram_type: p.diagram_type || "", code: p.code || "", explanation: p.explanation || "" };
       case "decompose_request": return { ...base, kind: "decompose_request", question: p.question || "" };
+case "graph_command_request": return { ...base, kind: "graph_command_request", instruction: p.instruction || "" };
+case "modify_request": return { ...base, kind: "modify_request", stepId: p.step_id || "", step_id: p.step_id || "", feedback: p.feedback || "" };
       case "error": return { ...base, kind: "error", message: p.message };
       default: return null;
     }
@@ -590,6 +606,8 @@ function parseSSE(raw: string): ChatEvent | null {
     case "quiz": return { ...base, kind: "quiz", step_title: p.step_title || "", question: p.question || "", options: p.options || [], answer: p.answer ?? 0, explanation: p.explanation || "" };
     case "diagram": return { ...base, kind: "diagram", step_title: p.step_title || "", diagram_type: p.diagram_type || "", code: p.code || "", explanation: p.explanation || "" };
     case "decompose_request": return { ...base, kind: "decompose_request", question: p.question || "" };
+case "graph_command_request": return { ...base, kind: "graph_command_request", instruction: p.instruction || "" };
+case "modify_request": return { ...base, kind: "modify_request", stepId: p.step_id || "", step_id: p.step_id || "", feedback: p.feedback || "" };
     case "done": return { kind: "done", message: obj.message };
     case "error": return tree ? { ...base, kind: "error", message: p.message } : { kind: "error", message: obj.message };
     default: return null;
