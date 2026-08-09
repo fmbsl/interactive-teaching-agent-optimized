@@ -86,7 +86,7 @@ DECOMPOSE_PROMPT = """你是知识点分解 agent。把用户给的 STEM 知识�
 
 **递归规则**:
 1. target 是原子概念(旋度/勾股定理)-> children=[],prereqs 给它的前置,deps 给 "前置->target"。
-2. target 是复杂体系(线性代数/傅里叶变换)-> children 给 3-6 个子概念,deps 给子概念间及前置间的依赖。target 拆完消失。
+2. target 是复杂体系(线性代数/傅里叶变换)-> children 给若干子概念(数量看内容,别少到漏关键、也别碎到失去结构),deps 给子概念间及前置间的依赖。target 拆完消失。
 3. 命中【已掌握清单】-> mastery=true,该节点不再展开(变叶)。
 4. 工具返回当前 frontier(待拆标题列表)。挑一个继续 expand_node。frontier 空了调 finish()。
 
@@ -980,7 +980,7 @@ def edit_auto_split(sid: str, target: str) -> tuple[str, dict]:
         cfg = _get_runtime_cfg()
         model = ChatOpenAI(base_url=cfg.base_url, api_key=cfg.api_key or "dummy",
                            model=cfg.model, temperature=0.3, request_timeout=45)
-        prompt = (f"把知识点「{target}」(深度={nd['depth']},集合标签={nd.get('sets',[])})拆分为 3-6 个子概念。"
+        prompt = (f"把知识点「{target}」(深度={nd['depth']},集合标签={nd.get('sets',[])})拆分为若干子概念(数量看内容,别少到漏关键、也别碎到失去结构)。"
                   f"返回 JSON:{{\"children\":[{{\"title\":...,\"mastery\":false,\"aliases\":[]}}],"
                   f"\"prereqs\":[{{\"title\":...,\"mastery\":false}}],"
                   f"\"deps\":[{{\"from\":\"先学\",\"to\":\"后学\"}}]}}。"

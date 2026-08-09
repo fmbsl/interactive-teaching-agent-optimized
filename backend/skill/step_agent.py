@@ -20,7 +20,7 @@ from langchain_openai import ChatOpenAI
 
 from .manim_lesson import (
     LLMConfig, _get_runtime_cfg, _call_vision_llm,
-    API_REF_BLOCK, RUNTIME_RULES_BLOCK, FEWSHOT_BLOCK, TEACHING_NORMS_BLOCK,
+    API_REF_BLOCK, RUNTIME_RULES_BLOCK, TEACHING_NORMS_BLOCK,
     RUNTIME_POWER_BLOCK, OFFICIAL_EXAMPLES_BLOCK,
 )
 from .llm_config_store import _get_vision_cfg
@@ -77,8 +77,6 @@ sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;
 {RUNTIME_RULES_BLOCK}
 
 {RUNTIME_POWER_BLOCK}
-
-{FEWSHOT_BLOCK}
 
 {TEACHING_NORMS_BLOCK}
 
@@ -241,6 +239,8 @@ def _build_agent(cfg: LLMConfig, sid: str, step_id: int):
     model = ChatOpenAI(
         base_url=cfg.base_url, api_key=cfg.api_key or "dummy",
         model=cfg.model, temperature=0.7,
+        extra_body={"thinking": {"type": "enabled"}},
+        reasoning_effort="high",
     )
     return create_react_agent(
         model=model, tools=tools, checkpointer=_SAVER,

@@ -25,46 +25,6 @@ except Exception:  # pragma: no cover
     _lc_tool = None  # type: ignore
 
 
-# ---------- Lesson JSON Schema(供任意 agent 框架的工具描述使用)----------
-
-LESSON_SCHEMA: dict = {
-    "type": "object",
-    "properties": {
-        "title": {"type": "string", "description": "知识点名称"},
-        "summary": {"type": "string", "description": "一句话概括"},
-        "params": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "英文小写标识符"},
-                    "label": {"type": "string", "description": "中文参数名"},
-                    "min": {"type": "number"},
-                    "max": {"type": "number"},
-                    "step": {"type": "number"},
-                    "default": {"type": "number"},
-                },
-                "required": ["name", "label", "min", "max", "step", "default"],
-            },
-        },
-        "steps": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "integer"},
-                    "title": {"type": "string"},
-                    "intent": {"type": "string", "description": "动画意图描述"},
-                    "formula": {"type": "string", "description": "KaTeX 公式"},
-                    "narration": {"type": "string", "description": "中文讲解 100-200 字"},
-                    "paramsUsed": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["id", "title", "intent", "formula", "narration", "paramsUsed"],
-            },
-        },
-    },
-    "required": ["title", "summary", "params", "steps"],
-}
 
 
 OUTLINE_PROMPT = """你是教学知识点拆解专家。用户提出一个 STEM 知识点(可能附文件内容),你把它拆成一系列递进的子知识点。
@@ -79,8 +39,8 @@ OUTLINE_PROMPT = """你是教学知识点拆解专家。用户提出一个 STEM 
 }
 
 要求:
-1. 子知识点数量**由知识点本身的复杂度决定**:简单概念 2-4 步即可,复杂体系可到 7-9 步。不要为凑数而硬拆,也不要漏掉关键环节。
-2. 拆解顺序符合学习规律(直观/动机 → 定义 → 计算/示例 → 性质/陷阱 → 拓展,但不强制每步都要有——按需取舍)。
+1. 子知识点数量由知识点本身的复杂度决定:简单概念少拆,复杂体系多拆。不要为凑数而硬拆,也不要漏掉关键环节。
+2. 拆解顺序按这个知识点怎么讲最顺来定:从学生已有的认知出发,一步步建立到目标。是否引入动机/示例/陷阱/拓展由你按内容取舍,别套固定模板。
 3. 每个子知识点只给一个简短标题(10-20字),不要写动画描述、公式、讲解、参数——那些由下游设计。
 4. 子知识点之间要有逻辑连续性,后一个建立在前一个之上。
 5. 若提供文件内容,围绕文件中的知识点拆解。
@@ -281,19 +241,12 @@ STEP_PROMPT = """你是教学动画设计 agent(下游)。给你一个子知识�
 ═══════════════════════════════════════════
 一、sceneCode 是什么 / 怎么被运行
 ═══════════════════════════════════════════
-sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!不要写 function 包裹、不要 export、不要反引号代码块),在浏览器里用 `new AsyncFunction("ctx", code)` 执行,所以:
+sceneCode 是一段 **JavaScript 函数体字符串**(不要写 function 包裹、不要 export、不要反引号代码块),在浏览器里用 `new AsyncFunction("ctx", code)` 执行,所以:
 - 顶部第一行必须从 ctx 解构出你要用的标识符:`const { scene, Axes, Dot, Text, Create, params } = ctx;`(只解构用到的)。
 - 用 `await scene.play(...)`(支持 await)、`scene.add(...)`、`await scene.wait(n)`。
 - 代码里可直接用 JS:变量、箭头函数、for/while、Math.*、数组方法。
 - **不要写 import、不要写 class、不要写 `new Scene(...)`**——scene 已由 ctx 注入。
 - 可调参数用 `params.<name>` 读取(前端注入,值是数字)。**不要给 params 加默认值兜底**(如 `params.x ?? 1`)——前端按 params 配置的 default 注入,直接 `const x = params.x;` 即可。
-
-⚠️ **绝不能写 TypeScript 语法**(会直接 `Unexpected token ':'` 报错):
-- 函数参数和变量**不要加类型注解**:写 `const f = (x) => x * x;`,不要 `const f = (x: number) => x * x;`
-- 不要写 `: any` / `: number` / `: string` / `: number[]` / `: boolean` 等任何类型标注
-- 不要写 `interface` / `type` 声明、不要写 `as` 断言(`x as number`)、不要写泛型 `<T>`
-- 函数返回类型也不要标:写 `function build(cx, cy, radial) {`,不要 `function build(cx: number, ...): any[]`
-- 想表达类型就靠默认值或注释,不要靠 TS 语法。整段代码必须是浏览器能直接 `new Function` 解析的纯 ES 语法。
 
 ═══════════════════════════════════════════
 二、API REF(manim-web 0.3.24 真实签名,照此写)
@@ -362,13 +315,13 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 - `new FadeTransform(mobA, mobB, { duration })` —— 跨类淡变(文字↔文字、不同点数对象),点数不匹配也不会报错。
 - `new TransformMatchingTex(texA, texB, { duration })` —— **公式逐项对应变换**(如 `a+b` → `a+b=c`),教学公式推导神器,LaTeX 相同部分保持、新增部分淡入。
 
-强调(引导眼睛看哪里,教学动画核心):
+强调:
 - `new Indicate(mob, { duration })` —— 短暂放大+变色再回弹,"看这里"。
 - `new Flash(mob, { duration, color })` —— 闪光放射。
 - `new Circumscribe(mob, { duration, color })` —— 画框框住(框出关键量/结果)。
 - `new FocusOn(mob, { duration, color? })` —— 相机/焦点聚焦到该 mobject(注意第一参是 **mobject**,不是 point)。
 - `new Wiggle(mob, { duration })` —— 摇晃。`new ShowPassingFlash(mob, { duration })` —— 扫过一道光。
-- `new Pulse(mob, { duration })` —— 脉冲(结尾让结论"活"着用它)。
+- `new Pulse(mob, { duration })` —— 脉冲。
 
 其它:
 - `new ApplyFunction(mob, { func: (p)=>[x,y,z], duration })` —— 对每个点施加函数,做网格扭曲。**func 必须逐分量返回数组**:`(p) => [p[0], p[1] + 0.3*Math.sin(p[0]), p[2]]`,不要 `p + [...]`(见铁律 1)。注意 `func` 在 options 对象里(`{ func, duration }`),不是独立位置参数。
@@ -380,7 +333,7 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 - 例:`await scene.play(mob.animate.moveTo([1,0,0]).rotate(Math.PI));`
 - **时长控制**:`await scene.play(mob.animate.moveTo(p), { duration: 1 })` 这种写法 **duration 注入不到 .animate**。要控制 .animate 时长,用 `mob.animate.moveTo(p).withDuration(1)`(AnimateProxy 的方法,注意是 **小写 `withDuration`**,不是 `WithDuration`),或改用 `new ApplyFunction` / `tracker.animateTo`。简单场景可直接接受默认 1 秒。
 - ⚠️ **改透明度的正确方法**(实测,别用错):
-  - **动画过渡**:`mob.animate.setFillOpacity(0.3)`(✓ 可用)。**不要用 `mob.animate.setOpacity(...)`**(报 `AnimateProxy: method "setOpacity" not found`)、**不要用 `mob.animate.setStrokeOpacity(...)`**(报 `is not a function`,AnimateProxy 没有此方法)。
+  - **动画过渡**:`mob.animate.setFillOpacity(0.3)`(✓ 可用)。
   - **即时改(非动画)**:`mob.setFillOpacity(0.3)` / `mob.setStrokeOpacity(0.3)`(两者普通 mobject 都有)/ `mob.opacity = 0.3`。
   - **统一用 `setFillOpacity` 最省心**:它在 `.animate` 链和普通 mobject 上都有。`setStrokeOpacity` 只在普通 mobject(不能 `.animate.`)。`setOpacity` **两处都没有**(普通 mobject 无此方法;AnimateProxy 有定义但转发到 mobject 时报 not found),完全不要用。
 
@@ -390,7 +343,6 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 - **依次进场(同类对象同一动画)**:`new LaggedStartMap(AnimClass, [mob1, mob2, mob3], { lagRatio: 0.2 })` —— 对一组同类 mobject 依次施加同一动画类(向量场箭头、点群、矩形序列用)。第一个参数是**动画类**(如 `FadeIn`),第二个是 **mobject 数组**。例:`new LaggedStartMap(Create, rects, { lagRatio: 0.1 })`。(若每对象动画参数不同,改用 `new LaggedStart([new FadeIn(a), new FadeIn(b)], { lagRatio: 0.2 })`,传构造好的动画数组。)
 - **严格分阶段**:`new Succession([animA, animB, animC])` —— 一个播完才下一个(无重叠),用于"先 A 再 B 再 C"的因果演示。
 - **缓动 rateFunc**(所有动画的 options 都接受 `rateFunc`,从 ctx 解构):公式/文字进场用 `easeOut`(轻快收尾)、形变用 `smooth`(默认,自然)、弹性效果用 `easeOutBounce`、强调往返用 `thereAndBack`、 lingering(结尾停留)。例:`new Write(eq, { duration: 1, rateFunc: easeOut })`。**别让所有动画都用默认线性**——机械感重。常用:`smooth`/`easeOut`/`easeInOut`/`thereAndBack`/`lingering`/`easeOutBounce`。
-- **节奏建议**:主体进场 0.8-1.5s + `easeOut`;强调 0.6-0.8s;阶段间 `await scene.wait(0.4-0.8)` 留白让看清楚,不要连续播不停也不要 `wait(2)` 干等太久。结尾让结论公式 `Indicate` 或 `Pulse` 一下保持"活",不要静止定格。
 
 
 - `new ValueTracker(initialValue)` —— `tracker.getValue()` / `tracker.setValue(v)` / `tracker.animateTo(target, { duration })`(返回 Animation,可 play)。
@@ -419,8 +371,7 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 6. **不要用未实现的**:`Intersection`/`Union`/`Exclusion`/`Difference`(布尔运算)、`set_fill_by_checkerboard`(用 `checkerboardColors` 选项替代)、`alwaysRedraw` 的每帧重算(用 `addUpdater`)。
 7. **解构行必须包含代码里用到的所有标识符**(不仅是 `params`):代码里出现 `params.lr`、`AnimationGroup`、`Write`、`BLUE_C`、`easeOut` 等任何从 ctx 取的名字,开头的 `const { scene, ..., params } = ctx;` 就必须列出它。**方向常量 `LEFT/RIGHT/UP/DOWN/UL/UR/DL/DR/ORIGIN/IN/OUT` 用到 `shift/nextTo/moveTo` 方向时必解构(高频漏,报 `LEFT is not defined`);颜色 `BLUE/RED/YELLOW/WHITE/...`、类名 `Dot/Line/Axes/...` 同理。** 漏了会 `ReferenceError: XXX is not defined`。**局部改(update_animation old_str/new_str)时若新代码引入了新标识符,务必同步加进解构行**(高频坑:加了 `new AnimationGroup(...)` 却没把 `AnimationGroup` 加进解构)。若该步无参数,就完全不要引用 `params`。
 8. **`new VGroup(...)` 不要在空/未填充时取中心或边界**:`vg.getCenter()`/`getBoundingBox()` 在 group 无子元素时抛 `cannot compute center of an empty group`。要么构造时直接传入子元素 `new VGroup(a, b, c)`,要么先 `vg.add(x)` 再取中心;不要 `new VGroup()` 后立刻 `getCenter()`。
-9. **代码是纯 JS,不是 TS——任何类型注解都会 `Unexpected token ':'` 直接报错**:禁止 `(x: number)`、`function f(a: number): any[]`、`const arr: any[] = []`、`x as number`、`interface`/`type` 声明、泛型 `<T>`。参数和变量一律不加类型,靠默认值/注释即可。这是高频错误,务必逐行检查有没有残留的 `: 类型`。
-10. **ValueTracker + addUpdater 必防首帧 NaN(高频,会让标签显示 "NaN°"、对象坐标变 NaN 被打回)**:
+9. **ValueTracker + addUpdater 必防首帧 NaN(高频,会让标签显示 "NaN°"、对象坐标变 NaN 被打回)**:
    - `new ValueTracker(初值)` **必须给初值**;创建后立刻 `scene.add(tracker)`(未 add 的 tracker 在 updater 首帧 `getValue()` 返回 undefined -> 级联 NaN)。
    - `mob.addUpdater(() => f(tracker.getValue()))` 里,`getValue()` 首帧可能未就绪 -> **必须兜底**:`const v = tracker.getValue() ?? 初值;`,用 v 参与运算,不要把 getValue() 直接喂给 Math.sin/cos/atan2/round/坐标。
    - **不要传 `params.xxx` 给函数却没在 set_step 的 params 里声明该字段**:`params.angle` 未声明 = undefined,进 `deg * Math.PI/180` = NaN。用到的 params 字段必须在 set_step 里声明;代码里读前可 `const a = params.angle ?? 0;` 兜底。
@@ -428,9 +379,9 @@ sceneCode 是一段 **JavaScript 函数体字符串**(纯 JS,不是 TypeScript!�
 10. **改透明度统一用 `setFillOpacity`,`setOpacity` 完全不要用**:实测 `setOpacity` **两处都报错**——普通 mobject 无此方法(`is not a function`)、`.animate.setOpacity` 转发时报 `AnimateProxy: method "setOpacity" not found`。改透明度:动画过渡用 `mob.animate.setFillOpacity(o)`,即时改用 `mob.setFillOpacity(o)` / `mob.setStrokeOpacity(o)` / `mob.opacity = o`。注意 `setStrokeOpacity` 只在普通 mobject 上(不能 `.animate.setStrokeOpacity`)。`withDuration` 是小写 `w`(不是 `WithDuration`)。
 11. **构图用相对定位,不要手算 `shift`/`moveTo` 世界坐标**:文字/标签/矩阵用 `mob.nextTo(ref, dir, buff)` 相对参照物定位(`dir` 用 `UP/DOWN/LEFT/RIGHT/UL..`,`buff` 用 `SMALL_BUFF`/`MED_SMALL_BUFF` 或 0.1-0.3);整组用 `new Group(a, b, c)` 或 `new VGroup(...)` 包起来再整体 `moveTo`/`toEdge`。**禁止靠 `toEdge(UP).shift([4.4, -0.55, 0])` 或 `moveTo([-5.4, 1.8, 0])` 这种硬算偏移凑位置**——画面会拥挤错位、易重叠(触发 BB 检测打回;报错会带文字坐标 `@(≈x,y)`,据此往反方向移)。
 12. **坐标轴(Axes)场景的轴标签/标注必须用轴的坐标系,不要用全局世界坐标**:`Axes` 旁边手动摆文字时,永远是 `label.nextTo(ax.c2p(x, y), dir, buff)`(`c2p` 把数据坐标转成轴内 world 坐标)或用 `ax.getAxisLabels(xLabel, yLabel)` 自动放;曲线上的点/标签也一样 `nextTo(ax.c2p(...))`。**禁止用 `moveTo`/`shift` 直接给一个全局数值坐标**——轴经过 `ax.shift(...)` 后全局原点变了,你手算的坐标几乎必然压在曲线/刻度/网格上,导致「文字与图形对象重叠」反复打回且越改越乱。以曲线 `curve` 上的 peak/trough 标注为例:`dot.nextTo(peakPoint, UP, 0.15)`、`label.nextTo(peakPoint, RIGHT, 0.2)`,`peakPoint` 来自 `ax.c2p(peakX, curveFn(peakX))`,不是手写数组。
-12. **三区分明 + 公式独占行**:画面分顶部标题、中部主体、底部说明三区,**同一区不要堆 3 个以上文字**;公式块(MathTex)单独占一行、用 `toEdge` 或 `nextTo` 与图形分开,**不要和图形/标签挤在同一位置**。临时说明文字(caption)切阶段时先 `await scene.play(new FadeOut(old))` 再进新的,不要同位叠放。
-13. **动画前对象必须先在场景里**:`ApplyFunction`/`Transform`/`.animate` 等动画只对**已在场景中的 mobject** 有效。`const x = obj.copy()` 复制出的副本若没 `scene.add(x)`(或经 `FadeIn`/`Create`/`GrowArrow` 进场),对其做动画**屏幕上看不到**——点会变但画面不变。**每次 `copy()` 出副本要立刻想着"它怎么进场景"**(`scene.add` 或进场动画),否则白做。典型坑:用副本演示"原图 → 变换后",原图和副本都要进场景,只进原图、对副本 ApplyFunction 就只看到原图不动。
-14. **`waitForRender()` 只用于公式对象**:只有 `MathTexImage`/`MathTex`/`Tex`/`Variable` 有此方法(异步 LaTeX 渲染需等待)。**`Text`/`Dot`/`Arrow`/`Line`/`Circle`/`VGroup` 等普通 mobject 没有 `waitForRender`**,对它们调会报 `Cannot read properties of undefined (reading 'waitForRender')`。公式才 `await eq.waitForRender()` 后再 `scene.add`/`play`;Text 等直接 `scene.add`,不要 waitForRender。
+13. **画面布局清晰不拥挤**:别把所有文字/公式堆在一起压到图形上——用相对定位分散摆放、留出间距,让每处标注都独立可读。公式块别和图形/标签挤同一位置;临时说明文字切换阶段时先淡出旧的再进新的,不要同位叠放。具体怎么排(上下/左右/分区)由你按画面定。
+14. **动画前对象必须先在场景里**:`ApplyFunction`/`Transform`/`.animate` 等动画只对**已在场景中的 mobject** 有效。`const x = obj.copy()` 复制出的副本若没 `scene.add(x)`(或经 `FadeIn`/`Create`/`GrowArrow` 进场),对其做动画**屏幕上看不到**——点会变但画面不变。**每次 `copy()` 出副本要立刻想着"它怎么进场景"**(`scene.add` 或进场动画),否则白做。典型坑:用副本演示"原图 → 变换后",原图和副本都要进场景,只进原图、对副本 ApplyFunction 就只看到原图不动。
+15. **`waitForRender()` 只用于公式对象**:只有 `MathTexImage`/`MathTex`/`Tex`/`Variable` 有此方法(异步 LaTeX 渲染需等待)。**`Text`/`Dot`/`Arrow`/`Line`/`Circle`/`VGroup` 等普通 mobject 没有 `waitForRender`**,对它们调会报 `Cannot read properties of undefined (reading 'waitForRender')`。公式才 `await eq.waitForRender()` 后再 `scene.add`/`play`;Text 等直接 `scene.add`,不要 waitForRender。
 
 ═══════════════════════════════════════════
 四、FEW SHOT(实测可运行的写法,照此模板)
@@ -736,7 +687,6 @@ const axes = new ThreeDAxes({
 - 主体图形 strokeWidth 3-4;辅助线/标注 1-2 且用中性或浅色。
 - **布局与层级(信息一眼可读)**:一图一主题,标题/轴标签/公式/主体分区摆放、留白、别贴边被裁切;字号分级(标题 > 轴标签/公式 > 说明);每步给一句话关键标注(概念名/公式/结论),别为凑数堆文字。
 - **每步建议有文字标注**(显示关键概念名/公式/轴标签,帮助理解),但不要为凑数堆砌——画面简洁清晰优先。中文 Text 必带 fontFamily。数学公式另用 MathTex/Tex(见下)。
-- 动画节奏**按需**:简单概念不必硬拆多步,但**进场别只用裸 `Create`/`FadeIn`**——文字/公式用 `Write`、向量用 `GrowArrow`、几何形用 `DrawBorderThenFill`,关键量用 `Indicate`/`Circumscribe` 强调(见 API REF 动画段 + 编排与节奏)。多元素进场用 `AnimationGroup`/`LaggedStart` 错峰,别一次性 `scene.add` 瞬切。需要分步演示的才用多个 `await scene.play(...)`;不要只画静态图(除非该步本就是静态结论)。
 - 3D 场景的标题/标注用 `scene.addFixedInFrameMobjects(text)` 钉到屏幕帧;3D 对象(Dot3D/Sphere/Arrow3D)直接 `scene.add`。
 - 涉及曲面/立体/三维空间(二次曲面、梯度下降损失面、向量三维、球体)用 ThreeDScene + Surface3D/Sphere/Arrow3D;其余用 2D Scene + Axes。
 - 变量名 camelCase。可调参数用 `params.<name>`,在 params 数组里给出 min/max/step/default。
@@ -760,10 +710,8 @@ def _split_step_prompt() -> dict:
         e = marks.get(next_key, len(lines))
         return "\n".join(lines[s:e]).rstrip()
     return {
-        "scenecode_intro": block("一、", "二、"),
         "api_ref": block("二、", "三、"),
         "runtime_rules": block("三、", "四、"),
-        "few_shot": block("四、", "五、"),
         "teaching_norms": block("五、", None),
     }
 
@@ -771,7 +719,6 @@ def _split_step_prompt() -> dict:
 _BLOCKS = _split_step_prompt()
 API_REF_BLOCK = _BLOCKS["api_ref"]
 RUNTIME_RULES_BLOCK = _BLOCKS["runtime_rules"]
-FEWSHOT_BLOCK = _BLOCKS["few_shot"]
 TEACHING_NORMS_BLOCK = _BLOCKS["teaching_norms"]
 
 
@@ -781,32 +728,10 @@ TEACHING_NORMS_BLOCK = _BLOCKS["teaching_norms"]
 #   • 自建 scene:代码可 `new Scene(container,{相机/3D})` / `new ThreeDScene(container,...)`,
 #     运行时给真 #container 并把 manim-web 全部导出铺到全局,import 也可用(会被剥掉)。
 # 仍保留注入 scene 的默认写法(暂停/断点依赖);需要相机/3D/PiP 时才自建。
-RUNTIME_POWER_BLOCK = """═══ 运行环境新能力(重要,别被旧规矩吓退)═══
-• 你现在可以写 TS 类型注解(如 `const dots: Dot[] = []`、`(x: number)`、`x as T`)——
-  运行时会在执行前自动剥掉类型转成纯 JS,不会再整段报错。但别依赖它:写出清晰 JS 更省 token、更稳。
-• 你现在可以自建 scene:需要相机/3D/视角/PiP 时,直接在代码里 `new ThreeDScene(container, {...})`
-  或 `new Scene(container, {...})` 自己建(container 由运行时提供,manim-web 全部导出已铺到全局,
-  也能用 import 语法——import 会被剥掉但名字仍可用)。默认仍推荐用注入的 `scene`(已帮你建好,
-  且附带段间暂停/断点功能);只在确实要自定义相机/多视角/3D 轨道时才自建。
+RUNTIME_POWER_BLOCK = """
+• 你可以自建 scene:需要相机/3D/视角/PiP 时,直接在代码里 `new ThreeDScene(container, {...})`
+  或 `new Scene(container, {...})` 自己建。
 • 官方 manim-web 示例(下方"官方示例参考")就是"自建 scene + 可能写 TS"的写法,可照抄其 API 用法。
-
-═══ 可交互对象(产品卖点,让"学生动手"而非只看;能加就加)═══
-manim-web 支持真·浏览器交互,运行时已全量暴露。适合"这一镜让学生自己拖/点/选"时主动用:
-- **拖拽看变化**(首选):`makeDraggable(mob, scene, {onDrag:(m,p)=>{...更新联动对象...}, constrainX:[min,max]})`
-  例:拖一个点沿 x 轴走,onDrag 里用它更新曲线/切线/角度,联动对象实时重算。
-- **点击触发**:`makeClickable(mob, scene, {onClick:()=>{ m.setColor(...); 或切到下一状态 }})`
-  例:做成"选项按钮",点哪个哪个高亮/变成被选态。
-- **滑块实时调参**(已有 params 滑块之外,可再加):`const t=new ValueTracker(v); mob.addUpdater(m=>m.moveTo(f(t.getValue()))); scene.add(t); await scene.play(t.animateTo(...))`。
-纪律:先 `scene.add(mob)` 再 `makeClickable/makeDraggable`(它们给 canvas 挂事件,不影响动画本身);
-交互回调只能即时改(变色/位移/换参数),不要在回调里 `await scene.play`。一个镜里 1-3 个交互点就够,别堆。
-
-═══ 分镜导演权(你是导演,别一段平铺到底)═══
-这一镜由你决定"怎么讲",要有起承转合,不要一次把所有对象全 add 成静态图:
-- 自己规划 **2-4 个镜头(shot)**:① 先亮主画面 → ② 关键部分出现/强调 → ③ 推进一步/对比/变换 → ④ 结论并让结果"活"着。
-- 每镜用 `await scene.play(...)` 推进;同一步骤里用 `AnimationGroup`(错峰)/`Succession`(严格先后)编排,别一次 `scene.add` 全放上去。
-- 每镜该强调的关键量用 `Indicate`/`Circumscribe`;阶段间 `await scene.wait(0.3-0.6)` 留白。
-- 需要对比/分屏时,可以自建 scene,或把多个对象用 `VGroup` 分列到上下/左右。
-- 写代码前先在意图里想好"这镜 2-3 个镜头分别展示什么",再逐镜写 play。
 """
 
 
@@ -917,134 +842,8 @@ def generate_step(
     return raw
 
 
-# ---------- 单步场景代码生成(供前端 manim-web 动态执行)----------
-
-SCENE_SYSTEM_PROMPT = """你是一个 manim-web(浏览器版 Manim,TypeScript)动画代码生成器。
-给定一个知识点的某一步讲解,生成在浏览器里用 manim-web 绘制该步核心图形的 JS 代码。
-
-代码格式(严格遵守):
-- 输出 JS 函数体(不要 function 包裹,不要 export,不要反引号代码块)。
-- 开头解构:`const { scene, Axes, Dot, Line, Text, Arrow, ValueTracker, Create, FadeIn, Transform, VGroup, Circle, Square, NumberPlane, MathTex, ThreeDAxes, ThreeDScene, Sphere, Cube, Cylinder, Surface3D, Dot3D, Line3D, Arrow3D, params } = ctx;`(只解构用到的)。
-- 必须调 scene.add(...)。可多个 await scene.play(...) 做**多步动画**(先画主体→再标注→再高亮/变换),让动画有节奏。
-- 坐标 2D 用 [x,y,0];3D 用 [x,y,z]。颜色用 CSS 字符串。
-- params 是 {name: value},用 params.xxx 读。
-- 不要 try/catch、console.log、import。
-- **数学公式用 `MathTex`/`Tex`**(真 LaTeX,ctx 已提供),不要把公式塞进 Text;Text 只用于普通文字/标注。MathTex 用前 `await eq.waitForRender()`。
-
-视觉要求(重要,避免简陋):
-- 配色可丰富(多色区分元素/曲线/对比),**背景跟随当前主题(深/浅都可能),文字/主体与背景高对比**(浅背景避免白/浅字、深背景避免黑字);主体 strokeWidth 3-4,辅助中性。
-- 主体图形 strokeWidth 3-4;辅助线/标注 strokeWidth 1-2 且用中性色。
-- **每步代码必须包含至少 1 个 Text 作为标题或标注**(显示该步关键概念名/公式/坐标轴标签),不能只画几何图形没有文字。所有 Text 必须带 fontFamily: '"Times New Roman","SimSun",serif',否则中文不显示。文字 fontSize 0.25-0.4,用与背景**高对比**的强调色让标注醒目(深背景用亮色、浅背景用深/浓色,别用会被压暗的白字)。
-- 用 VGroup 分组相关元素,一起 Create 或 FadeIn。
-- 至少 2 个 play 步骤(如:Create 主体 → FadeIn 标注),不要只画静态图。
-
-何时用 3D:知识点涉及曲面、立体、三维空间(如二次曲面、梯度下降损失曲面、向量三维、球体)时,用 ThreeDAxes + Surface3D/Sphere 等。其余用 2D Axes。
-**3D 场景的文字标签**:3D 场景里 Text 默认朝向固定,可能看不见。用 `scene.addFixedInFrameMobjects(text)` 把文字固定到屏幕帧(不受 3D 相机影响),而非 `scene.add(text)`。3D 场景的文字位置用屏幕坐标(如 [0, 3.5, 0] 顶部)。
-
-可用 API 真实签名(务必遵守):
-2D:
-- new Axes({ xRange:[min,max,step], yRange:[min,max,step], xLength, yLength, axisConfig:{color,strokeWidth} })
-- axes.plot(fn, { xRange:[min,max], color, strokeWidth }) -> 曲线
-- axes.c2p(x,y) -> [x,y,0]
-- new Dot({ point:[x,y,0], radius, color }); new Line({ start:[x,y,0], end:[x,y,0], color, strokeWidth })
-- new Arrow({ start:[x,y,0], end:[x,y,0], color, strokeWidth })  // 带箭头
-- new Circle({ radius, color, fillOpacity }); new Text({ text:"...", fontSize, color, fontFamily }) // text 必填;**必须**带 fontFamily: '"Times New Roman","SimSun",serif'(否则中文不显示)
-- mob.moveTo([x,y,0]); new VGroup(...mobs)
-3D:
-- new ThreeDAxes({ xRange:[min,max,step], yRange, zRange, axisColor, showLabels:true })
-- new Surface3D({ func:(u,v)=>[x,y,z], uRange:[min,max], vRange:[min,max], uResolution:32, vResolution:32, color, opacity })
-- new Sphere({ radius, color, center:[x,y,z] }); new Cube({ sideLength, color }); new Dot3D({ point:[x,y,z], radius, color })
-- new Line3D({ start:[x,y,z], end:[x,y,z], color }); new Arrow3D({ start:[x,y,z], end:[x,y,z], color })
-通用:
-- scene.add(...mobs); await scene.play(new Create(mob)); await scene.play(new FadeIn(mob)); await scene.play(new Transform(a,b))
-- new ValueTracker(v); tracker.getValue(); tracker.setValue(v); mob.addUpdater(()=>{...})
-
-示例1 —— 2D 函数图 + 标注点 + 高亮(蓝色系):
-const { scene, Axes, Dot, Text, Arrow, Create, FadeIn, VGroup, params } = ctx;
-const axes = new Axes({ xRange: [-4,4,1], yRange: [0,6,1], xLength: 10, yLength: 4, axisConfig: { color: "#2b3a52", strokeWidth: 2 } });
-const curve = axes.plot((x) => 0.5*(x-1)**2, { xRange: [-3.5,3.5], color: "#4a9eff", strokeWidth: 3 });
-const x = params.x ?? -2.5;
-const dot = new Dot({ point: axes.c2p(x, 0.5*(x-1)**2), radius: 0.1, color: "#5fb0ff" });
-const label = new Text({ text: "当前点", fontSize: 0.25, color: "#a8c8e8", fontFamily: '"Times New Roman","SimSun",serif' });
-label.nextTo ? null : label.moveTo(axes.c2p(x, 0.5*(x-1)**2)).shift([0.3,0.3,0]);
-const arrow = new Arrow({ start: axes.c2p(x,0), end: axes.c2p(x, 0.5*(x-1)**2), color: "#9aa6b8", strokeWidth: 2 });
-scene.add(axes, curve);
-await scene.play(new Create(curve));
-await scene.play(new FadeIn(new VGroup(dot, arrow, label)));
-
-示例2 —— 3D 抛物曲面(蓝色系,带轴):
-const { scene, ThreeDAxes, Surface3D, Text, Create, FadeIn } = ctx;
-const axes = new ThreeDAxes({ xRange: [-3,3,1], yRange: [-3,3,1], zRange: [0,8,1], axisColor: "#2b3a52", showLabels: true });
-const surf = new Surface3D({
-  func: (u, v) => [u, v, 0.3*(u*u + v*v)],
-  uRange: [-3, 3], vRange: [-3, 3], uResolution: 32, vResolution: 32,
-  color: "#4a9eff", opacity: 0.85,
-});
-const title = new Text({ text: "z = x² + y²", fontSize: 0.35, color: "#a8c8e8", fontFamily: '"Times New Roman","SimSun",serif' });
-title.moveTo([0, 3.5, 0]);
-scene.add(axes, surf, title);
-await scene.play(new Create(surf));
-await scene.play(new FadeIn(title));
-
-现在为下面这一步生成代码。只输出函数体,不要任何解释。"""
 
 
-def generate_scene_code(
-    step: dict,
-    params: Optional[list] = None,
-    client: Optional["OpenAI"] = None,
-    cfg: Optional[LLMConfig] = None,
-    prev_error: Optional[str] = None,
-) -> str:
-    """为某一步生成 manim-web 场景代码(函数体字符串)。
-
-    prev_error 非空时,提示 LLM 上次代码报错,要求修正。
-    """
-    cfg = cfg or _get_runtime_cfg()
-    # 只传该步实际用到的参数(paramsUsed),并强调代码必须用 params.<name> 读取
-    used_names = step.get("paramsUsed") or []
-    used_params = [p for p in (params or []) if p.get("name") in used_names]
-    param_desc = ""
-    if used_params:
-        lines = "\n".join(f'  - params.{p["name"]} : {p["label"]}, 当前值 {p["default"]}, 范围 [{p["min"]}, {p["max"]}]' for p in used_params)
-        param_desc = (
-            f"\n本步绑定的可调参数(代码中**必须**用 params.<name> 读取这些值,用户会用滑块实时调整,代码要据此画图):\n{lines}\n"
-            f"注意:不要用硬编码常量代替这些参数,必须写 params.{used_params[0]['name']} 等。\n"
-        )
-    user = (
-        f"知识点步骡:\n"
-        f"标题: {step.get('title','')}\n"
-        f"动画意图: {step.get('intent','')}\n"
-        f"公式: {step.get('formula','')}\n"
-        f"{param_desc}\n"
-    )
-    if prev_error:
-        user += f"\n上一次生成的代码执行报错:{prev_error}\n请修正这个错误,重新生成。"
-    raw = _call_llm_text(user, cfg, client)
-    return _clean_code(raw)
-
-
-def _call_llm_text(prompt: str, cfg: LLMConfig, client: Optional["OpenAI"] = None) -> str:
-    """调 LLM 返回纯文本(非 JSON),用于场景代码生成。带模型回退。"""
-    if client is None and OpenAI is not None:
-        client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key or "dummy")
-    models = [cfg.model] + ([cfg.model_fallback] if cfg.model_fallback else [])
-    last_err = None
-    for m in models:
-        try:
-            resp = client.chat.completions.create(
-                model=m,
-                messages=[
-                    {"role": "system", "content": SCENE_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
-            return resp.choices[0].message.content or ""
-        except Exception as e:
-            last_err = e
-            continue
-    raise RuntimeError(f"场景代码生成失败:{last_err}")
 
 
 def _call_vision_llm(prompt: str, image_base64: str, cfg: "LLMConfig") -> str:
@@ -1075,28 +874,6 @@ def _call_vision_llm(prompt: str, image_base64: str, cfg: "LLMConfig") -> str:
         return ""
 
 
-def _clean_code(raw: str) -> str:
-    """剥离可能的 ```js 代码块标记和 function 包裹。"""
-    s = raw.strip()
-    # 去代码块围栏
-    if s.startswith("```"):
-        lines = s.split("\n")
-        # 去首行 ```js 和末行 ```
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        s = "\n".join(lines)
-    # 去 function 包裹(若 LLM 写了)
-    if "function" in s.split("\n")[0]:
-        # 尽量取花括号内的函数体
-        import re
-        m = re.search(r"\{([\s\S]*)\}\s*$", s)
-        if m:
-            s = m.group(1)
-    return s.strip()
-
-
 # ---------- LangChain/LangGraph tool 包装(可选,框架存在时才生效)----------
 
 def as_langchain_tool():
@@ -1122,19 +899,3 @@ def as_langchain_tool():
     return _generate_lesson_tool
 
 
-# ---------- 供其他框架直接引用的工具描述(OpenAI function-calling 格式)----------
-
-def as_openai_function() -> dict:
-    """返回 OpenAI function-calling 格式的工具描述,供 OpenAI Agents SDK 等使用。"""
-    return {
-        "name": "generate_lesson",
-        "description": "根据 STEM 知识点问题(可附文件文本)生成可交互教学动画脚本(Lesson JSON)",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "question": {"type": "string", "description": "用户要学的知识点或问题"},
-                "file_text": {"type": "string", "description": "可选:用户上传文件的文本内容"},
-            },
-            "required": ["question"],
-        },
-    }
