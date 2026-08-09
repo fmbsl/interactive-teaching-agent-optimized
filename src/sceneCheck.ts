@@ -74,6 +74,8 @@ export function detectTsSyntax(code: string): string {
 //     (实测"高度=1/ε"标签 bbox 高≈5.7 world 单位),当重叠目标必然误报;
 //   - 组合/VGroup(自身无几何点 + 有子对象):bbox 是子对象并集大包络(如 getAxisLabels
 //     轴标签组,实测 bbox 罩住右上角),文字压"空角落"也误报且挪不动;
+//   - 坐标轴/数平面(c2p/p2c)整棵子树:轴线/刻度/网格全是细线条,轴占大片绘图区,
+//     画面底部字幕贴在线下就被误报(实测"图形(4顶点)@(0,-2.7)"即 x 轴线);
 //   - 整屏大背景(bbox 面积 > 45% 画布):文字压上去是正常布局。
 // 保留:实心图形(圆/矩形/多边形/点) + 文字-文字,这两类 bbox 可靠且重叠真有意义。
 export function detectOverlap(scene: any): string {
@@ -110,13 +112,17 @@ export function detectOverlap(scene: any): string {
   };
 
   const mobs: {
-    label: string; isText: boolean; isAxes: boolean;
+    label: string; isText: boolean;
     c: { x: number; y: number };
     b: { min: { x: number; y: number }; max: { x: number; y: number } };
   }[] = [];
   try {
     const collect = (m: any) => {
       if (!m) return;
+      // 坐标轴/数平面(c2p/p2c 坐标<->点转换)占据大片绘图区,内部全是轴线/刻度/网格等
+      // 坐标机制——整棵子树都不作重叠目标。否则轴内的 4 顶点薄矩形线会漏成"图形(4顶点)",
+      // 画面底部字幕自然贴在线下就被误报(实测 δ 逼近场景 "图形(4顶点)@(0,-2.7)" 即 x 轴线)。
+      if (typeof m.c2p === "function" || typeof m.p2c === "function") return;
       const subs = m.submobjects || m._submobjects;
       let bb: any = null, c: any = null;
       try { bb = m.getBoundingBox?.(); } catch { /* ignore */ }
@@ -126,19 +132,17 @@ export function detectOverlap(scene: any): string {
         const minY = c[1] - bb.height / 2, maxY = c[1] + bb.height / 2;
         if (maxX > minX && maxY > minY) {
           const isText = typeof m.getText === "function" || typeof m._text === "string";
-          // 坐标轴/数平面特有 c2p/p2c(坐标<->点转换),用它识别以忽略"轴标签相邻"误报(构造名被压缩,不能靠 name 判)
-          const isAxes = typeof m.c2p === "function" || typeof m.p2c === "function";
           if (isText) {
             let label = "文字";
             try { const tx = m.getText?.(); if (typeof tx === "string") label = `文字“${tx.slice(0, 8)}”`; } catch { /* ignore */ }
-            mobs.push({ label, isText, isAxes, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
+            mobs.push({ label, isText, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
           } else {
             const cl = classify(m, bb.width, bb.height);
             // skip 只是不把该 mobject 作为重叠目标(组/曲线/公式/线/背景),
             // 不能 return——否则连子对象遍历也跳过,组里实心图形就漏检了
             if (!cl.skip) {
               const cx = c[0].toFixed(1), cy = c[1].toFixed(1);
-              mobs.push({ label: `${cl.label}@(${cx},${cy})`, isText, isAxes, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
+              mobs.push({ label: `${cl.label}@(${cx},${cy})`, isText, c: { x: c[0], y: c[1] }, b: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } });
             }
           }
         }
@@ -181,10 +185,10 @@ export function detectOverlap(scene: any): string {
       addReport(`${texts[i].label} 与 ${texts[j].label} 重叠:建议往${r.dirCn}移 ${r.dist.toFixed(2)}`, texts[i], texts[j]);
     }
   }
-  // Text 与非 Text 重叠(文字压在实心图形上),但忽略 axes(坐标轴常与标签相邻)
+  // Text 与非 Text 重叠(文字压在实心图形上);坐标轴子树已整体排除,不参与
   for (const t of texts) {
     for (const m of mobs) {
-      if (m.isText || m.isAxes) continue;
+      if (m.isText) continue;
       if (!hit(t, m)) continue;
       const r = sep(t, m);
       addReport(`${t.label}@(≈${t.c.x.toFixed(1)},${t.c.y.toFixed(1)}) 压住 ${m.label}:建议往${r.dirCn}移 ${r.dist.toFixed(2)}`, t, m);
