@@ -80,6 +80,7 @@ def _endpoint_to_cfg(ep: dict) -> LLMConfig:
         fallback_base_url=ep.get("fallbackBaseUrl") or None,
         fallback_api_key=ep.get("fallbackApiKey") or None,
         supports_vision=bool(ep.get("supportsVision", False)),
+        reasoning_effort=ep.get("reasoningEffort", "high") or "high",
     )
 
 

@@ -5,7 +5,6 @@ import StagePanel from "./components/StagePanel";
 import ExplainPanel from "./components/ExplainPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import GraphApp from "./graph/GraphApp";
-import MermaidPanel from "./components/MermaidPanel";
 import { applyTheme, applyCustomCss, type ThemeId } from "./theme";
 import { Settings } from "lucide-react";
 
@@ -129,7 +128,6 @@ function AppShell() {
           {([
             { v: "animation", label: "动画", tip: "中间舞台显示动画" },
             { v: "graph", label: "分解", tip: "中间舞台显示知识分解图" },
-            { v: "mermaid", label: "图示", tip: "中间舞台显示 mermaid 图(流程/结构/关系类知识点)" },
           ] as const).map((b) => (
             <button
               key={b.v}
@@ -171,7 +169,7 @@ function AppShell() {
           title="拖拽调整左栏宽度"
         />
         <section className="min-h-0 overflow-hidden bg-[var(--bg-1)]/60 backdrop-blur-md relative panel-anim">
-          {view === "graph" ? <GraphApp visible={true} embedded /> : view === "mermaid" ? <MermaidPanel /> : <StagePanel />}
+          {view === "graph" ? <GraphApp visible={true} embedded /> : <StagePanel />}
         </section>
         {/* 右 splitter:拖拽改右栏宽 */}
         <div
@@ -188,8 +186,8 @@ function AppShell() {
       <footer className="flex items-center gap-3 px-5 h-7 border-t border-[var(--border)] panel text-[10px] text-[var(--text-mute)] shrink-0">
         <span className="flex items-center gap-1.5"><span className="w-1 h-1 rounded-full bg-[var(--blue)]/60" />编排:主agent → 拆解 → 生成 → 校验</span>
         <span className="text-[var(--border)]">·</span>
-        <span>数学/物理 → manim · 流程/结构 → mermaid</span>
-        <span className="ml-auto text-[var(--text-faint)]">manim-web · React 19 · KaTeX · Mermaid</span>
+        <span>数学/物理/几何 → manim 动画</span>
+        <span className="ml-auto text-[var(--text-faint)]">manim-web · React 19 · KaTeX</span>
       </footer>
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}

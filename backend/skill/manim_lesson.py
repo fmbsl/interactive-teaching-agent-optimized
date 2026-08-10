@@ -63,6 +63,10 @@ class LLMConfig:
     # 主模型是否支持图像输入(视觉)。true→update_animation 通过后可把最后一帧 base64
     # 随消息给主模型自检;false→走单独配置的视觉辅助模型(_get_vision_cfg)。
     supports_vision: bool = False
+    # step_agent 的推理强度:low/medium/high,或 ""/"off" 关闭 thinking。
+    # deepseek-v4-flash 上 high 每轮 LLM 调用多 ~15s(思考 token)+ 输出更长 → 一步生成慢;
+    # low 显著提速但代码更短/动画更简(浏览器在环验证仍兜底)。按接入点配置,设置面板可调。
+    reasoning_effort: str = "high"
 
 
 def _default_config() -> LLMConfig:

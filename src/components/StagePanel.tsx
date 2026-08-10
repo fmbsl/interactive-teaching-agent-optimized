@@ -53,9 +53,6 @@ export default function StagePanel() {
   // 自管 scene:根据 sceneCode 是否含 3D 类,创建 Scene 或 ThreeDScene(带 3D 相机+OrbitControls+光照)。
   const [scene, setScene] = useState<InstanceType<typeof Scene> | null>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 420 });
-  // 断点进度:breakpoints=该步动画的断点总数(预扫 await scene.play/wait 估);currentBp=已到达的断点序号(1-based)
-  const [breakpoints, setBreakpoints] = useState(0);
-  const [currentBp, setCurrentBp] = useState(0);
   // 动画导出:截图(即时)/ 录制 WebM(MediaRecorder,点击开始→再点停止并下载)
   const [recording, setRecording] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -105,6 +102,32 @@ export default function StagePanel() {
     } catch { /* 不支持则静默 */ }
   };
   const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled, theme } = useApp();
+
+  // 参数调整消抖 + 调完自动播放:
+  // paramKey(JSON 化 paramValues)变化 → 停稳 350ms 后才重建一次场景(滑块拖动不每 tick 全量重绘);
+  // 重建前设 autoPlayRef,让这次重建跑完直接自动播放(不再停在首段)。
+  // 仅"用户拖滑块"触发的 paramValues 变化才消抖重建;切步/切会话的 paramValues 变化由各自 dep 触发,
+  // 不应再重建/自动播(否则切步会多一次重建 + 莫名自动播放)。
+  const paramKey = JSON.stringify(paramValues);
+  const [paramRebuildKey, setParamRebuildKey] = useState(0);
+  const paramTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoPlayRef = useRef(false);
+  const paramEditedRef = useRef(false);
+  const handleParamEdit = () => { paramEditedRef.current = true; };
+  const prevParamKeyRef = useRef(paramKey);
+  useEffect(() => {
+    const prev = prevParamKeyRef.current;
+    prevParamKeyRef.current = paramKey;
+    if (prev === paramKey) return; // 首次挂载/无变化不重建
+    if (!paramEditedRef.current) return; // 非滑块来源(切步/切会话):交给各自 dep,不消抖重建
+    paramEditedRef.current = false;
+    if (paramTimerRef.current) clearTimeout(paramTimerRef.current);
+    paramTimerRef.current = setTimeout(() => {
+      autoPlayRef.current = true; // 参数调整完 → 自动播放
+      setParamRebuildKey((k) => k + 1);
+    }, 350);
+    return () => { if (paramTimerRef.current) clearTimeout(paramTimerRef.current); };
+  }, [paramKey]);
 
   // 当前步骤标题/序号标签:字符串 stepId(topicid-N,新流程)从 topics 找;数字从 lesson.steps 找
   // lesson 可能为 null(分解建的空 session),此时用空数组兜底
@@ -156,8 +179,6 @@ export default function StagePanel() {
   // "下一段"(⏭)= stepOnce=true,只走一段到下个断点再停。
   const pauseCtrl = useRef<{ paused: boolean; resume: (() => void) | null; stepOnce: boolean }>({ paused: true, resume: null, stepOnce: false });
   const waitIfPaused = async () => {
-    // 进入一个断点:序号 +1(1-based)。用函数式更新避免并发重复加。
-    setCurrentBp((n) => n + 1);
     // stepOnce:被"下一段"唤醒后,只走这一段,到这里重新挂起(单步推进语义)
     if (pauseCtrl.current.stepOnce) {
       pauseCtrl.current.stepOnce = false;
@@ -169,14 +190,13 @@ export default function StagePanel() {
       await new Promise<void>((resolve) => { pauseCtrl.current.resume = resolve; });
     }
   };
-  const paramKey = JSON.stringify(paramValues); // 参数变化触发场景重建
 
   // 浏览器在环验证:收到 verifyRequest 时,在临时 scene 上跑 code,成功/失败回报给后端 agent
   useEffect(() => {
     if (!verifyRequest) return;
     let disposed = false;
     (async () => {
-      const { code } = verifyRequest;
+      const { code, myRun } = verifyRequest;
       const offscreen = document.createElement("div");
       offscreen.style.cssText = "position:absolute;left:-9999px;top:0;width:800px;height:450px;";
       document.body.appendChild(offscreen);
@@ -188,9 +208,9 @@ export default function StagePanel() {
           const rr = await execScript(cc, code, 30000);
           if (disposed) return;
           if (!rr.ok) throw new Error(rr.error);
-          reportVerifyResult(true, "");
+          reportVerifyResult(true, "", "", myRun);
         } catch (e: any) {
-          if (!disposed) reportVerifyResult(false, String(e?.message || e));
+          if (!disposed) reportVerifyResult(false, String(e?.message || e), "", myRun);
         } finally {
           offscreen.remove();
         }
@@ -217,26 +237,26 @@ export default function StagePanel() {
         // → 主舞台 build 失败 → 回退默认场景。这里主动查 getRenderError(),把 MathJax 失败暴露给 agent 自修。
         const texErr = detectMathTexError(s);
         if (texErr) {
-          reportVerifyResult(false, `公式渲染失败(MathJax 字体异步加载问题,改用 MathTexImage 或简化 LaTeX 避开 \\overrightarrow/\\mathcal 等需动态字体的命令):${texErr}`);
+          reportVerifyResult(false, `公式渲染失败(MathJax 字体异步加载问题,改用 MathTexImage 或简化 LaTeX 避开 \\overrightarrow/\\mathcal 等需动态字体的命令):${texErr}`, "", myRun);
           return;
         }
         // NaN 检测(硬错误,不受 BB 开关控制):标签/坐标含 NaN -> 打回自修
         const nan = detectNaN(s);
         if (nan) {
-          reportVerifyResult(false, nan);
+          reportVerifyResult(false, nan, "", myRun);
           return;
         }
         // 渲染成功后:2D BB 重叠检测(开关开且非 3D)
         if (bbCheckEnabled && !want3D) {
           const overlap = detectOverlap(s);
           if (overlap) {
-            reportVerifyResult(false, `文字/形状重叠:${overlap}`);
+            reportVerifyResult(false, `文字/形状重叠:${overlap}`, "", myRun);
             return;
           }
           // 文字/标注越界检测:文字飘出画布边缘被裁 → 打回自修
           const ob = detectOutOfBounds(s);
           if (ob) {
-            reportVerifyResult(false, ob);
+            reportVerifyResult(false, ob, "", myRun);
             return;
           }
         }
@@ -250,9 +270,9 @@ export default function StagePanel() {
             if (cv && cv.toDataURL) frame = cv.toDataURL("image/png");
           } catch { /* 截帧失败:降级无 frame,不阻塞验证通过 */ }
         }
-        reportVerifyResult(true, "", frame);
+        reportVerifyResult(true, "", frame, myRun);
       } catch (e: any) {
-        if (!disposed) reportVerifyResult(false, String(e?.message || e));
+        if (!disposed) reportVerifyResult(false, String(e?.message || e), "", myRun);
       } finally {
         try { (s as any).dispose?.(); } catch { /* ignore */ }
         offscreen.remove();
@@ -275,6 +295,9 @@ export default function StagePanel() {
   // 超过上限后即便代码仍报错也直接回退默认场景,不再调后端——点回已访问步秒回,不重新生成。
   const regenCountByStepRef = useRef<Record<number, number>>({});
   useEffect(() => {
+    // 参数调整完的自动播放标志:消抖定时器触发重建前置 true,本次 build 跑完直接播(不停首段)
+    const autoPlay = autoPlayRef.current;
+    autoPlayRef.current = false;
     const selfBuild = sceneCode ? isSelfBuildCode(sceneCode) : false;
     const s = scene;
     // 注入 scene 路径需要 scene;自建场景路径不需要(自己在 container 上建)
@@ -349,11 +372,13 @@ export default function StagePanel() {
               })();
             }
             buildDefaultScene(s);
+            if (autoPlay) setIsPlaying(true); // 参数调整完:默认场景也自动播(iterateRef 跑起来)
             return;
           }
         }
       }
       buildDefaultScene(s);
+      if (autoPlay) setIsPlaying(true); // 参数调整完:默认场景也自动播
     }
 
     /** 解析 CSS 变量为实际颜色值(供 manim-web/three 用——它们只认具体颜色,不认 var())。 */
@@ -446,12 +471,14 @@ function buildDefaultScene(s: any) {
       // 段间暂停:包装 scene.play / scene.wait,每个动画段播完后检查暂停标志。
       // 暂停态时阻塞(停在该段末尾),按"播放"resume 才继续下一段。LLM 代码不用改。
       // (验证离屏跑的是它自己的 makeManimCtx,不走这里,不受暂停影响。)
-      pauseCtrl.current.paused = true; // 每次 build 重置:首段播完即停
-      setIsPlaying(false);             // 重置/回到最初:按钮回到"▶ 播放"态(pauseCtrl 暂停但 isPlaying 之前可能 true)
-      // 断点进度:重置已到达序号 + 预扫断点数(每个 await scene.play/wait 算一个断点)
-      setCurrentBp(0);
-      const bpCount = (code.match(/\bawait\s+scene\.(play|wait)\s*\(/g) || []).length;
-      setBreakpoints(bpCount);
+      if (autoPlay) {
+        // 参数调整完:自动播放,首段不停,一路播到底
+        pauseCtrl.current.paused = false;
+        setIsPlaying(true);
+      } else {
+        pauseCtrl.current.paused = true; // 每次 build 重置:首段播完即停
+        setIsPlaying(false);             // 重置/回到最初:按钮回到"▶ 播放"态(pauseCtrl 暂停但 isPlaying 之前可能 true)
+      }
       const origPlay = s.play.bind(s);
       const origWait = s.wait.bind(s);
       s.play = async function (...anims: any[]) {
@@ -476,7 +503,7 @@ function buildDefaultScene(s: any) {
       cancelled = true;
       iterateRef.current = null;
     };
-  }, [scene, currentStep, stageResetKey, sceneCode, paramKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scene, currentStep, stageResetKey, sceneCode, paramRebuildKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 播放按钮触发迭代
   useEffect(() => {
@@ -578,33 +605,13 @@ function buildDefaultScene(s: any) {
             </label>
           </div>
         </div>
-        {/* 断点进度条:每个 ● 是一个 await scene.play/wait 断点;亮=已过,蓝=当前停住,暗=未到 */}
-        {breakpoints > 0 && (
-          <div className="flex items-center gap-1.5 px-0.5">
-            <span className="text-[9px] text-[var(--text-faint)] tnum shrink-0">{currentBp}/{breakpoints}</span>
-            <div className="flex-1 flex items-center gap-[3px] min-w-0">
-              {Array.from({ length: breakpoints }, (_, i) => {
-                const idx = i + 1;
-                const done = idx < currentBp;
-                const cur = idx === currentBp;
-                return (
-                  <span
-                    key={i}
-                    title={`断点 ${idx}`}
-                    className={`h-1.5 flex-1 rounded-full transition-colors ${done ? "bg-[var(--blue)]" : cur ? "bg-[var(--blue-strong)] shadow-[0_0_4px_var(--blue)]" : "bg-[var(--border)]"}`}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        )}
-        <ParamSliders />
+        <ParamSliders onEdit={handleParamEdit} />
       </div>
     </div>
   );
 }
 
-function ParamSliders() {
+function ParamSliders({ onEdit }: { onEdit: () => void }) {
   const { lesson, currentStep, topics, paramValues, setParam } = useApp();
   // 字符串 stepId(新 topic)从 topics 找 paramsUsed/params;数字(旧 lesson)从 lesson.steps
   // lesson 可能为 null(分解建的空 session,无知识点拆解),此时无 step/params,直接返回 null
@@ -630,7 +637,7 @@ function ParamSliders() {
             max={p.max}
             step={p.step}
             value={v}
-            onChange={(e) => setParam(p.name, parseFloat(e.target.value))}
+            onChange={(e) => { onEdit(); setParam(p.name, parseFloat(e.target.value)); }}
             className="flex-1"
           />
           <span className="w-10 text-right tnum text-[var(--blue-strong)]">{v.toFixed(2)}</span>

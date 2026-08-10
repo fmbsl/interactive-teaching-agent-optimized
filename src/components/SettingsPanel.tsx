@@ -7,6 +7,7 @@ import { Server, User, Paintbrush, Brain, SlidersHorizontal, Check } from "lucid
 const EMPTY: EndpointConfig = {
   id: "", name: "", baseUrl: "", apiKey: "", model: "",
   fallbackModel: "", fallbackBaseUrl: "", fallbackApiKey: "", supportsVision: false,
+  reasoningEffort: "high",
 };
 
 const EMPTY_VISION: EndpointConfig = {
@@ -401,6 +402,19 @@ function EditForm({
         />
         支持视觉(模型能直接看图;否则走"视觉辅助模型"描述画面)
       </label>
+      <div>
+        <label className="mb-0.5 block text-[10px] text-[var(--text-faint)]">动画生成推理强度(速度 vs 质量)</label>
+        <select
+          value={value.reasoningEffort || "high"}
+          onChange={(e) => onChange({ ...value, reasoningEffort: e.target.value })}
+          className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-3)] px-2 py-1.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--blue)]/50"
+        >
+          <option value="high">high · 最全但慢(每轮多~15s)</option>
+          <option value="medium">medium · 均衡</option>
+          <option value="low">low · 快(一步约减半)</option>
+          <option value="off">off · 最快(关闭思考,动画更简)</option>
+        </select>
+      </div>
       <div className="flex gap-2 pt-1">
         <button className="btn-blue px-3 py-1.5 rounded-md text-[11px] disabled:opacity-40" disabled={busy} onClick={onSave}>保存</button>
         <button className="btn-ghost px-3 py-1.5 rounded-md text-[11px]" onClick={onCancel}>取消</button>

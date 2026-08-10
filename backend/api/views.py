@@ -620,6 +620,7 @@ def render_result(request):
         ok = bool(body.get("ok", False))
         error = body.get("error", "") or ""
         frame = body.get("frame", "") or ""  # base64 PNG(无 data:image/png;base64, 前缀)
+        nonce = str(body.get("nonce", "") or "")  # render_request 事件带的 run nonce(精确 resume 对应 run)
     except Exception:
         return _streaming_response(iter([_sse("error", {"message": "参数解析失败"})]))
     if not sid or not step_id:
@@ -646,12 +647,12 @@ def render_result(request):
             frame_path = _os.path.join(frames_dir, f"step_{safe_id}.png")
         except Exception as e:
             dlog(f"FRAME_SAVE_FAIL sid={sid} step={step_id} err={e!r}")
-    dlog(f"RENDER_RESULT sid={sid} step={step_id} ok={ok} error={error!r} frame={'Y' if frame_path else 'N'}")
-    set_render_result(sid, step_id, ok, error, frame_path=frame_path)
+    dlog(f"RENDER_RESULT sid={sid} step={step_id} ok={ok} error={error!r} frame={'Y' if frame_path else 'N'} nonce={nonce!r}")
+    set_render_result(sid, step_id, ok, error, frame_path=frame_path, nonce=nonce)
 
     def gen_factory():
         try:
-            for ev in resume_step_agent(sid, step_id):
+            for ev in resume_step_agent(sid, step_id, nonce=nonce):
                 kind = ev.get("kind")
                 if kind in ("agent_start", "tool_call", "tool_result", "render_result", "error"):
                     yield ev

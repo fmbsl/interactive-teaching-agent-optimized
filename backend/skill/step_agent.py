@@ -58,7 +58,7 @@ STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知�
   - params:**仅当这一步确实需要用户交互调节参数时才给**(如"拖动看角度变化"),JSON 数组字符串,每项 `{{name,label,min,max,step,default}}`,如 `[{{"name":"lr","label":"学习率","min":0.01,"max":1,"step":0.01,"default":0.1}}]`。无需参数就传 `'[]'` 或省略,不要硬凑。
 - write(code):**首次写**完整动画代码(manim-web TS 函数体)到工作草稿。**只写不验证**,可先写一版再逐步改。仅在还没有代码、或要大范围重写时调用;已有代码的小改动用 patch。
 - patch(old_str, new_str):**修改**工作草稿,不触发验证。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进;old_str 可从你自己刚写的那版代码里原样复制一段,new_str 空串=删除),替换成 new_str 存回草稿。找不到/不唯一会报错——补几行上下文让它唯一。可连续 patch 多次,全部改完再统一 commit。想改的代码不在自己上下文里时,先 write 一版完整代码再 patch。
-- commit():把当前工作草稿的完整代码一次性送浏览器真渲染验证。返回 {{ok: true}} 渲染通过、动画**定稿**;{{ok: false, error}} 报错,草稿仍是你送检的那版,继续用 patch 改(改完再 commit)。**必须**在 write(或首次直接给完整代码)之后才能 commit。渲染失败不要整段重写,用 patch 只发改动片段(省 token),除非改动超约 1/3 或 patch 连续两次匹配不上才 write 整段。最多重试 12 次。
+- commit():把当前工作草稿的完整代码一次性送浏览器真渲染验证。返回 {{ok: true}} 渲染通过、动画**定稿**;{{ok: false, error}} 报错,草稿仍是你送检的那版,继续用 patch 改(改完再 commit)。**必须**在 write(或首次直接给完整代码)之后才能 commit。渲染失败不要整段重写,用 patch 只发改动片段(省 token),除非改动超约 1/3 或 patch 连续两次匹配不上才 write 整段。最多重试 12 次。**若渲染通过且标题/讲解都已设置,commit 会直接返回 FINISHED(本步已自动收尾,无需再调 finish);只有返回普通"通过"消息时才需要再调 finish。**
 - finish():所有字段就绪且动画已定稿(commit 返回 ok=true)后收尾。
 
 工具调用顺序自由发挥,不强制先设哪个。工作流:**write**(首次整段)→ 反复 `patch` 改 → `commit` 验证定稿 → `finish`。动画 code 必须经 commit 验证通过(ok=true)写入定稿才能 finish。
@@ -117,6 +117,14 @@ def _run_vision_check(frame_path: str, sid: str, step_id: int) -> str:
         import sys as _sys
         print(f"[vision] _run_vision_check 失败:{type(e).__name__}: {e}", file=_sys.stderr)
         return ""
+
+
+def _finish_ready(draft: dict) -> bool:
+    """commit 通过后是否已满足 finish 的全部条件(标题/讲解齐全 + 定稿与草稿一致)。
+    满足时 commit 直接返回 FINISHED 自动收尾,省掉 LLM 单独调 finish 的一轮调用(每步省一次往返)。
+    与 finish 工具的校验一致,避免"自动收尾但实际缺字段"的假完成。"""
+    return bool(draft.get("sceneCode") and draft.get("title") and draft.get("explanation")
+                and draft.get("draftCode") == draft.get("sceneCode"))
 
 
 def _build_tools(sid: str, step_id: int):
@@ -208,6 +216,9 @@ def _build_tools(sid: str, step_id: int):
             if vision_desc:
                 return (f"commit 通过,动画已定稿。视觉检查(辅助模型看最后一帧):{vision_desc}\n"
                         f"如发现文字重叠、动画没真正实现(关键对象没进场景/没动)、或效果差,**可再 patch 修改**(改完再 commit);否则可 finish。")
+            # 自动收尾:字段齐全 + 定稿一致 → 直接 FINISHED(视图层检测到该值即停 stream,省掉 finish 那轮 LLM 调用)
+            if _finish_ready(draft):
+                return "FINISHED"
             return "commit 通过,动画已定稿。可以继续设其它字段或 finish。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
         # waitForRender 错误常是 manim-web 内部抛的(非你代码直接调),给针对性指引
@@ -243,12 +254,16 @@ _SAVER = MemorySaver()  # 全局共享 checkpointer,按 thread_id 区分各 step
 
 def _build_agent(cfg: LLMConfig, sid: str, step_id: int):
     tools = _build_tools(sid, step_id)
-    model = ChatOpenAI(
-        base_url=cfg.base_url, api_key=cfg.api_key or "dummy",
-        model=cfg.model, temperature=0.7,
-        extra_body={"thinking": {"type": "enabled"}},
-        reasoning_effort="high",
-    )
+    # 推理强度按接入点配置(设置面板可调):deepseek 系用 thinking + reasoning_effort 控深度。
+    # high 每轮多 ~15s + 输出更长;low 大幅提速但代码更短/动画更简(浏览器在环验证仍兜底)。
+    # ""/"off"/"none" → 完全关闭 thinking(最快,质量下降明显)。
+    effort = (cfg.reasoning_effort or "high").strip().lower()
+    kwargs: dict = {"base_url": cfg.base_url, "api_key": cfg.api_key or "dummy",
+                    "model": cfg.model, "temperature": 0.7}
+    if effort not in ("off", "none", "disabled"):
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        kwargs["reasoning_effort"] = {"low": "low", "medium": "medium"}.get(effort, "high")
+    model = ChatOpenAI(**kwargs)
     return create_react_agent(
         model=model, tools=tools, checkpointer=_SAVER,
         prompt=STEP_AGENT_SYSTEM_PROMPT,
@@ -257,16 +272,36 @@ def _build_agent(cfg: LLMConfig, sid: str, step_id: int):
 
 # ---------- 运行:返回事件生成器(处理 interrupt/resume)----------
 
-# resume 值暂存:前端 POST /api/render_result 时存进来,run_step_agent 的循环读取
-_RESUMES: dict[tuple[str, str], dict] = {}
+# resume 值暂存:前端 POST /api/render_result 时存进来,run_step_agent 的循环读取。
+# ⚠️ 键为 (sid, step_id, run_nonce):同一 (sid,step) 可能被重新 explain(切走再切回再点)产生新 run,
+# 旧 run 的 render_result 若仍按 (sid, step_id) 存,会被新 run 的 resume 误取 → 用旧结果 resume 新 run 的
+# 线程(旧 run 无对应结果),两线程并发跑同一 MemorySaver thread_id 互相踩草稿。带 run_nonce 精确区分。
+_RESUMES: dict[tuple[str, str, str], dict] = {}
 
 
-def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: str = "") -> None:
+def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: str = "", nonce: str = "") -> None:
     """前端渲染回传结果(由 /api/render_result 调用)。
-    frame_path:若 ok=True 且前端截了最后一帧(视觉检查用),为图片存盘路径;否则空。"""
+    frame_path:若 ok=True 且前端截了最后一帧(视觉检查用),为图片存盘路径;否则空。
+    nonce:render_request 事件里带的 run nonce,标识该结果属于哪个 run(见 _RESUMES 注释)。"""
     # 键统一为字符串:run 与 resume 都 str(step_id),防旧整数流 int/str 键不匹配 → resume 失效
-    key = (sid, str(step_id))
+    key = (sid, str(step_id), nonce or _resolve_run_nonce(sid, step_id, ""))
     _RESUMES[key] = {"ok": ok, "error": error, "framePath": frame_path}
+
+
+def _resolve_run_nonce(sid: str, step_id, nonce: str) -> str:
+    """解析请求里的 run nonce:前端带了就用;没带(旧客户端/异常路径)退回当前草稿的 runNonce。"""
+    if nonce:
+        return nonce
+    return (_DRAFTS.get((sid, str(step_id)), {}) or {}).get("runNonce", "0")
+
+
+def clear_session(sid: str) -> None:
+    """删除会话时清掉该 sid 的草稿与待 resume 结果(_DRAFTS/_RESUMES 键是 (sid, step, ...) 元组,
+    通用 dict.pop(sid) 清不到,故显式扫删,防内存泄漏 + 旧结果残留)。"""
+    for key in [k for k in list(_DRAFTS) if k[0] == sid]:
+        del _DRAFTS[key]
+    for key in [k for k in list(_RESUMES) if k[0] == sid]:
+        del _RESUMES[key]
 
 
 def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
@@ -335,6 +370,7 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
 
     # 首次:用 stream(stream_mode="updates") 边跑边发 tool_call/tool_result
     interrupt_value = None
+    finished = False  # commit 通过+字段齐全自动收尾(返回 FINISHED)或 finish 成功 → 停 stream,省掉多余 LLM 轮
     try:
         for chunk in agent_obj.stream({"messages": [{"role": "user", "content": user_msg}]}, config, stream_mode="updates"):
             for node, state in chunk.items():
@@ -362,6 +398,11 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
                         yield {"kind": "tool_result", "id": _new_id(sid), "parentId": parent,
                                "agent": "step", "stepId": step_id,
                                "payload": {"toolCallId": tcid, "output": str(getattr(m, "content", ""))[:2000]}}
+                        if str(getattr(m, "content", "")) == "FINISHED":
+                            finished = True
+                            break
+                if finished:
+                    break
     except Exception as e:
         yield {"kind": "error", "id": _new_id(sid), "parentId": current_parent,
                "agent": "step", "stepId": step_id, "payload": {"message": f"agent 异常:{type(e).__name__}: {e}"}}
@@ -371,7 +412,8 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
     if interrupt_value and "code" in interrupt_value:
         rr_parent = list(tcid_to_evt.values())[-1] if tcid_to_evt else current_parent
         yield {"kind": "render_request", "id": _new_id(sid), "parentId": rr_parent,
-               "agent": "step", "stepId": step_id, "payload": {"code": interrupt_value["code"]}}
+               "agent": "step", "stepId": step_id,
+               "payload": {"code": interrupt_value["code"], "nonce": run_nonce}}
         return
     # 若 interrupt 但无 code(异常)
     if interrupt_value is not None:
@@ -389,20 +431,37 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
            "agent": "step", "stepId": step_id, "payload": {"message": "agent 结束但未生成通过的动画"}}
 
 
-def resume_step_agent(sid: str, step_id, cfg: Optional[LLMConfig] = None):
-    """前端回传渲染结果后,恢复 agent 继续跑。生成器 yield 同 run_step_agent。"""
+def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfig] = None):
+    """前端回传渲染结果后,恢复 agent 继续跑。生成器 yield 同 run_step_agent。
+
+    nonce:render_request 事件里带的 run nonce(前端回传),精确 resume 对应 run。
+    ⚠️ 若该 nonce 与当前草稿的 runNonce 不一致 = 此结果属于已被重新 explain 取代的旧 run → 直接丢弃,
+    否则会用旧结果 resume 新 run 的线程(新 run 可能还在流式执行/还没到 interrupt),两线程并发跑同一
+    MemorySaver thread_id 互踩草稿 → 重复 render_request / 落错 sceneCode。"""
     cfg = cfg or _get_runtime_cfg()
     step_id = str(step_id)  # 与 run_step_agent/set_render_result 键一致(统一字符串)
-    draft0 = _DRAFTS.get((sid, step_id), {})
-    tid = _thread_id(sid, step_id, draft0.get("runNonce", "0"))
-    result = _RESUMES.pop((sid, step_id), None)
+    draft = _DRAFTS.get((sid, step_id), {})
+    if not draft.get("runNonce"):
+        # 该步从未跑过 run_step_agent(或草稿已被清):无中断可 resume,结果丢弃
+        yield {"kind": "error", "id": _new_id(sid), "parentId": None,
+               "agent": "step", "stepId": step_id,
+               "payload": {"message": "该步骤没有正在进行的生成(渲染结果已丢弃)"}}
+        return
+    run_nonce = _resolve_run_nonce(sid, step_id, nonce)
+    # 过期保护:请求 nonce 与当前 run 不一致 → 丢弃(该结果属于已被取代的旧 run)
+    if run_nonce != draft.get("runNonce"):
+        yield {"kind": "error", "id": _new_id(sid), "parentId": None,
+               "agent": "step", "stepId": step_id,
+               "payload": {"message": "渲染结果属于已过期的 run,已丢弃(该步有更新的生成在跑)"}}
+        return
+    tid = _thread_id(sid, step_id, run_nonce)
+    result = _RESUMES.pop((sid, step_id, run_nonce), None)
     if result is None:
         yield {"kind": "error", "id": _new_id(sid), "parentId": None,
                "agent": "step", "stepId": step_id, "payload": {"message": "无待处理的渲染结果"}}
         return
     agent_obj = _build_agent(cfg, sid, step_id)
     config = {"configurable": {"thread_id": tid}}
-    draft = _DRAFTS[(sid, step_id)]
     # 失败计数:只在回传 ok=False 时累计,> 12 次拦截(避免 renderAttempts 被 resume 重复执行 tool 翻倍)
     if not result.get("ok", False):
         draft["failCount"] = draft.get("failCount", 0) + 1
@@ -421,6 +480,7 @@ def resume_step_agent(sid: str, step_id, cfg: Optional[LLMConfig] = None):
            "payload": {"ok": result.get("ok", False), "error": result.get("error", "")}}
 
     interrupt_value = None
+    finished = False  # commit 通过+字段齐全自动收尾(返回 FINISHED)或 finish 成功 → 停 stream,省掉多余 LLM 轮
     try:
         for chunk in agent_obj.stream(Command(resume=result), config, stream_mode="updates"):
             for node, state in chunk.items():
@@ -447,6 +507,11 @@ def resume_step_agent(sid: str, step_id, cfg: Optional[LLMConfig] = None):
                         yield {"kind": "tool_result", "id": _new_id(sid), "parentId": parent,
                                "agent": "step", "stepId": step_id,
                                "payload": {"toolCallId": tcid, "output": str(getattr(m, "content", ""))[:2000]}}
+                        if str(getattr(m, "content", "")) == "FINISHED":
+                            finished = True
+                            break
+                if finished:
+                    break
     except Exception as e:
         yield {"kind": "error", "id": _new_id(sid), "parentId": current_parent,
                "agent": "step", "stepId": step_id, "payload": {"message": f"resume 异常:{type(e).__name__}: {e}"}}
@@ -455,7 +520,8 @@ def resume_step_agent(sid: str, step_id, cfg: Optional[LLMConfig] = None):
     if interrupt_value and "code" in interrupt_value:
         rr_parent = list(tcid_to_evt.values())[-1] if tcid_to_evt else current_parent
         yield {"kind": "render_request", "id": _new_id(sid), "parentId": rr_parent,
-               "agent": "step", "stepId": step_id, "payload": {"code": interrupt_value["code"]}}
+               "agent": "step", "stepId": step_id,
+               "payload": {"code": interrupt_value["code"], "nonce": run_nonce}}
         return
     if interrupt_value is not None:
         yield {"kind": "error", "id": _new_id(sid), "parentId": current_parent,

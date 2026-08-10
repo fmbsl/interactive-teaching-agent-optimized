@@ -90,7 +90,6 @@ def _build_system_prompt(depth: str = "understand") -> str:
 - grep(pattern, file_id?):在文件里正则搜索,返回匹配行+行号。
 - generate_animation(step_id):触发某步的**完整讲解生成**(交 subagent 浏览器验证):含动画代码、教学意图、Markdown 讲解(文字+公式)、可调参数。会暂停等生成完。**当用户想学/看某步时调**(如"讲一下第一步""第3步""我想看X"),step_id 用 add_topic 返回的 id。已生成过的步会直接返回不重跑。**调这个等于讲完那一步(动画+讲解都在里头),不要调完又自己再讲一遍**。
 - generate_quiz(step_title, question, options, answer, explanation):对某知识点出一道**选择题考察用户是否学懂**。你(主 agent)直接产题:step_title=对应知识点标题;question=题干;options=4 个选项(字符串数组);answer=正确选项下标(0-3);explanation=答案解析。会暂停等用户在右边栏作答,作答后自动判对错并把结果返回给你,你再据此鼓励用户或针对错点补讲。**用户学完某步想自测、或你说"来考你一题"时调**。一次一道题。
-- generate_diagram(step_title, diagram_type, code, explanation):用 **mermaid 图**展示知识点(补 manim 之短)。你直接产 mermaid 源码。step_title=标题;diagram_type=类型(flowchart/sequenceDiagram/classDiagram/stateDiagram/mindmap/gantt);code=mermaid 源码(以 graph/flowchart/sequenceDiagram 等开头,**不要包```围栏**);explanation=Markdown 讲解。调用后自动切到图示舞台渲染。**知识点类型选择**:数学/物理/几何/动画演示→generate_animation(manim);流程/结构/分类/关系/状态/时序(生物分类、历史脉络、软件架构、状态机、协议交互、组织结构)→generate_diagram(mermaid)。两者都行时优先选更能帮用户理解的。
 - graph_command(instruction):调用**知识图 agent** 操作知识谱系图(DAG,节点是知识点、箭头是前置依赖)。instruction 用自然语言描述要做什么:**还没有图**时传用户的知识点(如"帮我分解线性代数"),图 agent 递归分解+找前置自动建图;**图已存在**时描述怎么改(如"把卷积拆成 定义/计算/性质 三个子节点""去掉傅里叶级数节点""矩阵我会了")。会暂停等图 agent 跑完(几十秒~几分钟),返回图摘要(节点数/知识点/已掌握前置)。**适用于复杂体系**(线性代数/傅里叶变换这种成体系、有先后依赖的),先理清结构再 add_topic。简单单一概念(勾股定理/向量加法)不必分解,直接 add_topic。**调这个前先 `switch_stage("graph")` 切到分解图**,让用户实时看节点逐个出现。
 - set_depth(level):调整学习深度("popular"/"understand"/"deep")。
 - switch_stage(stage):切换中间舞台:"graph"(知识分解图)或"animation"(动画舞台)。graph_command 跑完切 graph 让用户看图;开始 generate_animation 讲解前切 animation;用户想看结构时也可主动切。
@@ -185,21 +184,19 @@ def _build_tools(sid: str):
             return f"用户答对啦!选了 {chr(65+choice)}。解析:{explanation}"
         return f"用户答错。选了 {chr(65+choice)},正确答案是 {chr(65+answer_idx)}. {options[answer_idx]}。解析:{explanation}"
 
-    @tool
-    def generate_diagram(step_title: str, diagram_type: str, code: str, explanation: str) -> str:
-        """用 mermaid 图展示某知识点(补 manim 之短,适合流程/结构/关系类)。你(主 agent)直接产 mermaid 代码。
-        step_title=知识点标题;diagram_type=图类型(flowchart/sequenceDiagram/classDiagram/stateDiagram/mindmap/gantt 等,描述用即可);
-        code=mermaid 源码(纯文本,以 graph/flowchart/sequenceDiagram 等开头,不要包```mermaid围栏);
-        explanation=Markdown 讲解(配合图说明,可含 $...$ 公式)。
-        调用后自动切到 mermaid 舞台并渲染图,前端渲染失败会提示,你可改 code 重调。
-        **知识点类型判断**:数学/物理/几何/动画演示类用 generate_animation(manim);流程/结构/分类/关系/状态/时序类(生物分类、历史脉络、软件架构、状态机、协议交互)用本工具。"""
-        # 先切舞台,再推 diagram 事件(前端 consume 收到 setDiagram + setView mermaid)
-        _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "mermaid"}})
-        _EMIT[sid].append({"kind": "diagram", "payload": {
-            "step_title": step_title, "diagram_type": diagram_type,
-            "code": code, "explanation": explanation,
-        }})
-        return f"已生成 mermaid 图「{step_title}」({diagram_type}),中间舞台已切到图示。前端会渲染,若渲染失败会提示语法错,你可修正 code 后重调本工具。"
+    # mermaid 图示功能暂时隐去(用户 2026-08-10 要求):generate_diagram 工具已移除、提示词已删、
+    # switch_stage 不再接受 "mermaid"。恢复时:把下面被注释的工具加回 `_build_tools` 返回值 +
+    # 系统提示词加回 generate_diagram 描述 + switch_stage 放行 "mermaid"。
+    #
+    # @tool
+    # def generate_diagram(step_title: str, diagram_type: str, code: str, explanation: str) -> str:
+    #     """用 mermaid 图展示某知识点(补 manim 之短,适合流程/结构/关系类)。你(主 agent)直接产 mermaid 代码。..."""
+    #     _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": "mermaid"}})
+    #     _EMIT[sid].append({"kind": "diagram", "payload": {
+    #         "step_title": step_title, "diagram_type": diagram_type,
+    #         "code": code, "explanation": explanation,
+    #     }})
+    #     return f"已生成 mermaid 图「{step_title}」({diagram_type}),中间舞台已切到图示。"
 
     @tool
     def read(file_id: str, offset: int = 0, limit: int = 100) -> str:
@@ -287,15 +284,14 @@ def _build_tools(sid: str):
 
     @tool
     def switch_stage(stage: str) -> str:
-        """切换中间舞台展示的内容:"graph"(知识分解图) / "animation"(动画舞台) / "mermaid"(mermaid 图示)。
+        """切换中间舞台展示的内容:"graph"(知识分解图) / "animation"(动画舞台)。
         - 调 graph_command 跑完分解后,调 switch_stage("graph") 让用户看知识图谱。
         - 要开始逐个讲解(调 generate_animation 生成动画)前,调 switch_stage("animation") 切回动画舞台。
-        - 调 generate_diagram 产 mermaid 图后,调 switch_stage("mermaid") 让用户看图示。
-        - 用户想看分解图/图示时也可主动切。"""
-        if stage not in ("graph", "animation", "mermaid"):
-            return f"无效 stage {stage},可选:graph/animation/mermaid"
+        - 用户想看分解图时也可主动切。"""
+        if stage not in ("graph", "animation"):
+            return f"无效 stage {stage},可选:graph/animation"
         _EMIT[sid].append({"kind": "stage_switch", "payload": {"stage": stage}})
-        names = {"graph": "知识分解图", "animation": "动画舞台", "mermaid": "mermaid 图示"}
+        names = {"graph": "知识分解图", "animation": "动画舞台"}
         return f"中间舞台已切换为:{names.get(stage, stage)}"
 
     # ---------- 知识点清单(list)增删查改 ----------
@@ -410,7 +406,7 @@ def _build_tools(sid: str):
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
         return f"第 {step_id} 步修改失败:{err}"
 
-    return [add_topic, ask_user, read, grep, generate_animation, generate_quiz, generate_diagram,
+    return [add_topic, ask_user, read, grep, generate_animation, generate_quiz,
             graph_command, set_depth, switch_stage,
             search_step, delete_step, rename_step, add_step, modify_step]
 
@@ -446,13 +442,18 @@ def _has_orphan_tool_call(messages) -> bool:
     interrupt() 工具(ask_user/generate_quiz/animation/decompose)暂停后若用户直接发新消息(没 resume),
     会留下这种孤儿 tool_call。此时 langgraph 再注入新 user 消息会抛
     INVALID_CHAT_HISTORY("Found AIMessages with tool_calls that do not have a corresponding ToolMessage")。
-    返回 True 表示存在,主 agent 应先提示用户完成待办,而非崩掉。"""
+    返回 True 表示存在,主 agent 应先提示用户完成待办,而非崩掉。
+
+    ⚠️ 一个 AIMessage 可带多个 tool_calls(如 switch_stage + generate_animation 同批发出):
+    非 interrupt 工具先执行并生成 ToolMessage,interrupt 工具(如 generate_animation)停在 interrupt 无 ToolMessage。
+    必须要求**每个** tool_call 都有对应 ToolMessage,否则"部分有"会误判为无孤儿
+    (any() 只要有一个命中就 True),下一个 user 消息直接撞 INVALID_CHAT_HISTORY,会话永久卡死。"""
     for i, m in enumerate(messages):
         if type(m).__name__ == "AIMessage" and getattr(m, "tool_calls", None):
             ids = {tc.get("id") for tc in m.tool_calls}
-            has_tm = any(getattr(x, "tool_call_id", None) in ids
-                         for x in messages[i + 1:] if type(x).__name__ == "ToolMessage")
-            if not has_tm:
+            have = {getattr(x, "tool_call_id", None)
+                    for x in messages[i + 1:] if type(x).__name__ == "ToolMessage"}
+            if not ids.issubset(have):
                 return True
     return False
 

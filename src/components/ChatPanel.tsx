@@ -279,11 +279,11 @@ export default function ChatPanel() {
         // 先切回动画舞台,保证 StagePanel 挂载消费 verifyRequest(否则 view=graph/mermaid 时 Promise 永不 resolve → 死锁)
         setView("animation");
         const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
-          verifyResultHandler.current = (ok, error, frame) => resolve({ ok, error, frame });
-          requestVerify(ev.stepId, ev.code);
+          verifyResultHandler.current = { myRun, resolve: (ok, error, frame) => resolve({ ok, error, frame }) };
+          requestVerify(ev.stepId, ev.code, myRun);
         });
         if (consumeRunIdRef.current !== myRun) return;
-        const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame);
+        const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "");
         // 递归 consume 回传流:内联消费(不再走外层 for await,避免嵌套)
         for await (const sub of subStream) {
           if (consumeRunIdRef.current !== myRun) return;
@@ -394,11 +394,11 @@ export default function ChatPanel() {
       // 必须先切回动画舞台:StagePanel 挂载才有 verifyRequest 消费端;view=graph/mermaid 时无人 resolve → 永久"生成中"死锁
       setView("animation");
       const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
-        verifyResultHandler.current = (ok, error, frame) => resolve({ ok, error, frame });
-        requestVerify(ev.stepId, ev.code);
+        verifyResultHandler.current = { myRun, resolve: (ok, error, frame) => resolve({ ok, error, frame }) };
+        requestVerify(ev.stepId, ev.code, myRun);
       });
       if (consumeRunIdRef.current !== myRun) return;
-      const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame);
+      const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "");
       let subErr = "";
       for await (const sub of subStream) {
         if (consumeRunIdRef.current !== myRun) return;
@@ -610,6 +610,9 @@ export default function ChatPanel() {
 
   async function handleNewSession() {
     consumeRunIdRef.current++; // 作废旧 session 的 consume
+    abortRef.current?.abort(); // 取消旧 SSE reader:后台生成由 executor 解耦继续跑(不调 chatStop,勿停旧生成)
+    abortRef.current = null;
+    setLoading(false); // 新会话立刻可输入(旧生成残留的 loading 不冻结新会话)
     try {
       const sid = await newSession();
       resetToEmpty();
@@ -620,6 +623,12 @@ export default function ChatPanel() {
       setPendingAsk(null);
       setTopics([]);
       setDecomposeGraph(null);
+      // 考题/图示/待作答都是按 session 的:切走即清,防旧 session 的题/图串台到新会话
+      setPendingQuiz(null);
+      setQuizResult(null);
+      setDiagram(null);
+      setPendingResume(null);
+      setView("animation"); // 新会话是空的,中间舞台回动画(避免残留 mermaid/graph)
       clearPendingFiles();
       setFileName(null);
       setFileText(null);
@@ -634,6 +643,9 @@ export default function ChatPanel() {
     if (sid === sessionId) { setShowSessions(false); return; }
     setSessionQuery("");
     consumeRunIdRef.current++; // 作废当前 session 的 consume,防止旧 SSE 事件串台
+    abortRef.current?.abort(); // 取消旧 SSE reader:后台生成由 executor 解耦继续跑(不调 chatStop,勿停旧生成)
+    abortRef.current = null;
+    setLoading(false); // 新会话立刻可输入(旧生成残留的 loading 不冻结新会话)
     try {
       const detail = await getSession(sid);
       switchSession({
@@ -656,6 +668,11 @@ export default function ChatPanel() {
       setDecomposeGraph((detail as any).graph || null);
       // 恢复该 session 的待回答问题(若之前问过且没作答),切走再切回不丢
       setPendingAsk(pendingAskBySid.current[sid] ?? null);
+      // 考题/图示/待作答都是按 session 的:切走即清,防 A 的题/图串台到 B(作答会把答案 resume 到 B 的主 agent)
+      setPendingQuiz(null);
+      setQuizResult(null);
+      setDiagram(null);
+      setPendingResume(null);
       clearPendingFiles();
       setFileName(null);
       setFileText(null);

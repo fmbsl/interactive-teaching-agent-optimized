@@ -122,21 +122,29 @@ def iter_events(sid: str, run_id: str, replay: bool = False):
         return
     idx = 0
     while True:
+        # 在锁内只取数据,不在锁内 yield(挂起期间持锁会阻塞 worker 的 run.push,造成 worker 短暂 stall)
+        superseded = False
+        new_events: list[dict] = []
+        is_done = False
+        err: Any = None
         with run.cond:
             while idx >= len(run.events) and not run.done:
                 run.cond.wait(timeout=30)
                 # 每 30s 醒一次让 SSE 保活(也防 run 被取代后没 notify 的极端情况)
                 # 检查 run 是否已被取代
                 if current_run(sid) is not run:
-                    yield ({}, "superseded")
-                    return
-            if current_run(sid) is not run:
-                yield ({}, "superseded")
-                return
-            new_events = run.events[idx:]
-            idx = len(run.events)
-            is_done = run.done
-            err = run.error
+                    superseded = True
+                    break
+            if not superseded and current_run(sid) is not run:
+                superseded = True
+            if not superseded:
+                new_events = run.events[idx:]
+                idx = len(run.events)
+                is_done = run.done
+                err = run.error
+        if superseded:
+            yield ({}, "superseded")
+            return
         for ev in new_events:
             yield (ev, "live")
         if is_done:

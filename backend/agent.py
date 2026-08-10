@@ -467,6 +467,12 @@ def delete_session(sid: str) -> bool:
                         pass
         except Exception:
             pass
+    # step_agent 的 _DRAFTS/_RESUMES 键是 (sid, step, ...) 元组,上面 pop(sid) 清不到,显式扫删
+    try:
+        from skill.step_agent import clear_session
+        clear_session(sid)
+    except Exception:
+        pass
     try:
         from skill.session_store import delete_session_files
         delete_session_files(sid)
