@@ -48,7 +48,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **验证检测项**(`src/sceneCheck.ts`,渲染成功后依次跑,任一失败即 `reportVerifyResult(false, 原因)` 打回 agent 自修):
 1. **MathTex 渲染错**(`detectMathTexError`):MathJax 异步字体加载失败,提示改 MathTexImage。
 2. **NaN 检测**(`detectNaN`,硬错误、不受 BB 开关控制):标签文字含 `NaN` 或对象坐标为 NaN -> 报"角度/参数计算错,检查 ValueTracker/弧度换算/除数/np 向量化"。由来:实测某步"转角 NaN°"反复打回 6 次,加这个后 agent 一次拿到可操作原因。
-3. **2D BB 重叠**(`detectOverlap`,开关 `bbCheckEnabled`):文字-文字 / 文字-图形重叠;忽略坐标轴。
+3. **2D BB 重叠**(`detectOverlap`,开关 `bbCheckEnabled`):文字-文字 / 文字-实心图形重叠。聚合最多 3 条一起报 + 报"往哪个方向移多少"(最小分离向量,沿重叠最浅的轴推出+0.15 边距)。**跳过以下重叠目标**(实测假阳性重灾区,agent 挪不动/不可操作):曲线/折线(getPoints>40 顶点,细描边 bbox 是大包络)、线段/箭头(getStart/getEnd)、MathTexImage 公式(getLatex,验证环境 bbox 尺寸失真)、组合/VGroup(自身无几何点+有子对象,bbox 是子对象并集)、坐标轴整棵子树(c2p/p2c,轴/刻度/网格全是细线)、整屏大背景(bbox 面积>45% 画布)。只对实心图形(圆/矩形/多边形/点)与文字-文字做检查。只有交叠面积>文字面积 12% 或 文字中心压进图形 bbox 才报(滤"薄字形擦边"误报)。
 4. **文字越界**(`detectOutOfBounds`):文字飘出 camera `frameWidth×frameHeight` 边界 -> 报哪段文字越界(右/上/…)。
 5. **视觉检查**(`visionCheckEnabled`):截末帧给视觉辅助模型描述,仅提示不阻塞。
 
@@ -138,7 +138,7 @@ step_agent 用 `stream(stream_mode="updates")` 替代 `invoke`,逐个发 `tool_c
 
 **共享执行层 `src/runScript.ts`**:所有 sceneCode 统一经它执行 —— `execScript(ctx, code, timeoutMs)` 先按纯 JS 用 `new AsyncFunction("ctx", code)` 直跑,若语法错(含 TS 注解如 `: number`/`as T`)就用 `ts.transpileModule` **懒加载剥掉类型**后重跑(**运行时兼容 TS**,不再整段拒绝);`stripBareImports` 剥 `import/export`(manim-web 导出已铺全局,见下);带超时防卡死。这是主应用 StagePanel 与模板检查页共用的执行入口(替代旧的 `detectTsSyntax` 打回)。
 
-`src/manimCtx.ts`:隔离 `import * as manimWeb`(避免破坏 React Fast Refresh)。`makeManimCtx(scene, params)` 做注入 scene 的 ctx;新增 `exposeManimGlobals(container)` 把 manim-web 全部导出 + `container` 铺到 `window` 全局(自由脚本可 `new Scene(container,{相机})` 自建 scene、`import` 也可用)。
+`src/manimCtx.ts`:隔离 `import * as manimWeb`(避免破坏 React Fast Refresh)。`makeManimCtx(scene, params)` 做注入 scene 的 ctx;新增 `exposeManimGlobals(container)` 把 manim-web 全部导出 + `container` 铺到 `window` 全局(自由脚本可 `new Scene(container,{相机})` 自建 scene、`import` 也可用)。**`makeSelfBuildCtx(container, params)` = `{...manimWeb, container, params}`**:自建场景执行 ctx,**必须带 manim-web 全量导出**——否则自建代码开头 `const { ThreeDScene, Sphere, ... } = ctx` 解构出 undefined → `new ThreeDScene` 报 "ThreeDScene is not a constructor"(实测 step agent 自建 3D 场景反复踩)。所有自建路径(主舞台 runSelfBuild/离屏验证/模板检查页)都用它,不要只传 `{container, params}`。
 
 `src/components/StagePanel.tsx`:收到 `sceneCode` 后**自动分两种模式**——常规代码用注入 `scene`(主舞台有暂停/断点);代码若**自建 scene**(含 `new Scene(`/`new ThreeDScene(`),走自由脚本模式(给真 `#container` + 铺全局 + `execScript`,暂停/断点降级为连播)。离屏浏览器在环验证同样支持 TS 容忍 + 自建 scene;3D 自动检测(`is3DCode`)决定注入 scene 类型;验证带 **30s 超时**(长动画覆盖结尾 Indicate/Pulse)+ 2D BB 重叠检测 + 视觉检查(截末帧给视觉辅助模型,仅提示不阻塞)。
 
@@ -183,6 +183,7 @@ agent 生成器不再直接接到 SSE:每个视图构造 `gen_factory`(yield 事
 
 ## 关键约束(踩过的坑)
 
+- **f-string 提示词里的字面 `{}` 必须转义**:系统提示词(`_build_system_prompt`)、step agent 提示词等若是 **f-string**,里面要输出的字面花括号必须写 `{{...}}`。曾在 search_step 描述里写 `返回 {step_id, 标题, 动画代码, 讲解}`,被 f-string 当集合字面量求值 → `NameError: name 'step_id' is not defined` → 主 agent 一对话就"对话失败"。
 - **字体**:所有 `new Text` 必带 `fontFamily: '"Times New Roman","SimSun",serif'`(英文 Times New Roman,中文 fallback SimSun;manim-web Text 用 Canvas fillText,无 fontFamily 中文不显示)。
 - **公式**:`MathTexImage`(KaTeX)首选,稳定;`MathTex`/`Tex`(MathJax)慎用——`\overrightarrow`/`\mathcal` 等需动态字体的命令在浏览器里触发 MathJax retry,错误被静默吞,主舞台读几何时才抛。含这类命令一律用 MathTexImage。`await eq.waitForRender()` 后再 add/play。
 - **sceneCode 兼容 TS(运行时剥类型)**:沙箱 `new AsyncFunction` 本质跑纯 JS,但 runner([src/runScript.ts](src/runScript.ts))现在会在语法错时用 `ts.transpileModule` **自动剥掉 TS 注解**(`(x: number)`、`as T`、`interface` 等)后重跑,不再整段拒绝。TS 注解会白耗 token,提示词仍建议写清晰纯 JS,但偶发带上不会崩。**事件/`detectTsSyntax` 打回已废弃**,改为转译容错。
