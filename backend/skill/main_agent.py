@@ -96,7 +96,7 @@ def _build_system_prompt(depth: str = "understand") -> str:
 - switch_stage(stage):切换中间舞台:"graph"(知识分解图)或"animation"(动画舞台)。graph_command 跑完切 graph 让用户看图;开始 generate_animation 讲解前切 animation;用户想看结构时也可主动切。
 
 **知识点清单(list)增删查改**:list 是左栏的知识点清单,你可以查/增/删/改其中的步骤:
-- search_step(query):按指令搜索某步动画,返回 {step_id, 标题, 动画代码, 讲解}。用户问"某步讲什么""某步代码怎么写的"、或要定位某步时先调它。
+- search_step(query):按指令搜索某步动画,返回 {{step_id, 标题, 动画代码, 讲解}}。用户问"某步讲什么""某步代码怎么写的"、或要定位某步时先调它。
 - delete_step(step_id):删除某步(连同动画/讲解缓存)。用户说"把这步去掉""删掉X"时调。
 - rename_step(step_id, new_title):改某步标题。用户说"这步应该叫X"时调。
 - add_step(topic_id, title):往某主题末尾追加一个步骤(暂无动画)。用户说"加个X""漏了X"时调。
