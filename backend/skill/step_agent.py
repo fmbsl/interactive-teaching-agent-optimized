@@ -49,28 +49,23 @@ def _thread_id(sid: str, step_id: int, nonce: str) -> str:
 
 # ---------- 系统提示词:组合 manim_lesson 的 API REF / 铁律 / FEW SHOT / 教学规范 各独立块 ----------
 
-STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知识点逐步设计浏览器讲解:标题、讲解、(可选)可调参数、动画代码。
+STEP_AGENT_SYSTEM_PROMPT = f"""你是教学动画设计 agent。为一个子知识点逐步设计浏览器讲解:标题、讲解、(可选)可调参数、动画代码（web-manim）。
 
 **工作方式**:通过调用工具逐项设置,不要输出 JSON 或自然语言解释,只调工具。
-- set_step(title, explanation, params?):一次性设置本步的标题 + 讲解 + (可选)可调参数(替代分步设置,省往返)。
+- set_step(title, explanation, params?):一次性设置本步的标题 + 讲解 + (可选)可调参数。
   - title:简短标题。
-  - explanation:讲解正文,**Markdown 格式**,文字与公式混排。公式用 `$...$`(行内)或 `$$...$$`(独占一行),会被 KaTeX 渲染。可含标题/列表/段落。这是该步的完整讲解,讲清来龙去脉,承接上文。
+  - explanation:讲解正文,**Markdown 格式**,文字与公式混排。公式用 `$...$`(行内)或 `$$...$$`(独占一行)。这是该步的完整讲解,讲清来龙去脉,承接上文。
   - params:**仅当这一步确实需要用户交互调节参数时才给**(如"拖动看角度变化"),JSON 数组字符串,每项 `{{name,label,min,max,step,default}}`,如 `[{{"name":"lr","label":"学习率","min":0.01,"max":1,"step":0.01,"default":0.1}}]`。无需参数就传 `'[]'` 或省略,不要硬凑。
-- write(code):**首次写**完整动画代码(manim-web TS 函数体)到工作草稿。**只写不验证**,可先写一版再逐步改。仅在还没有代码、或要大范围重写时调用;已有代码的小改动用 patch。
-- patch(old_str, new_str):**修改**工作草稿,不触发验证。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进;old_str 可从你自己刚写的那版代码里原样复制一段,new_str 空串=删除),替换成 new_str 存回草稿。找不到/不唯一会报错——补几行上下文让它唯一。可连续 patch 多次,全部改完再统一 commit。想改的代码不在自己上下文里时,先 write 一版完整代码再 patch。
-- commit():把当前工作草稿的完整代码一次性送浏览器真渲染验证。返回 {{ok: true}} 渲染通过、动画**定稿**;{{ok: false, error}} 报错,草稿仍是你送检的那版,继续用 patch 改(改完再 commit)。**必须**在 write(或首次直接给完整代码)之后才能 commit。渲染失败不要整段重写,用 patch 只发改动片段(省 token),除非改动超约 1/3 或 patch 连续两次匹配不上才 write 整段。最多重试 12 次。**若渲染通过且标题/讲解都已设置,commit 会直接返回 FINISHED(本步已自动收尾,无需再调 finish);只有返回普通"通过"消息时才需要再调 finish。**
-- finish():所有字段就绪且动画已定稿(commit 返回 ok=true)后收尾。
+- write(code):**写**完整动画代码(manim-web TS 函数体)到工作草稿。**只写不验证**,可先写一版再逐步改。仅在还没有代码、或要大范围重写时调用;已有代码的小改动用 patch。
+- patch(old_str, new_str):**修改**工作草稿。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进;old_str 可从你自己刚写的那版代码里原样复制一段,new_str 空串=删除),替换成 new_str 存回草稿。找不到/不唯一会报错——补几行上下文让它唯一。
+- commit():把当前工作草稿的完整代码一次性送浏览器真渲染验证。
 
-工具调用顺序自由发挥,不强制先设哪个。工作流:**write**(首次整段)→ 反复 `patch` 改 → `commit` 验证定稿 → `finish`。动画 code 必须经 commit 验证通过(ok=true)写入定稿才能 finish。
 
-sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`)。用 `await scene.play(...)` / `scene.add(...)` 驱动。
 
-⚠️ **params 解构铁律(高频错,务必遵守)**:
-- 只要你在 `set_step` 里给了 `params`,代码里就一定会用 `params.<name>` 读参数。**解构行的 `{{ }}` 里必须显式列出 `params`**,否则运行时报 `params is not defined`。
-- 正确:`const {{ scene, Axes, Dot, Text, Create, params }} = ctx;` 然后 `const x = params.x;`
-- 错误:解构行写了 `scene, Axes, Dot` 却漏 `params`,代码里又用 `params.x` → 报错。
-- 反过来:**`set_step` 里没给 params(无参数)就完全不要在代码里引用 `params`**,解构行也别写它。
-- 这条是 `params is not defined` 的唯一根因,渲染失败一次就要立刻检查解构行有没有 `params`。
+
+sceneCode 格式:manim-web JS/TS 函数体。开头 `const {{ ... }} = ctx;` 解构出用到的标识符(必含 `scene`)。用 `await scene.play(...)` / `scene.add(...)` 驱动。
+
+
 
 {API_REF_BLOCK}
 
@@ -82,11 +77,10 @@ sceneCode 格式:manim-web TypeScript 函数体。开头 `const {{ ... }} = ctx;
 
 ═══ 官方 manim-web 示例参考(约 50%,自建 scene 风格;运行时已支持 TS/自建)═══
 下方是 manim-web 官方 example 原文。它们自带 Scene/相机、可能写 TS/多色,是 API 用法参考。
-你可以照抄其 API(坐标轴/曲线/ValueTracker/3D 相机/公式),但输出时仍需守上面的教学规范
+你可以照抄其 API(坐标轴/曲线/ValueTracker/3D 相机/公式)
 (配色可丰富/fontFamily 中文/教学公式);需要 3D 相机或多视角时可按官方样式在代码里 `new ThreeDScene(container,...)` 自建 scene。
 {OFFICIAL_EXAMPLES_BLOCK}
 
-记住:动画 code 必须先经 commit 验证通过(ok=true)定稿才算数;不要凭空写完就 finish。
 """
 
 
@@ -104,13 +98,16 @@ def _run_vision_check(frame_path: str, sid: str, step_id: int) -> str:
         vcfg = _get_vision_cfg()
         if vcfg is None:
             return ""  # 未配视觉辅助模型,降级:无视觉检查
-        # 只做画面布局/显示品质检查(文字、图形是否重叠可读),不判断内容是否体现教学意图
+        # 只做画面布局/显示品质检查(文字、图形是否重叠可读),不判断内容是否体现教学意图。
+        # ⚠️ 强制"正常/问题:"前缀开头,commit 工具据此决定:正常→自动收尾,问题→返回给 agent 修。
         prompt = (
-            "这是 manim 教学动画的最后一帧截图。请只检查画面布局与显示质量,报告是否存在:"
-            "① 文字/标签互相重叠、或文字压在图形上不可读;\n"
-            "② 有无明显显示问题(文字超出画布、颜色与背景混淆不可见、画面空白无内容等)。\n"
-            "不要判断画面内容是否体现了教学意图或是否正确。\n"
-            "用 2-4 句中文回答:有问题就指出具体是哪种重叠/显示问题;都正常就说明\"画面布局正常\"。\n"
+            "这是 manim 教学动画的最后一帧截图。请只检查画面布局与显示质量:\n"
+            "① 文字/标签/公式之间互相重叠、或文字/公式压在图形上不可读;\n"
+            "② 文字或公式超出画布边缘被裁、颜色与背景混淆不可见、画面空白无内容等。\n"
+            "不要判断教学内容是否正确。\n"
+            "**回答格式(必须遵守):** 若一切布局正常,第一个词回答「正常」;若有问题,第一个词回答「问题:」,"
+            "然后具体指出哪两个元素重叠/哪个元素越界(尽量带元素文字或位置,如\"左上角的标题\"\"下方公式\"),"
+            "并给出可执行的修法(如\"把某标签往左/下移一点\"\"缩小某元素字号\"\"把标题往上提\")。\n"
         )
         return _call_vision_llm(prompt, b64, vcfg)
     except Exception as e:
@@ -132,7 +129,7 @@ def _build_tools(sid: str, step_id: int):
 
     @tool
     def set_step(title: str, explanation: str, params_json: str = "[]") -> str:
-        """一次性设置本步的标题 + 讲解 + (可选)可调参数(替代分步 set_title/set_explanation/set_params,省往返)。
+        """一次性设置本步的标题 + 讲解 + (可选)可调参数。
         - title:简短标题,如"正弦函数的定义"。
         - explanation:讲解正文,Markdown 格式,文字与公式混排。公式用 $...$ 行内或 $$...$$ 独占行(KaTeX 渲染)。可含标题/列表/段落。讲清来龙去脉,承接上文。
         - params_json:可调参数 JSON 数组字符串,每项 {name,label,min,max,step,default}。**仅当该步确实需要用户调参时才给**;无需参数传 '[]' 或省略。"""
@@ -153,7 +150,7 @@ def _build_tools(sid: str, step_id: int):
     @tool
     def write(code: str) -> str:
         """**首次写**完整动画代码(manim-web TS 函数体)到工作草稿,不触发验证。可整段覆盖草稿。
-        仅在还没有代码、或要大范围重写时调用;已有代码的小改动请用 patch。"""
+        """
         if not code:
             return "write 失败:code 为空。请传入完整的 manim-web TS 函数体。"
         draft["draftCode"] = code
@@ -161,9 +158,9 @@ def _build_tools(sid: str, step_id: int):
 
     @tool
     def patch(old_str: str, new_str: str = "") -> str:
-        """**修改**工作草稿,不触发验证。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进,
-        old_str 从你写的最近一版代码里原样复制一段),替换成 new_str(空串=删除),存回草稿。
-        找不到/不唯一会报错——补几行上下文让它唯一。可连续 patch 多次,全部改完再统一 commit。"""
+        """**修改**工作草稿,不触发验证。在当前草稿代码里定位 old_str(必须**唯一**匹配,含缩进
+        ),替换成 new_str(空串=删除),存回草稿。
+        找不到/不唯一会报错——补几行上下文让它唯一。"""
         current = draft.get("draftCode") or ""
         if not current:
             return "patch 失败:工作草稿为空,还没有可改的代码。先调 write(code) 写一版完整代码。"
@@ -178,7 +175,7 @@ def _build_tools(sid: str, step_id: int):
         if new_code == current:
             return "patch 失败:替换后代码无变化(old_str == new_str?)。"
         draft["draftCode"] = new_code
-        return f"patch 已生效(draftCode 已更新,code_len={len(new_code)})。未触发验证,可继续 patch 或调 commit 提交验证。"
+        return f"patch 已生效(draftCode 已更新,code_len={len(new_code)})。"
 
     @tool
     def commit() -> str:
@@ -207,24 +204,24 @@ def _build_tools(sid: str, step_id: int):
         result = interrupt({"code": new_code})
         if isinstance(result, dict) and result.get("ok"):
             draft["sceneCode"] = new_code  # 定稿:与工作草稿一致
-            # 视觉检查(仅提示不阻塞):若前端截了最后一帧(framePath),调视觉辅助模型描述画面。
-            # 主模型 supports_vision 时本可直接看图,但 langchain tool 返回是字符串,当下走辅助模型描述。
+            # 视觉检查:截帧 → 视觉模型描述画面布局。_run_vision_check 的 prompt 强制返回以
+            # 「正常」或「问题:」开头。只有报问题时才返回给 agent 改;正常/未开启/失败 → 自动收尾。
             frame_path = result.get("framePath", "")
             vision_desc = ""
             if frame_path:
                 vision_desc = _run_vision_check(frame_path, sid, step_id)
-            if vision_desc:
-                return (f"commit 通过,动画已定稿。视觉检查(辅助模型看最后一帧):{vision_desc}\n"
-                        f"如发现文字重叠、动画没真正实现(关键对象没进场景/没动)、或效果差,**可再 patch 修改**(改完再 commit);否则可 finish。")
-            # 自动收尾:字段齐全 + 定稿一致 → 直接 FINISHED(视图层检测到该值即停 stream,省掉 finish 那轮 LLM 调用)
+            if vision_desc and vision_desc.lstrip().startswith("问题"):
+                return (f"commit 通过,动画已定稿。但视觉检查发现画面问题:{vision_desc}\n"
+                        f"请按上面指出的问题修改(改完再 commit,视觉会复查)。")
+            # 自动收尾:字段齐全 + 定稿一致 → 直接 FINISHED(视图层检测到该值即停 stream,无需额外步骤)
             if _finish_ready(draft):
                 return "FINISHED"
-            return "commit 通过,动画已定稿。可以继续设其它字段或 finish。"
+            return "commit 通过,动画已定稿。可以继续用 set_step 补字段,再 commit 定稿。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
         # waitForRender 错误常是 manim-web 内部抛的(非你代码直接调),给针对性指引
         if "waitForRender" in err:
             err += "。这是 manim-web 内部渲染错,常见原因:(1)对 Text/Dot/Arrow 等非公式对象调了 waitForRender(只有 MathTexImage/MathTex/Variable 有此方法,删掉该调用);(2)MathTexImage/MathTex 构造失败(检查 latex 字符串是否合法、解构行是否含 MathTexImage);(3)mobject 构造后状态异常。尝试简化:去掉可疑的 waitForRender 调用,或减少当步 mobject 数。"
-        return f"commit 失败:{err}。草稿仍是送检那版,**下一步先用 patch 局部改**(从草稿原样复制 old_str),改完再 commit;仅当改动超 1/3 或 patch 两次匹配不上才用 write 整段重写。"
+        return f"commit 失败:{err}。"
 
     @tool
     def finish() -> str:

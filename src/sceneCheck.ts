@@ -202,8 +202,10 @@ export function detectOverlap(scene: any): string {
 // 检测文字/标注是否超出画布边缘(用户高频痛点:文字飘到可视图外被裁掉)。
 // 画布边界 = camera 的 frameWidth×frameHeight(默认 14×8 world 单位)包围的[-half,+half]。
 // 只报文字类 mobject(曲线/图形越界常是数学上正确的延伸,不误报)。相机/尺寸缺失(如 3D)则跳过。
-// ⚠️ 判断"是文字"用 getText()/._text 能力探测——manim 的构造函数名在打包后会被压缩成
-// t9 之类,不能靠 constructor.name。边界用 getCenter() ± getBoundingBox() 尺寸的一半算(后者返回 {width,height} 尺寸,不是 {min,max})。
+// ⚠️ 判断"是文字"用能力探测(getText/._text 普通文字 + getLatex 公式)——manim 的构造函数名
+// 在打包后会被压缩成 t9 之类,不能靠 constructor.name。边界用 getCenter() ± getBoundingBox()
+// 尺寸的一半算(后者返回 {width,height} 尺寸,不是 {min,max})。公式(MathTexImage 等)在验证
+// 环境 bbox 尺寸失真,按中心粗判。
 export function detectOutOfBounds(scene: any): string {
   try {
     const cam = scene?.camera;
@@ -211,32 +213,43 @@ export function detectOutOfBounds(scene: any): string {
     const fw = cam.frameWidth, fh = cam.frameHeight;
     if (typeof fw !== "number" || typeof fh !== "number" || !fw || !fh) return "";
     const hw = fw / 2, hh = fh / 2;
-    const margin = 0.4; // world 单位:容忍擦边/字形外扩,避免卡边即报
+    const margin = 0.2; // world 单位:容忍字形外扩;原 0.4 太宽,文字中心贴边(顶部已出框)会漏报
     const out: string[] = [];
     const visit = (m: any) => {
       if (!m) return;
-      const isText = typeof m.getText === "function" || typeof m._text === "string";
+      const isText = typeof m.getText === "function" || typeof m._text === "string" || typeof m.getLatex === "function";
       if (isText) {
         let bb: any = null, c: any = null;
         try { bb = m.getBoundingBox?.(); } catch { /* ignore */ }
         try { c = m.getCenter?.(); } catch { /* ignore */ }
-        if (c && Array.isArray(c) && bb && typeof bb.width === "number" && typeof bb.height === "number") {
-          const minX = c[0] - bb.width / 2, maxX = c[0] + bb.width / 2;
-          const minY = c[1] - bb.height / 2, maxY = c[1] + bb.height / 2;
+        if (c && Array.isArray(c)) {
+          const isFormula = typeof m.getLatex === "function";
+          let minX: number, maxX: number, minY: number, maxY: number;
+          if (!isFormula && bb && typeof bb.width === "number" && typeof bb.height === "number") {
+            // 普通文字:用 bbox 真实尺寸算四边(验证环境对文字 bbox 是准的),容忍 0.2 字形外扩
+            minX = c[0] - bb.width / 2; maxX = c[0] + bb.width / 2;
+            minY = c[1] - bb.height / 2; maxY = c[1] + bb.height / 2;
+          } else {
+            // 公式或 bbox 拿不到:按中心粗判。中心一旦越过画布边缘即报(公式 bbox 失真,不用 0.2 宽容,
+            // 否则中心贴边、整体已出框的公式会漏)
+            minX = maxX = c[0]; minY = maxY = c[1];
+          }
           const sides: string[] = [];
-          if (maxX > hw + margin) sides.push("右");
-          if (minX < -hw - margin) sides.push("左");
-          if (maxY > hh + margin) sides.push("上");
-          if (minY < -hh - margin) sides.push("下");
+          // 普通文字用 margin 容忍字形外扩;中心粗判(公式)用 0 裕量,中心出框即报
+          const mrg = (!isFormula && bb && typeof bb.width === "number" && typeof bb.height === "number") ? margin : 0;
+          if (maxX > hw + mrg) sides.push("右");
+          if (minX < -hw - mrg) sides.push("左");
+          if (maxY > hh + mrg) sides.push("上");
+          if (minY < -hh - mrg) sides.push("下");
           if (sides.length) {
             let label = "";
-            try { const tx = m.getText?.(); if (typeof tx === "string") label = `“${tx.slice(0, 10)}”`; } catch { /* ignore */ }
+            try {
+              const tx = m.getText?.();
+              if (typeof tx === "string") label = `“${tx.slice(0, 10)}”`;
+              else { const lx = m.getLatex?.(); if (typeof lx === "string") label = `公式“${lx.slice(0, 12)}”`; }
+            } catch { /* ignore */ }
             out.push(`文字${label} 越界(${sides.join("/")})`);
           }
-        } else if (c && Array.isArray(c) && (c[0] > hw + margin || c[0] < -hw - margin || c[1] > hh + margin || c[1] < -hh - margin)) {
-          // bbox 尺寸拿不到时退回按中心粗判
-          const s = c[0] > hw + margin ? "右" : c[0] < -hw - margin ? "左" : c[1] > hh + margin ? "上" : "下";
-          out.push(`文字 越界(${s})`);
         }
       }
       const subs = m.submobjects || m._submobjects;

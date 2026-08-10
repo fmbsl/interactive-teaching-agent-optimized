@@ -245,7 +245,7 @@ STEP_PROMPT = """你是教学动画设计 agent(下游)。给你一个子知识�
 ═══════════════════════════════════════════
 一、sceneCode 是什么 / 怎么被运行
 ═══════════════════════════════════════════
-sceneCode 是一段 **JavaScript 函数体字符串**(不要写 function 包裹、不要 export、不要反引号代码块),在浏览器里用 `new AsyncFunction("ctx", code)` 执行,所以:
+sceneCode 是一段 **JavaScript/TypeScript 函数体字符串**(不要写 function 包裹、不要 export、不要反引号代码块),在浏览器里用 `new AsyncFunction("ctx", code)` 执行,所以:
 - 顶部第一行必须从 ctx 解构出你要用的标识符:`const { scene, Axes, Dot, Text, Create, params } = ctx;`(只解构用到的)。
 - 用 `await scene.play(...)`(支持 await)、`scene.add(...)`、`await scene.wait(n)`。
 - 代码里可直接用 JS:变量、箭头函数、for/while、Math.*、数组方法。
@@ -690,11 +690,10 @@ const axes = new ThreeDAxes({
   · 文字:深背景用浅色 `#e8edf2`,浅背景用深色 `#2b2b2b`
 - 主体图形 strokeWidth 3-4;辅助线/标注 1-2 且用中性或浅色。
 - **布局与层级(信息一眼可读)**:一图一主题,标题/轴标签/公式/主体分区摆放、留白、别贴边被裁切;字号分级(标题 > 轴标签/公式 > 说明);每步给一句话关键标注(概念名/公式/结论),别为凑数堆文字。
-- **每步建议有文字标注**(显示关键概念名/公式/轴标签,帮助理解),但不要为凑数堆砌——画面简洁清晰优先。中文 Text 必带 fontFamily。数学公式另用 MathTex/Tex(见下)。
 - 3D 场景的标题/标注用 `scene.addFixedInFrameMobjects(text)` 钉到屏幕帧;3D 对象(Dot3D/Sphere/Arrow3D)直接 `scene.add`。
 - 涉及曲面/立体/三维空间(二次曲面、梯度下降损失面、向量三维、球体)用 ThreeDScene + Surface3D/Sphere/Arrow3D;其余用 2D Scene + Axes。
 - 变量名 camelCase。可调参数用 `params.<name>`,在 params 数组里给出 min/max/step/default。
-- **数学公式必须用 `MathTexImage`(首选,KaTeX 稳定)/`MathTex`/`Tex`**(真 LaTeX 渲染),不要把公式当普通文字塞进 Text;Text 只用于标题/说明/轴标签等普通文字。**含 `\overrightarrow`/`\mathcal`/花体等动态字体命令的公式一律用 MathTexImage**(MathTex 会触发 MathJax 异步字体加载失败)。若验证报 "公式渲染失败/MathJax" 就改 MathTexImage。formula 字段给 KaTeX 字符串(与 MathTexImage 的 latex 一致)。
+- **数学公式、数字等必须用 `MathTexImage`(首选,KaTeX 稳定)/`MathTex`/`Tex`**(真 LaTeX 渲染),不要把公式当普通文字塞进 Text;Text 只用于标题/说明/轴标签等普通文字。**含 `\overrightarrow`/`\mathcal`/花体等动态字体命令的公式一律用 MathTexImage**(MathTex 会触发 MathJax 异步字体加载失败)。若验证报 "公式渲染失败/MathJax" 就改 MathTexImage。formula 字段给 KaTeX 字符串(与 MathTexImage 的 latex 一致)。
 - **字体**:所有 Text 用衬线宋体 `fontFamily: '"Times New Roman","SimSun",serif'`(中文 SimSun、英文/数字 Times New Roman)。不要用黑体/无衬线。
 
 优先用最常见的写法:`new Create(...)`/`new FadeIn(...)`/`new Transform(...)`/`axes.plot(fn,{...})`/`axes.c2p(x,y)`/`mob.moveTo([...])`/`mob.nextTo(other,dir)`/`new VGroup(...)`。"""

@@ -217,8 +217,9 @@ export default function StagePanel() {
         return;
       }
       const want3D = is3DCode(code);
-      // 用一个离屏容器跑验证,不污染主舞台
-      const opts = { backgroundColor: cssVar("--bg-deepest"), width: 800, height: 450 };
+      // 用一个离屏容器跑验证,不污染主舞台。尺寸对齐主舞台(containerSize),让相机 frame 的
+      // 可见边界与用户看到的画面一致——否则 16:9 固定尺寸验证通过,主舞台宽高比不同时文字仍可能越界。
+      const opts = { backgroundColor: cssVar("--bg-deepest"), width: containerSize.w, height: containerSize.h };
       const s = want3D ? new ThreeDScene(offscreen, opts) : new Scene(offscreen, opts);
       try {
         const ctx: any = makeManimCtx(s, paramValues);

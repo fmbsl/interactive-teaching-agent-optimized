@@ -104,7 +104,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [depth, setDepth] = useState<"popular" | "understand" | "deep">("understand");
   const [topics, setTopics] = useState<import("./data/llmClient").Topic[]>([]);
   const [pendingFiles, setPendingFiles] = useState<{ file_id: string; name: string }[]>([]);
-  const [visionCheckEnabled, setVisionCheckEnabled] = useState(false); // 视觉检查开关(截图给 LLM)
+  const [visionCheckEnabled, setVisionCheckEnabled] = useState(true); // 视觉检查开关(截图给 LLM)。默认开:离屏验证截末帧→qwen3.6-chat 看图→描述塞回 agent,让它真正"看见"画面(重叠/越界)。之前默认 false 导致整条视觉链路从未触发。
   const [view, setView] = useState<"animation" | "graph" | "mermaid">("animation");
   const [decomposeGraph, setDecomposeGraph] = useState<{ question: string; root_title: string; snapshot: any } | null>(null);
   const [pendingQuiz, setPendingQuiz] = useState<{ step_title: string; question: string; options: string[]; answer: number; explanation: string } | null>(null);
