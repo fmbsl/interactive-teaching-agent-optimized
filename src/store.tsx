@@ -60,9 +60,11 @@ interface AppState {
   addPendingFile: (f: { file_id: string; name: string }) => void;
   removePendingFile: (file_id: string) => void;
   clearPendingFiles: () => void;
-  // 视图模式:教学(三栏) / 分解(知识谱系图)。GraphApp 转出学习清单后切回 teach。
-  view: "animation" | "graph" | "mermaid";  // 中间舞台:动画(StagePanel)/分解图(GraphApp)/mermaid 图(MermaidPanel)。主 agent 可切换
-  setView: (v: "animation" | "graph" | "mermaid") => void;
+  // 浮窗开关:动画窗(StagePanel)/讲解窗(ExplainPanel)/分解图窗(GraphApp)。主 agent 按需弹出,可独立关闭。
+  stageOpen: boolean; setStageOpen: (v: boolean) => void;
+  explainOpen: boolean; setExplainOpen: (v: boolean) => void;
+  graphOpen: boolean; setGraphOpen: (v: boolean) => void;
+  closeAllWindows: () => void;
   // 当前 session 的知识分解图快照(随 session 走):{question, root_title, snapshot:{nodes,edges}} | null。
   // ChatPanel 切会话时从 detail.graph 写入,GraphApp 挂载/变化时据此重建画布。
   decomposeGraph: { question: string; root_title: string; snapshot: any } | null;
@@ -75,9 +77,6 @@ interface AppState {
   // 待处理的 resume 请求(右边栏考题作答等非 ChatPanel 发起的 resume):ChatPanel useEffect 监听并 consume chatAnswer
   pendingResume: { answer?: string; result?: any } | null;
   setPendingResume: (r: { answer?: string; result?: any } | null) => void;
-  // mermaid 图展示(非数学/物理类知识点):{step_title, diagram_type, code, explanation} | null
-  diagram: { step_title: string; diagram_type: string; code: string; explanation: string } | null;
-  setDiagram: (d: { step_title: string; diagram_type: string; code: string; explanation: string } | null) => void;
   // 主题 + 自定义 CSS(localStorage 持久化;App 挂载 effect 负责 applyTheme/applyCustomCss)
   theme: string;
   setTheme: (id: string) => void;
@@ -105,12 +104,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [topics, setTopics] = useState<import("./data/llmClient").Topic[]>([]);
   const [pendingFiles, setPendingFiles] = useState<{ file_id: string; name: string }[]>([]);
   const [visionCheckEnabled, setVisionCheckEnabled] = useState(true); // 视觉检查开关(截图给 LLM)。默认开:离屏验证截末帧→qwen3.6-chat 看图→描述塞回 agent,让它真正"看见"画面(重叠/越界)。之前默认 false 导致整条视觉链路从未触发。
-  const [view, setView] = useState<"animation" | "graph" | "mermaid">("animation");
   const [decomposeGraph, setDecomposeGraph] = useState<{ question: string; root_title: string; snapshot: any } | null>(null);
   const [pendingQuiz, setPendingQuiz] = useState<{ step_title: string; question: string; options: string[]; answer: number; explanation: string } | null>(null);
   const [quizResult, setQuizResult] = useState<{ choice: number; correct: boolean; explanation: string } | null>(null);
   const [pendingResume, setPendingResume] = useState<{ answer?: string; result?: any } | null>(null);
-  const [diagram, setDiagram] = useState<{ step_title: string; diagram_type: string; code: string; explanation: string } | null>(null);
+  // 浮窗开关(默认全关 = 对话优先)
+  const [stageOpen, setStageOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const closeAllWindows = () => { setStageOpen(false); setExplainOpen(false); setGraphOpen(false); };
   // 主题 + 自定义 CSS(初始从 localStorage 恢复)
   const [theme, setThemeState] = useState<string>(loadTheme);
   const [customCss, setCustomCssState] = useState<string>(loadCustomCss);
@@ -282,17 +284,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addPendingFile: (f) => setPendingFiles((prev) => (prev.some((x) => x.file_id === f.file_id) ? prev : [...prev, f])),
       removePendingFile: (fid) => setPendingFiles((prev) => prev.filter((x) => x.file_id !== fid)),
       clearPendingFiles: () => setPendingFiles([]),
-      view, setView,
+      stageOpen, setStageOpen, explainOpen, setExplainOpen, graphOpen, setGraphOpen, closeAllWindows,
       decomposeGraph, setDecomposeGraph,
       pendingQuiz, setPendingQuiz,
       quizResult, setQuizResult,
       pendingResume, setPendingResume,
-      diagram, setDiagram,
       theme, setTheme,
       customCss, setCustomCss,
       decomposeEffort, setDecomposeEffort, loadAppSettings,
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, view, decomposeGraph, pendingQuiz, quizResult, pendingResume, diagram, theme, customCss, decomposeEffort]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, stageOpen, explainOpen, graphOpen, decomposeGraph, pendingQuiz, quizResult, pendingResume, theme, customCss, decomposeEffort]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

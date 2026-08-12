@@ -130,6 +130,16 @@ input[type="range"]::-moz-range-thumb {
 }
 .tnum { font-variant-numeric: tabular-nums; }
 
+/* StagePanel 舞台:固定 16:9 内部分辨率(960×540,DPR 后 canvas 更大),canvas 元素盒填满容器 +
+   object-fit:contain 保比例缩放居中(需 !important 压过 three.js 设的内联 style.width/height)。
+   开合窗口/拖拽列宽不重建场景不重启动画;宽扁/窄高容器不拉伸变形。 */
+.stage-canvas-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+  display: block;
+}
+
 /* ExplainPanel 讲解区 Markdown 渲染(无 typography 插件,手写 h/p/list/code/katex 样式)。
    容器 .md-prose 设基础字号;子元素相对放大标题、缩进列表、描边代码块。 */
 .md-prose { color: var(--text); font-size: 12.5px; line-height: 1.7; }
@@ -185,6 +195,44 @@ input[type="range"]::-moz-range-thumb {
   to { opacity: 1; }
 }
 .panel-anim { animation: panelFadeIn 0.28s ease-out; }
+
+/* 中列/右列出现:开窗时从右侧滑入 + 淡入(中列动画/分解、右侧讲解列)。
+   中列是常驻挂载、靠 hidden(display:none) 切换——display:none→visible 时 CSS 动画自动重放,
+   所以每次开窗都会重新滑入;右列条件挂载,挂载即播。 */
+@keyframes colSlideIn {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.col-enter { animation: colSlideIn 0.34s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* 聊天列推左/回中:开窗时主 agent 对话框被"推"到左侧窄列(或关窗回中)。
+   位移/宽度由 App.tsx 布局后量好注入 --flip-* CSS 变量,再用 移除类→reflow→加回类 重触发本动画。
+   fill:none,播完回到 class 态(= 终态),无跳变。 */
+@keyframes chatPush {
+  from { transform: translateX(var(--flip-dx, 0px)); width: var(--flip-w, 100%); }
+  to { transform: translateX(0); width: var(--flip-w2, 100%); }
+}
+.chat-push { animation: chatPush 0.34s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* 中列分隔条(动画|分解并存)出现:轻微淡入 */
+@keyframes fadeInSoft {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.fade-soft { animation: fadeInSoft 0.3s ease-out; }
+
+/* 头部窗口开关被点亮:轻微弹跳 */
+@keyframes popIn {
+  0% { transform: scale(0.9); }
+  55% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.open-pop { animation: popIn 0.26s ease-out; }
+
+/* 尊重系统"减少动态效果":关掉以上装饰性动画 */
+@media (prefers-reduced-motion: reduce) {
+  .col-enter, .fade-soft, .open-pop, .stage-transition, .panel-anim { animation: none; }
+}
 
 /* logo 呼吸光晕 */
 @keyframes logoGlow {

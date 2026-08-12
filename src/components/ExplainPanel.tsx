@@ -46,13 +46,7 @@ export default function ExplainPanel() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-5">
-        {!step ? (
-          <div className="empty-state min-h-[140px]">
-            <div className="empty-icon">¶</div>
-            <div className="text-[12px] text-[var(--text-mute)]">在左侧输入知识点后,这里会显示讲解</div>
-            <div className="text-[10.5px] text-[var(--text-faint)]">含公式推导、Markdown 图文</div>
-          </div>
-        ) : (<>
+        {step && (<>
         {/* 讲解(含公式,Markdown 渲染) */}
         <Section label="讲解">
           <div className="md-prose">

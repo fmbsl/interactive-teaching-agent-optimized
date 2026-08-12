@@ -16,7 +16,7 @@ import {
 import { useApp, type StepStatus } from "../store";
 import {
   Menu, Plus, Paperclip, Download, Upload, Wrench, Bot,
-  Code2, Play, Check, X, Loader2, Sparkles, FileText, Trash2,
+  Code2, Play, Check, X, Loader2, FileText, Trash2,
 } from "lucide-react";
 
 interface RenderedItem { key: string; event: ChatEvent; collapsed: boolean; }
@@ -93,10 +93,10 @@ export default function ChatPanel() {
     sessionList, setSessionList, switchSession, resetToEmpty,
     navRequest,
     requestVerify, verifyResultHandler,
-    depth, setDepth, topics, addTopic, setTopics, decomposeGraph, setDecomposeGraph, setView,
+    depth, setDepth, topics, addTopic, setTopics, decomposeGraph, setDecomposeGraph,
+    setStageOpen, setExplainOpen, setGraphOpen, closeAllWindows,
     setPendingQuiz, setQuizResult,
     pendingResume, setPendingResume,
-    setDiagram,
     pendingFiles, addPendingFile, removePendingFile, clearPendingFiles,
   } = useApp();
   // 同步 sessionId 到 ref,供 consume/handleEvent 异步循环里取最新值(避免闭包陈旧)
@@ -104,6 +104,23 @@ export default function ChatPanel() {
   // decomposeGraph ref:主 agent 图编辑工具推 graph 事件时,question/root_title 从最新值继承(避免闭包陈旧)
   const decomposeGraphRef = useRef(decomposeGraph);
   decomposeGraphRef.current = decomposeGraph;
+
+  // 兜底:agent 只 add_topic(没跑 graph_command 建真实图谱)时,从主题步骤推导一条学习路径图,
+  // 让分解图窗在讲解时必有内容(与动画并存)。已有真实图谱则不覆盖。
+  const ensureDecomposeFromTopic = (topic: Topic) => {
+    if (decomposeGraphRef.current?.snapshot?.nodes?.length) return;
+    const steps = topic.steps || [];
+    const nodes: any[] = [
+      { id: topic.id, title: topic.title, mastery: false, depth: 0, sets: [], aliases: [] },
+      ...steps.map((s: any) => ({ id: s.id, title: s.title, mastery: false, depth: 1, sets: [topic.title], aliases: [] })),
+    ];
+    const edges = steps.map((s: any, i: number) => ({
+      from: i === 0 ? topic.id : steps[i - 1].id,
+      to: s.id,
+      type: "prerequisite_of",
+    }));
+    setDecomposeGraph({ question: topic.title, root_title: `知识分解 · ${topic.title}`, snapshot: { nodes, edges } });
+  };
 
   useEffect(() => {
     refreshSessions();
@@ -219,14 +236,17 @@ export default function ChatPanel() {
       }
       if (ev.kind === "topic_added") {
         addTopic(ev.topic);
+        ensureDecomposeFromTopic(ev.topic);
+        setGraphOpen(true); // 讲解时分解图必现(与动画并存)
       }
       if (ev.kind === "stage_switch") {
-        // 主 agent 切换中间舞台:graph=分解图,animation=动画,mermaid=图示
+        // 主 agent 切换展示:graph=分解图窗,其它=动画窗(mermaid 已弃)
         const st = (ev as any).stage;
-        setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
+        if (st === "graph") setGraphOpen(true);
+        else setStageOpen(true);
       }
       if (ev.kind === "graph") {
-        // 图 agent(经 graph_command)改图后推的快照:刷新分解图画布(不进对话栏)
+        // 图 agent(经 graph_command)改图后推的快照:刷新分解图画布(不进对话栏),并打开分解图窗
         const snap = (ev as any).payload || (ev as any).snapshot;
         if (snap) {
           const prev = decomposeGraphRef.current;
@@ -236,9 +256,10 @@ export default function ChatPanel() {
             snapshot: snap,
           });
         }
+        setGraphOpen(true);
       }
       if (ev.kind === "quiz") {
-        // 主 agent 出的选择题:存 store.pendingQuiz,右边栏 ExplainPanel 显示题+选项。清空旧结果。
+        // 主 agent 出的选择题:存 store.pendingQuiz,讲解窗显示题+选项。清空旧结果。
         setPendingQuiz({
           step_title: (ev as any).step_title || "",
           question: (ev as any).question || "",
@@ -247,15 +268,7 @@ export default function ChatPanel() {
           explanation: (ev as any).explanation || "",
         });
         setQuizResult(null);
-      }
-      if (ev.kind === "diagram") {
-        // 主 agent 产的 mermaid 图:存 store.diagram,中间舞台 MermaidPanel 渲染(stage_switch 已切 mermaid 舞台)
-        setDiagram({
-          step_title: (ev as any).step_title || "",
-          diagram_type: (ev as any).diagram_type || "",
-          code: (ev as any).code || "",
-          explanation: (ev as any).explanation || "",
-        });
+        setExplainOpen(true);
       }
       if (ev.kind === "ask") {
         // 主 agent 问用户:记下问题(+可选预设选项),发送按钮变为"回答"(answerAsk)
@@ -273,11 +286,14 @@ export default function ChatPanel() {
         // 字符串 stepId(新 topic 流程)写 topics;数字 stepId(旧 lesson)写 lesson.steps
         if (typeof ev.stepId === "string") updateTopicStep(ev.stepId, content);
         else updateStepContent(ev.stepId, content);
+        // 一步讲解完成:动画窗 + 讲解窗都弹出,让用户看到画面和讲解(可独立关闭)
+        setStageOpen(true);
+        setExplainOpen(true);
       }
       if (ev.kind === "render_request") {
         // 浏览器在环验证:让 StagePanel 跑这段 code,拿结果(含可选最后一帧 frame)回传后端,继续 consume 回传流
-        // 先切回动画舞台,保证 StagePanel 挂载消费 verifyRequest(否则 view=graph/mermaid 时 Promise 永不 resolve → 死锁)
-        setView("animation");
+        // 先打开动画窗保证 StagePanel 可见消费 verifyRequest(否则 Promise 永不 resolve → 死锁)
+        setStageOpen(true);
         const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
           verifyResultHandler.current = { myRun, resolve: (ok, error, frame) => resolve({ ok, error, frame }) };
           requestVerify(ev.stepId, ev.code, myRun);
@@ -293,6 +309,7 @@ export default function ChatPanel() {
       if (ev.kind === "graph_command_request") {
         // 主 agent 调图 agent(分解建图 / 编辑改图):调 /api/graph_command。每个 graph 事件实时更新分解图,
         // 跑完收最后一个 graph 快照,再 chatAnswer resume
+        setGraphOpen(true);
         const sid = sessionIdRef.current || "";
         const instruction = (ev as any).instruction || "";
         const prevRoot = decomposeGraphRef.current?.root_title || "";
@@ -319,6 +336,7 @@ export default function ChatPanel() {
       }
       if (ev.kind === "animation_request") {
         // 主 agent 要生成某步动画:调 /api/explain 跑 step subagent(浏览器在环),跑完 resume 主 agent 传 {ok, step_id}
+        setStageOpen(true); // 弹动画窗让用户看实时渲染
         const sid = sessionIdRef.current || "";
         const stepId = (ev as any).step_id || ev.stepId || "";
         // 先把右侧切到这一步(该步已在 topics 里有标题占位),否则讲解要等 explain 事件(动画在环验证通过后)才出现
@@ -346,6 +364,7 @@ export default function ChatPanel() {
       }
       if (ev.kind === "modify_request") {
         // 主 agent 改某步动画:调 /api/modify_step 跑 step_agent 修改模式(浏览器在环),跑完 resume 主 agent 传 {ok, step_id}
+        setStageOpen(true); // 弹动画窗让用户看改后的渲染
         const sid = sessionIdRef.current || "";
         const stepId = (ev as any).step_id || ev.stepId || "";
         const feedback = (ev as any).feedback || "";
@@ -389,10 +408,12 @@ export default function ChatPanel() {
       const content = { title: ev.title, narration: ev.narration, formula: ev.formula, explanation: (ev as any).explanation, intent: ev.intent, paramsUsed: ev.paramsUsed, params: (ev as any).params, sceneCode: ev.sceneCode };
       if (typeof ev.stepId === "string") updateTopicStep(ev.stepId, content);
       else updateStepContent(ev.stepId, content);
+      setStageOpen(true);
+      setExplainOpen(true);
     } else if (ev.kind === "render_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
-      // 必须先切回动画舞台:StagePanel 挂载才有 verifyRequest 消费端;view=graph/mermaid 时无人 resolve → 永久"生成中"死锁
-      setView("animation");
+      // 先打开动画窗:StagePanel 有 verifyRequest 消费端;窗口关着时 Promise 永不 resolve → 永久"生成中"死锁
+      setStageOpen(true);
       const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
         verifyResultHandler.current = { myRun, resolve: (ok, error, frame) => resolve({ ok, error, frame }) };
         requestVerify(ev.stepId, ev.code, myRun);
@@ -409,6 +430,7 @@ export default function ChatPanel() {
       if (subErr) return { error: subErr };
     } else if (ev.kind === "graph_command_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      setGraphOpen(true);
       const sid = sessionIdRef.current || "";
       const instruction = (ev as any).instruction || "";
       const prevRoot = decomposeGraphRef.current?.root_title || "";
@@ -432,6 +454,7 @@ export default function ChatPanel() {
       }
     } else if (ev.kind === "modify_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      setStageOpen(true);
       const sid = sessionIdRef.current || "";
       const stepId = (ev as any).step_id || ev.stepId || "";
       const feedback = (ev as any).feedback || "";
@@ -455,6 +478,7 @@ export default function ChatPanel() {
       }
     } else if (ev.kind === "animation_request") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      setStageOpen(true);
       const sid = sessionIdRef.current || "";
       const stepId = (ev as any).step_id || ev.stepId || "";
       if (stepId) setCurrentStep(stepId as any); // 先切右侧到该步(标题占位),等 explain 填讲解
@@ -487,10 +511,13 @@ export default function ChatPanel() {
     } else if (ev.kind === "topic_added") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       addTopic(ev.topic);
+      ensureDecomposeFromTopic(ev.topic);
+      setGraphOpen(true); // 讲解时分解图必现(与动画并存)
     } else if (ev.kind === "stage_switch") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       const st = (ev as any).stage;
-      setView(st === "graph" ? "graph" : st === "mermaid" ? "mermaid" : "animation");
+      if (st === "graph") setGraphOpen(true);
+      else setStageOpen(true);
     } else if (ev.kind === "ask") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       const pa = { question: ev.question, options: (ev as any).options };
@@ -604,6 +631,7 @@ export default function ChatPanel() {
   // 点 topic 子知识点(字符串 step_id 'topicid-N'):直触发 step_agent 生成,不经主 agent
   async function handleTopicStep(stepId: string) {
     if (!sessionId || loading) return;
+    setStageOpen(true); // 弹动画窗展示该步动画
     setLoading(true);
     try { await consume(explainStep(sessionId, stepId)); } finally { setLoading(false); }
   }
@@ -623,12 +651,11 @@ export default function ChatPanel() {
       setPendingAsk(null);
       setTopics([]);
       setDecomposeGraph(null);
-      // 考题/图示/待作答都是按 session 的:切走即清,防旧 session 的题/图串台到新会话
+      // 考题/待作答都是按 session 的:切走即清,防旧 session 的题串台到新会话
       setPendingQuiz(null);
       setQuizResult(null);
-      setDiagram(null);
       setPendingResume(null);
-      setView("animation"); // 新会话是空的,中间舞台回动画(避免残留 mermaid/graph)
+      closeAllWindows(); // 新会话是空的,浮窗全关回纯对话
       clearPendingFiles();
       setFileName(null);
       setFileText(null);
@@ -668,11 +695,11 @@ export default function ChatPanel() {
       setDecomposeGraph((detail as any).graph || null);
       // 恢复该 session 的待回答问题(若之前问过且没作答),切走再切回不丢
       setPendingAsk(pendingAskBySid.current[sid] ?? null);
-      // 考题/图示/待作答都是按 session 的:切走即清,防 A 的题/图串台到 B(作答会把答案 resume 到 B 的主 agent)
+      // 考题/待作答都是按 session 的:切走即清,防 A 的题串台到 B(作答会把答案 resume 到 B 的主 agent)
       setPendingQuiz(null);
       setQuizResult(null);
-      setDiagram(null);
       setPendingResume(null);
+      closeAllWindows(); // 切会话:浮窗全关,回对话优先布局
       clearPendingFiles();
       setFileName(null);
       setFileText(null);
@@ -854,13 +881,6 @@ export default function ChatPanel() {
 
       {/* 对话流(右键弹出导出/笔记/导入/删除菜单) */}
       <div ref={scrollRef} onContextMenu={openCtxMenu} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2">
-        {items.length === 0 && !loading && (
-          <div className="empty-state mt-6">
-            <div className="empty-icon"><Sparkles size={30} /></div>
-            <div className="text-[12px] text-[var(--text-mute)]">输入要学的 STEM 知识点开始对话</div>
-            <div className="text-[10.5px] text-[var(--text-faint)] max-w-[260px]">可先上传课件。我会拆成知识点 list 逐个用动画 + 公式 + 图文讲解,还能出题考你</div>
-          </div>
-        )}
         {renderTree(items, setItems)}
         {loading && (
           <div className="flex items-center gap-2 text-[11px] text-[var(--text-mute)] px-1 py-1 thinking-dot">

@@ -18,6 +18,13 @@ const FLOW_CSS = `
 .react-flow__controls-button { background: var(--bg-2); color: var(--text); border-bottom: 1px solid var(--border); fill: var(--text); }
 .react-flow__controls-button:hover { background: var(--bg-3); }
 .react-flow__node { color: var(--text); visibility: visible !important; }
+/* 节点出现动画:只用独立 scale/translate 属性(与 ReactFlow 的 position transform 复合,不覆盖)。
+   不用 opacity——动画若没播(预览冻结/降级),节点仍可见,不会整个图消失。 */
+.react-flow__node.rf-node-in { animation: rfNodeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes rfNodeIn {
+  from { scale: 0.6; translate: 0 10px; }
+  to { scale: 1; translate: 0 0; }
+}
 .react-flow__minimap { background: var(--bg-1); border: 1px solid var(--border); }
 .react-flow__minimap svg { background: var(--bg-1); }
 /* minimap 节点缩略图:确保可见(默认继承,深色底上用蓝/绿) */
@@ -215,14 +222,36 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
   const justBoxedRef = useRef(false);
   const [selRect, setSelRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
-  const { sessionId, setSessionId, setTopics, setView, decomposeGraph, setDecomposeGraph } = useApp();
+  const { sessionId, setSessionId, setTopics, setGraphOpen, setStageOpen, decomposeGraph, setDecomposeGraph } = useApp();
   // sid 直接用 store.sessionId(图随 session 走);本地不再单独存 sid
+
+  // 节点入场动画:只给"新出现"的节点打 rf-node-in 类(旧节点不动)。
+  // seenIds 记已渲染 id;animIds 记"动画窗口"内的 id(新加后保留 ~420ms)。
+  // 增量 node 事件 + 整图 graph 快照都过这里——快照重排时刚加的节点仍在动画窗口,
+  // 会保留入场类,避免"弹一下被重排打断"。
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  const animIdsRef = useRef<Set<string>>(new Set());
+  const animTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const popNode = useCallback((id: string) => {
+    if (animIdsRef.current.has(id)) return;
+    animIdsRef.current.add(id);
+    animTimersRef.current[id] = setTimeout(() => {
+      animIdsRef.current.delete(id);
+      delete animTimersRef.current[id];
+    }, 420);
+  }, []);
+  const markNewNodes = useCallback((nodes: Node[]): Node[] => {
+    const seen = seenIdsRef.current;
+    for (const n of nodes) if (!seen.has(n.id)) { seen.add(n.id); popNode(n.id); }
+    if (animIdsRef.current.size === 0) return nodes;
+    return nodes.map((n) => (animIdsRef.current.has(n.id) ? { ...n, className: "rf-node-in" } : n));
+  }, [popNode]);
 
   // 挂载/切会话/分解实时更新:store.decomposeGraph 变化即重建画布(分解过程中每次 graph 事件触发,节点逐步增加)
   useEffect(() => {
     if (decomposeGraph && decomposeGraph.snapshot) {
       const { nodes, edges } = snapshotToNodesEdges(decomposeGraph.snapshot, selectedIdRef.current);
-      setRfNodes(nodes);
+      setRfNodes(markNewNodes(nodes));
       setRfEdges(edges);
       setRootTitle(decomposeGraph.root_title || "");
       setQuestion(decomposeGraph.question || "");
@@ -236,10 +265,11 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
   }, [decomposeGraph]);
 
   // 点击高亮:selectedId 变化时,重算节点/边样式(高亮选中+父+子,淡化其余)。不重排位置,只改 style。
+  // 用 markNewNodes:它保留"动画窗口"内新节点的入场类,否则挂载时本 effect 重排会把刚加的动画类剥掉。
   useEffect(() => {
     if (!decomposeGraph?.snapshot) return;
     const { nodes, edges } = snapshotToNodesEdges(decomposeGraph.snapshot, selectedId);
-    setRfNodes(nodes);
+    setRfNodes(markNewNodes(nodes));
     setRfEdges(edges);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
@@ -333,15 +363,19 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
           setRootTitle(p.title ?? "知识分解");
           setLog((prev) => [...prev, { id: ev.id ?? String(prev.length), parentId: ev.parentId, kind, text: p.title ?? "知识分解", depth: 0 }]);
           break;
-        case "node":
+        case "node": {
+          // 增量新节点:先记录动画窗口,再带入场类挂载(快照重排时保留动画)
+          seenIdsRef.current.add(p.id);
+          popNode(p.id);
           setRfNodes((prev) => {
             if (prev.some((n) => n.id === p.id)) {
               return prev.map((n) => n.id === p.id ? { ...n, data: { label: nodeLabel(p.title, !!p.mastery, p.sets ?? [], p.aliases ?? []) }, style: nodeStyle(!!p.mastery, p.depth ?? 0) } : n);
             }
             const idx = prev.length;
-            return [...prev, { id: p.id, data: { label: nodeLabel(p.title, !!p.mastery, p.sets ?? [], p.aliases ?? []) }, position: layoutPos(p.depth ?? 0, idx), style: nodeStyle(!!p.mastery, p.depth ?? 0), draggable: true, width: 180, height: 54 }];
+            return [...prev, { id: p.id, data: { label: nodeLabel(p.title, !!p.mastery, p.sets ?? [], p.aliases ?? []) }, position: layoutPos(p.depth ?? 0, idx), style: nodeStyle(!!p.mastery, p.depth ?? 0), className: "rf-node-in", draggable: true, width: 180, height: 54 }];
           });
           break;
+        }
         case "node_replaced":
           setRfNodes((prev) => prev.filter((n) => n.id !== p.removed));
           setRfEdges((prev) => prev.filter((e) => e.source !== p.removed && e.target !== p.removed));
@@ -355,7 +389,7 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
           break;
         case "graph": {
           const { nodes, edges } = snapshotToNodesEdges(p, selectedIdRef.current);
-          setRfNodes(nodes); setRfEdges(edges);
+          setRfNodes(markNewNodes(nodes)); setRfEdges(edges);
           // 同步到 store.decomposeGraph(随 session 持久化,刷新/切会话可恢复)
           setDecomposeGraph({ question, root_title: rootTitle || `知识分解 · ${question.slice(0, 40)}`, snapshot: p });
           break;
@@ -383,13 +417,14 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
     try {
       const { topic } = await decomposeToTopics(sessionId, rootTitle.replace(/^知识分解 · /, ""));
       setTopics([topic]);
-      setView("animation");
+      setGraphOpen(false); // 转成学习清单:关分解图窗
+      setStageOpen(true); // 开动画窗进入学习
     } catch (err: any) {
       setLog((prev) => [...prev, { id: String(prev.length), kind: "error", text: `转清单失败: ${err.message}`, depth: 0 }]);
     } finally {
       setConverting(false);
     }
-  }, [sessionId, converting, rootTitle, setTopics, setView]);
+  }, [sessionId, converting, rootTitle, setTopics, setGraphOpen, setStageOpen]);
 
   const onFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return;

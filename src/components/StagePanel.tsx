@@ -49,10 +49,10 @@ function pickVideoMime(): string {
 
 export default function StagePanel() {
   const containerRef = useRef<HTMLDivElement>(null);
-  // 舞台铺满:不传 width/height,useScene 默认用容器尺寸,并随容器 resize 自适应。
-  // 自管 scene:根据 sceneCode 是否含 3D 类,创建 Scene 或 ThreeDScene(带 3D 相机+OrbitControls+光照)。
+  // 自管 scene:固定 16:9 内部分辨率(manim-web 默认帧),canvas 用 CSS object-fit 缩放居中适配容器。
+  // 不随容器尺寸建场景 → 宽扁/窄高容器不拉伸变形;开合窗口/拖拽列宽不重建场景、动画不重启。
+  const FRAME = { w: 960, h: 540 };
   const [scene, setScene] = useState<InstanceType<typeof Scene> | null>(null);
-  const [containerSize, setContainerSize] = useState({ w: 800, h: 420 });
   // 动画导出:截图(即时)/ 录制 WebM(MediaRecorder,点击开始→再点停止并下载)
   const [recording, setRecording] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -140,35 +140,21 @@ export default function StagePanel() {
     ? (() => { const tp = topics.find((t) => t.steps.some((s) => s.id === currentStep)); const n = tp ? tp.steps.findIndex((s) => s.id === currentStep) + 1 : 0; return `${n} / ${tp?.steps.length || 0}`; })()
     : `${currentStep} / ${lessonSteps.length}`;
 
-  // 测量容器尺寸(铺满 + resize 自适应)
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) {
-        const cr = e.contentRect;
-        setContainerSize({ w: Math.max(320, Math.floor(cr.width)), h: Math.max(240, Math.floor(cr.height)) });
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // sceneCode/容器尺寸 变化时重建对应类型的 scene
+  // sceneCode/重置/主题 变化时重建 scene(固定 16:9;不随容器尺寸重建 → 开合窗口/拖拽列宽不重启动画)
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     // 自建场景代码不需要注入 scene(自己在 container 上 new Scene)
     if (isSelfBuildCode(sceneCode)) { setScene(null); return; }
     const want3D = is3DCode(sceneCode);
-    const opts = { backgroundColor: cssVar("--bg-deepest"), width: containerSize.w, height: containerSize.h };
+    const opts = { backgroundColor: cssVar("--bg-deepest"), width: FRAME.w, height: FRAME.h };
     const s = want3D ? new ThreeDScene(container, opts) : new Scene(container, opts);
     setScene(s);
     return () => {
       try { (s as any).dispose?.(); } catch { /* ignore */ }
       setScene(null);
     };
-  }, [sceneCode, stageResetKey, containerSize.w, containerSize.h, theme]);
+  }, [sceneCode, stageResetKey, theme]);
 
   const lrTrackerRef = useRef<InstanceType<typeof ValueTracker> | null>(null);
   const startTrackerRef = useRef<InstanceType<typeof ValueTracker> | null>(null);
@@ -198,7 +184,7 @@ export default function StagePanel() {
     (async () => {
       const { code, myRun } = verifyRequest;
       const offscreen = document.createElement("div");
-      offscreen.style.cssText = "position:absolute;left:-9999px;top:0;width:800px;height:450px;";
+      offscreen.style.cssText = `position:absolute;left:-9999px;top:0;width:${FRAME.w}px;height:${FRAME.h}px;`;
       document.body.appendChild(offscreen);
       // 自建场景代码(自己 new Scene):离屏 freedom-Kitchen 跑,不做 BB/视觉检查(姿势多样)。
       if (isSelfBuildCode(code)) {
@@ -217,9 +203,8 @@ export default function StagePanel() {
         return;
       }
       const want3D = is3DCode(code);
-      // 用一个离屏容器跑验证,不污染主舞台。尺寸对齐主舞台(containerSize),让相机 frame 的
-      // 可见边界与用户看到的画面一致——否则 16:9 固定尺寸验证通过,主舞台宽高比不同时文字仍可能越界。
-      const opts = { backgroundColor: cssVar("--bg-deepest"), width: containerSize.w, height: containerSize.h };
+      // 离屏验证用固定 16:9 帧(与主舞台一致),相机 frame 可见边界 = 用户看到的画面。
+      const opts = { backgroundColor: cssVar("--bg-deepest"), width: FRAME.w, height: FRAME.h };
       const s = want3D ? new ThreeDScene(offscreen, opts) : new Scene(offscreen, opts);
       try {
         const ctx: any = makeManimCtx(s, paramValues);
@@ -529,14 +514,7 @@ function buildDefaultScene(s: any) {
         <span className="ml-2 text-[12px] text-[var(--text-dim)]">{stageStepTitle || "等待提问…"}</span>
         <span className="ml-auto text-[10px] text-[var(--text-faint)] tnum">{stageStepLabel}</span>
       </div>
-      <div ref={containerRef} className="flex-1 min-h-0 w-full overflow-hidden relative">
-        {!sceneCode && (
-          <div className="empty-state absolute inset-0">
-            <div className="empty-icon">▷</div>
-            <div className="text-[12px] text-[var(--text-mute)]">在左侧输入一个 STEM 知识点开始</div>
-            <div className="text-[10.5px] text-[var(--text-faint)]">主 agent 会拆解知识点,逐个用动画 + 讲解带你学</div>
-          </div>
-        )}
+      <div ref={containerRef} className="stage-canvas-wrap flex-1 min-h-0 w-full overflow-hidden relative flex items-center justify-center">
       </div>
       <div className="border-t border-[var(--border)] px-4 py-3 space-y-3 shrink-0">
         <div className="flex items-center gap-2">
