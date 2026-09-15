@@ -5,6 +5,7 @@ export interface VerificationReport {
   ok: boolean;
   error: string;
   codeVersion: string;
+  params?: Record<string, number>;
   checks: string[];
   missing: string[];
   frame: string;

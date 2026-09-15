@@ -19,6 +19,7 @@ import uuid
 from typing import Callable, Generator, Any
 
 from .session_store import append_event
+from .run_control import actor, writing, RunCancelled
 
 
 class Run:
@@ -29,12 +30,15 @@ class Run:
         self.label = label
         self.events: list[dict] = []
         self.done: bool = False
+        self.cancelled = False
         self.error: Any = None
         self.cond = threading.Condition()
         self.created_at = time.time()
 
     def push(self, evt: dict) -> None:
         with self.cond:
+            if self.cancelled:
+                return
             self.events.append(evt)
             self.cond.notify_all()
 
@@ -43,6 +47,11 @@ class Run:
             self.done = True
             self.error = error
             self.cond.notify_all()
+
+    def cancel(self) -> None:
+        with writing(self.sid):
+            self.cancelled = True
+            self.finish()
 
     def snapshot_from(self, idx: int) -> tuple[list[dict], bool, Any]:
         """返回 (从 idx 起的新事件, done, error)。"""
@@ -72,7 +81,7 @@ def _emit_persisted(sid: str, evt: dict, sub_dir: str = "") -> dict:
     return evt
 
 
-def start_run(sid: str, label: str, gen_factory: Callable[[], Generator[dict, None, None]], sub_dir: str = "") -> Run:
+def start_run(sid: str, label: str, gen_factory: Callable[[], Generator[dict, None, None]], sub_dir: str = "", precondition=None) -> Run:
     """启动后台线程跑 gen_factory() 生成器。每个 yield 的 dict 事件 push 进 Run + 落盘。
     返回该 Run(含 run_id)。若该 sid 已有 run,标旧 run 为 superseded(旧读者会看到 done)。
 
@@ -81,21 +90,39 @@ def start_run(sid: str, label: str, gen_factory: Callable[[], Generator[dict, No
     """
     run_id = uuid.uuid4().hex[:8]
     run = Run(run_id, sid, label)
-    with _RUNS_LOCK:
+    with writing(sid), _RUNS_LOCK:
+        if precondition is not None:
+            precondition()
         prev = _RUNS.get(sid)
         if prev is not None:
-            prev.finish()  # 让旧 SSE 读者自然结束
+            prev.cancel()
         _RUNS[sid] = run
 
     def worker():
+        token = actor.set(run)
+        iterator = None
         try:
-            for ev in gen_factory():
-                # 事件落盘 + 入缓冲
-                _emit_persisted(sid, ev, sub_dir=sub_dir)
-                run.push(ev)
+            with writing(sid):
+                iterator = iter(gen_factory())
+            while True:
+                with writing(sid):
+                    pass
+                ev = next(iterator)
+                with writing(sid):
+                    _emit_persisted(sid, ev, sub_dir=sub_dir)
+                    run.push(ev)
+        except (StopIteration, RunCancelled):
+            pass
         except Exception as e:  # noqa: BLE001
             run.finish(error=e)
             return
+        finally:
+            if iterator is not None:
+                try:
+                    iterator.close()
+                except (Exception, RunCancelled):
+                    pass
+            actor.reset(token)
         run.finish()
 
     t = threading.Thread(target=worker, name=f"agent-{sid}-{run_id}", daemon=True)

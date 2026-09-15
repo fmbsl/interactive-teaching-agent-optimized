@@ -15,9 +15,10 @@ from typing import Optional
 from collections import defaultdict
 
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
+from .run_control import GuardedMemorySaver as MemorySaver, SessionRegistry, guarded_tool
 from langgraph.types import Command, interrupt
 from langchain_core.tools import tool
+tool = guarded_tool(tool)
 from langchain_openai import ChatOpenAI
 
 from .manim_lesson import _get_runtime_cfg
@@ -28,9 +29,9 @@ from . import user_prefs
 
 
 # 每会话一份草稿(topics 在此累积,写回 session)
-_DRAFTS: dict[str, dict] = defaultdict(lambda: {"topics": []})
+_DRAFTS: dict[str, dict] = SessionRegistry(lambda: {"topics": []})
 # side-channel 事件队列:工具内不能 yield,往这里 append 事件,run_main_agent 在每个 ToolMessage 前 drain yield(仿 decompose_agent)
-_EMIT: dict[str, list[dict]] = defaultdict(list)
+_EMIT: dict[str, list[dict]] = SessionRegistry(list)
 import uuid as _uuid
 
 
@@ -428,7 +429,7 @@ def _build_agent(cfg, sid: str, depth: str = "understand"):
 # ---------- 运行:多轮(追加消息,stream 事件) ----------
 
 # resume 值暂存:前端 POST /api/chat_answer 时存,run_main_agent 的循环读取
-_RESUMES: dict[str, dict] = {}
+_RESUMES: dict[str, dict] = SessionRegistry()
 
 
 def set_chat_answer(sid: str, answer: str) -> None:

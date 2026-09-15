@@ -13,9 +13,10 @@ from typing import Optional, Any
 from collections import defaultdict
 
 from langgraph.prebuilt import create_react_agent  # 弃用但仍可用(langchain 主包未装,无法用 langchain.agents.create_agent)
-from langgraph.checkpoint.memory import MemorySaver
+from .run_control import GuardedMemorySaver as MemorySaver, SessionRegistry, guarded_tool, session_write
 from langgraph.types import Command, interrupt
 from langchain_core.tools import tool
+tool = guarded_tool(tool)
 from langchain_openai import ChatOpenAI
 
 from .manim_lesson import (
@@ -29,7 +30,7 @@ from .verification import normalize_verification, code_version
 
 # ---------- 草稿存储:每个 (sid, step_id) 一份,工具往里写 ----------
 
-_DRAFTS: dict[tuple[str, str], dict] = defaultdict(lambda: {
+_DRAFTS: dict[tuple[str, str], dict] = SessionRegistry(lambda: {
     "title": "", "intent": "", "explanation": "", "formula": "", "narration": "",
     "params": [], "sceneCode": "", "draftCode": "", "renderAttempts": 0,
 })
@@ -145,7 +146,27 @@ def _finish_ready(draft: dict) -> bool:
     满足时 commit 直接返回 FINISHED 自动收尾,省掉 LLM 单独调 finish 的一轮调用(每步省一次往返)。
     与 finish 工具的校验一致,避免"自动收尾但实际缺字段"的假完成。"""
     return bool(draft.get("sceneCode") and draft.get("title") and draft.get("explanation")
-                and draft.get("draftCode") == draft.get("sceneCode"))
+                and draft.get("draftCode") == draft.get("sceneCode")
+                and draft.get("verification", {}).get("ok")
+                and draft.get("verification", {}).get("params", {}) == default_params(draft))
+
+
+def default_params(draft):
+    return {p["name"]: p["default"] for p in draft.get("params", [])}
+
+
+def save_candidate(sid, step_id, draft):
+    import agent
+    from .run_control import writing, actor
+    with writing(sid):
+        run = actor.get()
+        if run is not None:
+            draft["ownerRun"] = run.run_id
+        session = agent.get_session(sid)
+        if session is not None:
+            import json
+            session.setdefault("step_drafts", {})[str(step_id)] = json.loads(json.dumps(draft))
+            agent._persist_state(sid)
 
 
 def _build_tools(sid: str, step_id: int):
@@ -169,6 +190,8 @@ def _build_tools(sid: str, step_id: int):
                 draft["params"] = _json.loads(params_json)
             except Exception as e:
                 return f"标题/讲解已设,但参数 JSON 解析失败:{e}"
+        else:
+            draft["params"] = []
         return f"已设置:标题={title[:20]}…,讲解 {len(explanation)} 字"
 
     @tool
@@ -225,13 +248,18 @@ def _build_tools(sid: str, step_id: int):
         # langgraph resume 会从 commit 工具入口重跑(不是从 interrupt 处继续),重跑时仍读同样的 draftCode,
         # 直接送同一段代码验证,无副作用;定稿状态只在渲染**通过**后(interrupt 返回)才写 sceneCode。
         # 暂停,等前端渲染回传。interrupt 的值会作为 SSE render_request 推给前端。
+        save_candidate(sid, step_id, draft)
         result = interrupt({"code": new_code})
         report = normalize_verification(result.get("verification") if isinstance(result, dict) else None,
                                         result.get("ok", False) if isinstance(result, dict) else False,
                                         expected_code=new_code)
+        if report["ok"] and report.get("params", {}) != default_params(draft):
+            report.update(ok=False, status="incomplete", error="验证参数与草稿默认参数不一致")
+        draft["verification"] = report
+        save_candidate(sid, step_id, draft)
         if report["ok"]:
             draft["verification"] = report
-            draft["sceneCode"] = new_code  # 定稿:与工作草稿一致
+            draft["sceneCode"] = ""  # 视觉复核完成后才定稿
             # 视觉检查:截帧 → 视觉模型描述画面布局。_run_vision_check 的 prompt 强制返回以
             # 「正常」或「问题:」开头。只有报问题时才返回给 agent 改;正常/未开启/失败 → 自动收尾。
             frame_path = result.get("framePath", "")
@@ -239,8 +267,11 @@ def _build_tools(sid: str, step_id: int):
             if frame_path:
                 vision_desc = _run_vision_check(frame_path, sid, step_id)
             if vision_desc and vision_desc.lstrip().startswith("问题"):
-                return (f"commit 通过,动画已定稿。但视觉检查发现画面问题:{vision_desc}\n"
+                draft["verification"] = {**report, "status": "failed", "ok": False, "error": vision_desc}
+                save_candidate(sid, step_id, draft)
+                return (f"几何检查通过，但视觉复核发现问题，草稿未定稿:{vision_desc}\n"
                         f"请按上面指出的问题修改(改完再 commit,视觉会复查)。")
+            draft["sceneCode"] = new_code
             # 自动收尾:字段齐全 + 定稿一致 → 直接 FINISHED(视图层检测到该值即停 stream,无需额外步骤)
             if _finish_ready(draft):
                 return "FINISHED"
@@ -261,6 +292,8 @@ def _build_tools(sid: str, step_id: int):
             return f"缺少必填字段:{missing},请先设置。"
         if draft.get("draftCode") != draft.get("sceneCode"):
             return "工作草稿与定稿不一致(你在最近一次 commit 后又 patch 改了代码未重新 commit),不能 finish。先调 commit 提交最新草稿。"
+        if not _finish_ready(draft):
+            return "当前代码或参数尚未通过完整验证，请重新 commit。"
         return "FINISHED"
 
     @tool
@@ -301,18 +334,23 @@ def _build_agent(cfg: LLMConfig, sid: str, step_id: int):
 # ⚠️ 键为 (sid, step_id, run_nonce):同一 (sid,step) 可能被重新 explain(切走再切回再点)产生新 run,
 # 旧 run 的 render_result 若仍按 (sid, step_id) 存,会被新 run 的 resume 误取 → 用旧结果 resume 新 run 的
 # 线程(旧 run 无对应结果),两线程并发跑同一 MemorySaver thread_id 互相踩草稿。带 run_nonce 精确区分。
-_RESUMES: dict[tuple[str, str, str], dict] = {}
+_RESUMES: dict[tuple[str, str, str], dict] = SessionRegistry()
 
 
 def validate_render_result(sid: str, step_id, ok: bool, error: str = "", nonce: str = "", verification=None):
+    from .executor import current_run
     draft = _DRAFTS.get((sid, str(step_id)))
     if not draft or not draft.get("runNonce") or nonce != draft["runNonce"]:
         raise ValueError("渲染结果属于已过期或未知的任务")
+    run = current_run(sid)
+    if draft.get("ownerRun") and (run is None or run.cancelled or run.run_id != draft["ownerRun"]):
+        raise ValueError("渲染任务已被停止或替换")
     if isinstance(verification, dict) and verification.get("codeVersion") and verification["codeVersion"] != code_version(draft.get("draftCode", "")):
         raise ValueError("渲染结果对应的代码已过期")
     return normalize_verification(verification, ok, error, draft.get("draftCode", ""))
 
 
+@session_write
 def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: str = "", nonce: str = "", verification=None) -> None:
     """前端渲染回传结果(由 /api/render_result 调用)。
     frame_path:若 ok=True 且前端截了最后一帧(视觉检查用),为图片存盘路径;否则空。
@@ -320,6 +358,8 @@ def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: 
     # 键统一为字符串:run 与 resume 都 str(step_id),防旧整数流 int/str 键不匹配 → resume 失效
     key = (sid, str(step_id), nonce or _resolve_run_nonce(sid, step_id, ""))
     report = validate_render_result(sid, step_id, ok, error, nonce, verification)
+    _DRAFTS[(sid, str(step_id))]["verification"] = report
+    save_candidate(sid, step_id, _DRAFTS[(sid, str(step_id))])
     _RESUMES[key] = {"ok": report["ok"], "error": report["error"], "framePath": frame_path if report["ok"] else "", "verification": report}
 
 
@@ -448,7 +488,7 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
         rr_parent = list(tcid_to_evt.values())[-1] if tcid_to_evt else current_parent
         yield {"kind": "render_request", "id": _new_id(sid), "parentId": rr_parent,
                "agent": "step", "stepId": step_id,
-               "payload": {"code": interrupt_value["code"], "nonce": run_nonce}}
+               "payload": {"code": interrupt_value["code"], "nonce": run_nonce, "params": default_params(_DRAFTS[(sid, step_id)])}}
         return
     # 若 interrupt 但无 code(异常)
     if interrupt_value is not None:
@@ -458,7 +498,7 @@ def run_step_agent(sid: str, step_id: int, step_title: str, prev_ctx: str,
 
     # 无 interrupt:agent 跑完
     draft = _DRAFTS[(sid, step_id)]
-    if draft.get("sceneCode"):
+    if _finish_ready(draft):
         yield {"kind": "explain", "id": _new_id(sid), "parentId": agent_evt_id,
                "agent": "step", "stepId": step_id, "payload": {"step": dict(draft)}}
         return
@@ -573,13 +613,13 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
         rr_parent = list(tcid_to_evt.values())[-1] if tcid_to_evt else current_parent
         yield {"kind": "render_request", "id": _new_id(sid), "parentId": rr_parent,
                "agent": "step", "stepId": step_id,
-               "payload": {"code": interrupt_value["code"], "nonce": run_nonce}}
+               "payload": {"code": interrupt_value["code"], "nonce": run_nonce, "params": default_params(_DRAFTS[(sid, step_id)])}}
         return
     if interrupt_value is not None:
         yield {"kind": "error", "id": _new_id(sid), "parentId": current_parent,
                "agent": "step", "stepId": step_id, "payload": {"message": "resume 后 interrupt 无 code"}}
         return
-    if draft.get("sceneCode"):
+    if _finish_ready(draft):
         yield {"kind": "explain", "id": _new_id(sid), "parentId": agent_evt_id,
                "agent": "step", "stepId": step_id, "payload": {"step": dict(draft)}}
         return

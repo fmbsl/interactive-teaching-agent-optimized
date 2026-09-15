@@ -8,12 +8,14 @@
 from __future__ import annotations
 import json
 import os
-import threading
+import logging
+import tempfile
+from .run_control import writing
 from typing import Optional
 
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _SESSIONS_DIR = os.path.join(_BACKEND_DIR, "sessions")
-_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 # state.json 里只存可序列化的会话状态(从 agent._SESSIONS[sid] 取)
 # 不存 graph 对象(MemorySaver 的暂停状态在 step_agent._SAVER 里,进程内,重启丢也无妨——
@@ -43,15 +45,22 @@ def append_event(sid: str, event: dict, sub_dir: str = "") -> None:
         _ensure_dir()
         if sub_dir:
             os.makedirs(os.path.join(_SESSIONS_DIR, sub_dir), exist_ok=True)
-        with _lock:
+        with writing(sid):
             with open(_jsonl_path(sid, sub_dir), "a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
-        pass  # 落盘失败不影响主流程
+        logger.exception("Failed to append session event: %s", sid)
+        raise
 
 
 def save_state(sid: str, state: dict) -> None:
     """覆盖写 <sid>.state.json。state 是会话状态 dict(只存可序列化字段)。"""
+    with writing(sid):
+        _save_state_locked(sid, state)
+
+
+def _save_state_locked(sid: str, state: dict) -> None:
+    tmp = None
     try:
         _ensure_dir()
         # 只存可序列化字段,剔除内部运行态
@@ -64,6 +73,8 @@ def save_state(sid: str, state: dict) -> None:
             "finished": state.get("finished", False),
             "title": state.get("title", ""),
             "step_cache": state.get("step_cache", {}),
+            "step_drafts": state.get("step_drafts", {}),
+            "revision": state.get("revision", 0) + 1,
             # 新字段(主 agent 升级):多主题 list / 对话历史 / 文件 / 深度 / 步骤状态黑板
             "topics": state.get("topics", []),
             "conversation": state.get("conversation", []),
@@ -72,12 +83,23 @@ def save_state(sid: str, state: dict) -> None:
             "step_status": state.get("step_status", {}),
             "graph": state.get("graph"),
         }
-        tmp = _state_path(sid) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        current = load_state(sid)
+        if current and current.get("revision", 0) > state.get("revision", 0):
+            raise ValueError("Stale session revision")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=_SESSIONS_DIR,
+                                         prefix=f"{sid}.", suffix=".tmp", delete=False) as f:
+            tmp = f.name
             json.dump(serializable, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, _state_path(sid))
+        state["revision"] = serializable["revision"]
     except Exception:
-        pass
+        logger.exception("Failed to save session state: %s", sid)
+        raise
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def load_state(sid: str) -> Optional[dict]:

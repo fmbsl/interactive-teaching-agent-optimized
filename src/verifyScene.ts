@@ -17,7 +17,7 @@ export async function verifyScene(code: string, params: Record<string, number>, 
   host.style.cssText = "position:absolute;left:-9999px;top:0;width:960px;height:540px";
   document.body.appendChild(host);
   const timeline = createLayoutTimeline();
-  const reportOf: typeof verificationReport = (...args) => ({...verificationReport(...args), sampling:timeline.coverage, layoutIssues:timeline.issues, overlapDeclarations:timeline.declarations});
+  const reportOf: typeof verificationReport = (...args) => ({...verificationReport(...args), params: {...params}, sampling:timeline.coverage, layoutIssues:timeline.issues, overlapDeclarations:timeline.declarations});
   const scope = createVerificationScope({ Scene, ThreeDScene }, c => c instanceof HTMLElement && (c === host || host.contains(c)), options.layout ? timeline.boundary : undefined, options.layout ? timeline.register : undefined);
   const timer = setInterval(() => {
     if (options.layout) for (const e of scope.scenes) if (!e.disposed && e.kind !== 'ThreeDScene') timeline.sample(e.scene);

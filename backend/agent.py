@@ -72,7 +72,8 @@ _GRAPH = build_graph()
 
 # ---------- 会话管理(内存,竞赛 demo)----------
 
-_SESSIONS: dict[str, dict] = {}
+from skill.run_control import SessionRegistry, session_write
+_SESSIONS: dict[str, dict] = SessionRegistry()
 
 
 def start_session(question: str, file_text: Optional[str] = None) -> tuple[str, dict]:
@@ -121,13 +122,10 @@ def create_session_with_lesson(sid: str, question: str, file_text: Optional[str]
 
 def _persist_state(sid: str) -> None:
     """把内存 session 状态落盘到 sessions/<sid>.state.json(重启不丢)。"""
-    try:
-        from skill.session_store import save_state
-        s = _SESSIONS.get(sid)
-        if s:
-            save_state(sid, s)
-    except Exception:
-        pass
+    from skill.session_store import save_state
+    s = _SESSIONS.get(sid)
+    if s:
+        save_state(sid, s)
 
 
 def restore_session(sid: str, state: dict) -> None:
@@ -142,6 +140,8 @@ def restore_session(sid: str, state: dict) -> None:
         # step_cache 键统一为字符串:旧 lesson 流的整数 id 与 topic 流的字符串 id(topicid-N / topicid-SN)
         # 都经 JSON 落地为字符串。不能 int() 强转——topic id 形如 `b8f7f543-1`,强转会 500(见 accessor 统一 str 键)。
         "step_cache": dict(state.get("step_cache") or {}),
+        "step_drafts": dict(state.get("step_drafts") or {}),
+        "revision": state.get("revision", 0),
         "scene_codes": {},
         # 新字段(旧 state.json 没有则空默认)
         "conversation": state.get("conversation", []),
@@ -369,6 +369,7 @@ def get_step_cache(sid: str, step_id) -> Optional[dict]:
     return s.get("step_cache", {}).get(str(step_id))
 
 
+@session_write
 def set_step_cache(sid: str, step_id, step_data: dict) -> None:
     """缓存某步的完整设计。键统一为字符串。"""
     s = _SESSIONS.get(sid)
@@ -382,6 +383,28 @@ def set_step_cache(sid: str, step_id, step_data: dict) -> None:
     _persist_state(sid)
 
 
+def accept_step(sid: str, step_id, step_data: dict) -> None:
+    """Generated candidates can only replace a saved step after full verification."""
+    from skill.run_control import writing
+    from skill.verification import normalize_verification
+    from skill.step_agent import default_params
+    with writing(sid):
+        code = step_data.get("sceneCode", "")
+        report = normalize_verification(step_data.get("verification"), expected_code=code)
+        if (not code or not report["ok"] or code != step_data.get("draftCode")
+                or report.get("params", {}) != default_params(step_data)):
+            raise ValueError("候选动画未通过当前代码和参数的完整验证")
+        state = _SESSIONS.get(sid)
+        previous = {key: dict(state.get(key, {})) for key in ("step_cache", "scene_codes", "step_status")} if state else {}
+        try:
+            set_step_cache(sid, step_id, step_data)
+        except Exception:
+            if state is not None:
+                state.update(previous)
+            raise
+
+
+@session_write
 def set_step_status(sid: str, step_id: int, status: str) -> None:
     """更新某步动画生成状态(共享黑板):pending/generating/done/error。"""
     s = _SESSIONS.get(sid)
@@ -391,6 +414,7 @@ def set_step_status(sid: str, step_id: int, status: str) -> None:
     _persist_state(sid)
 
 
+@session_write
 def set_graph(sid: str, graph: dict | None) -> None:
     """保存该 session 的知识分解图快照(随 session 走)。供 decompose 流写回用。
     graph 形如 {question, root_title, snapshot:{nodes,edges}};None 表示清除。"""
@@ -433,6 +457,7 @@ def list_sessions() -> list:
     return out
 
 
+@session_write
 def rename_session(sid: str, new_title: str) -> bool:
     """重命名会话标题(会话列表用)。返回是否成功。"""
     s = _SESSIONS.get(sid)
@@ -449,10 +474,15 @@ def rename_session(sid: str, new_title: str) -> bool:
     return True
 
 
+@session_write
 def delete_session(sid: str) -> bool:
     """删除会话:从内存移除 + 清掉各 agent 模块级缓存(图/草稿/事件/暂停)+ 删除落盘文件。
     若 MemorySaver 还有该 sid 的 checkpoint,一并清(尽力,删不了也继续)。返回是否"找到了要删的"。"""
     existed = sid in _SESSIONS or _path_exists(sid)
+    from skill.executor import current_run
+    run = current_run(sid)
+    if run is not None:
+        run.cancel()
     if sid in _SESSIONS:
         del _SESSIONS[sid]
     # 清各 agent 的按 sid 缓存

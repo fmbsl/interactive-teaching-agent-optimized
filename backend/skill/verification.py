@@ -50,6 +50,7 @@ def normalize_verification(report, legacy_ok=False, error="", expected_code=""):
                 "ok": False, "error": error or "旧客户端未提供完整验证报告，请更新页面后重试",
                 "codeVersion": "", "checks": [], "missing": sorted(REQUIRED_CHECKS)}
     out = {k: report.get(k) for k in ("schemaVersion", "status", "codeVersion", "checks", "missing")}
+    out["params"] = report.get("params", {})
     out["error"] = str(report.get("error") or error or "")
     out['sampling'] = _sampling(report.get('sampling'))
     # Diagnostic data is bounded; only normalized status/coverage can authorize a commit.

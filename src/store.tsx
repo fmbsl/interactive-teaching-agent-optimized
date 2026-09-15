@@ -26,8 +26,8 @@ interface AppState {
   sceneCode: string;
   setSceneCode: (code: string) => void;
   // 浏览器在环验证:后端 render_request 推一段待验证 code,StagePanel 跑完回调 reportVerifyResult
-  verifyRequest: { stepId: number; code: string; nonce: number; myRun: number } | null;
-  requestVerify: (stepId: number, code: string, myRun: number) => Promise<VerificationReport>;
+  verifyRequest: { stepId: number; code: string; nonce: number; myRun: number; params?: Record<string, number> } | null;
+  requestVerify: (stepId: number, code: string, myRun: number, params?: Record<string, number>) => Promise<VerificationReport>;
   reportVerifyResult: (result: VerificationReport, nonce: number) => void;
   cancelVerification: () => void;
   // 验证开关:BB 重叠检测 / 视觉检查
@@ -136,15 +136,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.warn("[settings] 加载应用设置失败:", e);
     }
   };
-  const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number; myRun: number } | null>(null);
+  const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number; myRun: number; params?: Record<string, number> } | null>(null);
   const mailbox = useRef(new VerificationMailbox()).current;
   const cancelVerification = () => {
     mailbox.cancel();
     setVerifyRequest(null);
   };
-  const requestVerify = (stepId: number, code: string, myRun: number): Promise<VerificationReport> => {
+  const requestVerify = (stepId: number, code: string, myRun: number, params?: Record<string, number>): Promise<VerificationReport> => {
     const { nonce, promise } = mailbox.begin();
-    setVerifyRequest({ stepId, code, nonce, myRun });
+    setVerifyRequest({ stepId, code, nonce, myRun, params });
     return promise;
   };
   const reportVerifyResult = (result: VerificationReport, nonce: number) => {

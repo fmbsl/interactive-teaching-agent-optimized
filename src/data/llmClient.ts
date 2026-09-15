@@ -23,7 +23,7 @@ export type ChatEvent = {
   | { kind: "agent_start"; stepId: number; title: string }
   | { kind: "tool_call"; stepId: number | null; name: string; args: Record<string, any> }
   | { kind: "tool_result"; stepId: number | null; toolCallId: string | null; output: string }
-  | { kind: "render_request"; stepId: number; code: string; nonce?: string }  // nonce: 该 render 所属 step_agent run,回传 render_result 时原样带回,后端据此 resume 对应 run(防旧 run 结果污染新 run)
+  | { kind: "render_request"; stepId: number; code: string; nonce?: string; params?: Record<string, number> }  // nonce: 该 render 所属 step_agent run,回传 render_result 时原样带回,后端据此 resume 对应 run(防旧 run 结果污染新 run)
   | { kind: "render_result"; stepId: number; ok: boolean; error: string; verification?: VerificationReport }
   | { kind: "explain"; stepId: number; title: string; intent: string; formula: string; narration: string; explanation?: string; paramsUsed: string[]; params: { name: string; label: string; min: number; max: number; step: number; default: number }[]; sceneCode: string }
   | { kind: "topic_added"; topic: Topic }
@@ -45,7 +45,10 @@ export type ChatEvent = {
 const API_BASE = ((import.meta as any).env?.VITE_API_BASE as string) || "";
 
 /** 带访问令牌的 fetch 包装:若有存储的 token,自动加 Authorization: Bearer。 */
-function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+const serverRuns = new Map<string, string>();
+let pendingStop: Promise<void> = Promise.resolve();
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  if (!String(input).endsWith('/api/chat_stop')) await pendingStop;
   const h = new Headers(init.headers || {});
   const t = localStorage.getItem("access_token");
   if (t) h.set("Authorization", `Bearer ${t}`);
@@ -88,14 +91,18 @@ export async function* chatAnswer(sid: string, answer: string = "", result: any 
 }
 
 /** 打断当前对话生成:通知后端停掉该 sid 的当前 run(停推 SSE),配合前端 abort fetch。 */
-export async function chatStop(sid: string): Promise<void> {
-  try {
-    await apiFetch(`${API_BASE}/api/chat_stop`, {
+export function chatStop(sid: string): Promise<void> {
+  const run_id = serverRuns.get(sid);
+  const stopping = pendingStop.then(async () => {
+    const response = await apiFetch(`${API_BASE}/api/chat_stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sid }),
+      body: JSON.stringify({ sid, run_id }),
     });
-  } catch { /* 打断失败静默:前端已本地中止 */ }
+    if (!response.ok) throw new Error(`停止请求失败 ${response.status}`);
+  });
+  pendingStop = stopping.catch(() => {});
+  return stopping;
 }
 
 /** 用户偏好(全局记忆):GET 取 / POST 存。 */
@@ -235,7 +242,7 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
       case "agent_start": return { ...base, kind: "agent_start", stepId: (p.stepId ?? e.stepId), title: p.title };
       case "tool_call": return { ...base, kind: "tool_call", stepId: (p.stepId ?? e.stepId), name: p.name, args: p.args || {} };
       case "tool_result": return { ...base, kind: "tool_result", stepId: (p.stepId ?? e.stepId), toolCallId: p.toolCallId ?? null, output: p.output || "" };
-      case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? e.stepId), code: p.code || "", nonce: p.nonce || "" };
+      case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? e.stepId), code: p.code || "", nonce: p.nonce || "", params: p.params || {} };
       case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? e.stepId), ok: !!p.ok, error: p.error || "", verification: p.verification };
       case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? e.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
       case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
@@ -468,6 +475,8 @@ export async function decomposeAutoSplit(sid: string, target: string): Promise<{
  * 仅对"连接建立失败"(请求还没发出、后端未产生副作用)自动重试——如后端刚重启/短暂网络抖动;
  * 流读到一半断线不重试(后端可能已产生副作用,重发会重复生成)。用户主动中断则不重试。 */
 async function fetchSSE(url: string, body: any, signal?: AbortSignal, retries = 2): Promise<Response> {
+  const sid = body.sid || body.session_id;
+  if (sid) serverRuns.delete(sid);
   let lastErr: any;
   for (let i = 0; i <= retries; i++) {
     try {
@@ -572,7 +581,11 @@ function parseRawSSE(raw: string): any | null {
     else if (line.startsWith("data:")) data += line.slice(5).trim();
   }
   if (!event || !data) return null;
-  try { return JSON.parse(data); } catch { return null; }
+  try {
+    const obj = JSON.parse(data);
+    if (event === 'run') { serverRuns.set(obj.sid, obj.run_id); return null; }
+    return obj;
+  } catch { return null; }
 }
 
 function parseSSE(raw: string): ChatEvent | null {
@@ -585,6 +598,7 @@ function parseSSE(raw: string): ChatEvent | null {
   if (!event || !data) return null;
   let obj: any;
   try { obj = JSON.parse(data); } catch { return null; }
+  if (event === 'run') { serverRuns.set(obj.sid, obj.run_id); return null; }
   // 大部分事件是执行树 evt:{id,parentId,ts,kind,agent,stepId,payload};少数控制事件(session/done/error)是裸 dict。
   const tree = (obj && typeof obj === "object" && "payload" in obj) ? obj : null;
   const p = tree ? tree.payload : obj;
@@ -598,7 +612,7 @@ function parseSSE(raw: string): ChatEvent | null {
     case "agent_start": return { ...base, kind: "agent_start", stepId: (p.stepId ?? tree?.stepId), title: p.title };
     case "tool_call": return { ...base, kind: "tool_call", stepId: (p.stepId ?? tree?.stepId), name: p.name, args: p.args || {} };
     case "tool_result": return { ...base, kind: "tool_result", stepId: (p.stepId ?? tree?.stepId), toolCallId: p.toolCallId ?? null, output: p.output || "" };
-    case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? tree?.stepId), code: p.code || "", nonce: p.nonce || "" };
+    case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? tree?.stepId), code: p.code || "", nonce: p.nonce || "", params: p.params || {} };
     case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? tree?.stepId), ok: !!p.ok, error: p.error || "", verification: p.verification };
     case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? tree?.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
     case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };

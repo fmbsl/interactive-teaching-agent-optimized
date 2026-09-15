@@ -190,7 +190,7 @@ export default function StagePanel() {
   useEffect(() => {
     if (!verifyRequest) return;
     const controller = new AbortController();
-    void verifyScene(verifyRequest.code, paramValues, {
+    void verifyScene(verifyRequest.code, verifyRequest.params ?? paramValues, {
       signal: controller.signal, layout: bbCheckEnabled, vision: visionCheckEnabled,
       background: cssVar("--bg-deepest"),
     }).then(result => {
@@ -448,6 +448,9 @@ function buildDefaultScene(s: any) {
 
   return (
     <div className="flex h-full flex-col stage-transition">
+      {verificationFeedback?.report.status === 'passed' && (
+        <p className="text-xs px-3 py-1">验证仅覆盖本次默认参数；调整滑块后的画面尚未验证。</p>
+      )}
       {verificationFeedback && ['incomplete','failed'].includes(verificationFeedback.report.status) && (
         <div role="status" className="px-4 py-2 text-xs border-b border-[var(--border)] text-[var(--text)]">
           <p>{verificationFeedback.report.status === 'failed' ? '布局或执行验证失败，草稿未定稿。' : '验证未完成，草稿未定稿。'}</p>

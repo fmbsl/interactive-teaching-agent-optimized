@@ -11,15 +11,16 @@ from typing import Optional
 from collections import defaultdict
 
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
+from .run_control import GuardedMemorySaver as MemorySaver, SessionRegistry, guarded_tool
 from langchain_core.tools import tool
+tool = guarded_tool(tool)
 from langchain_openai import ChatOpenAI
 
 from .manim_lesson import _get_runtime_cfg, OUTLINE_PROMPT
 
 
 # 每会话一份草稿
-_DRAFTS: dict[str, dict] = defaultdict(lambda: {"title": "", "summary": "", "steps": []})
+_DRAFTS: dict[str, dict] = SessionRegistry(lambda: {"title": "", "summary": "", "steps": []})
 import uuid as _uuid
 
 

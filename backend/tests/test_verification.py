@@ -22,7 +22,7 @@ def draft(monkeypatch):
     value = {"runNonce": "current", "draftCode": CODE, "sceneCode": "", "title": "test", "explanation": "test", "renderAttempts": 0}
     monkeypatch.setitem(step_agent._DRAFTS, ("test-verification", "1"), value)
     monkeypatch.setattr(step_agent, "_RESUMES", {})
-    return value
+    return step_agent._DRAFTS[("test-verification", "1")]
 
 @pytest.mark.parametrize("status", ["incomplete", "cancelled", "failed", "unknown"])
 def test_boolean_success_cannot_override_status(status):

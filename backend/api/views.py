@@ -9,13 +9,14 @@
 import json
 import time
 from io import BytesIO
+from functools import wraps
+from skill.run_control import writing
 
 from django.http import StreamingHttpResponse, JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 
 import agent
 import skill as skill_mod  # noqa: F401  (确保 skill 包可被发现)
-from skill import generate_step
 from skill.step_agent import run_step_agent, resume_step_agent, set_render_result, validate_render_result
 from skill.debug_log import dlog
 from skill.executor import start_run, iter_events, current_run
@@ -66,6 +67,7 @@ def _new_evt(sid: str, kind: str, payload: dict, parentId: str | None = None,
 def _stream_run(sid: str, run_id: str, replay: bool = False):
     """SSE 读者:从后台 run 缓冲读事件,逐个 yield SSE 行。run 结束/被取代时收尾。
     客户端断连 → 本生成器在 yield 处停(不再读),后台 run 继续跑完(到 render_request/explain)。"""
+    yield _sse("run", {"sid": sid, "run_id": run_id})
     for evt, status in iter_events(sid, run_id, replay=replay):
         if status == "live":
             yield _sse_line(evt)
@@ -192,7 +194,7 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
                 sd = ev["payload"]["step"]
                 sd.setdefault("title", step_title)
                 if session_id:
-                    agent.set_step_cache(session_id, step_id, sd)
+                    agent.accept_step(session_id, step_id, sd)
                 dlog(f"explain sid={session_id} step={step_id} OK sceneCode_len={len(sd.get('sceneCode',''))} STORED")
                 yield _new_evt(session_id, "explain", {
                     "stepId": step_id,
@@ -207,44 +209,11 @@ def _explain_event(lesson: dict, step_id: int, prev_error: str | None = None, se
                 }, parentId=ev.get("id"), agent_name="step", stepId=step_id)
                 return
     except Exception as e:
-        dlog(f"explain sid={session_id} step={step_id} step_agent EXCEPTION: {type(e).__name__}: {e} — 回退 generate_step")
+        dlog(f"explain sid={session_id} step={step_id} step_agent EXCEPTION: {type(e).__name__}: {e}")
 
-    # 回退:旧一次性 generate_step
-    yield from _explain_event_fallback(lesson, step_id, step_title, outline_titles, question, prev_step, prev_error, session_id)
+    # 未通过验证的候选不再通过旧回退路径发布。
+    yield _new_evt(session_id, "error", {"message": "本次生成未通过验证，已保留上一版可用结果。请重试。"}, agent_name="step", stepId=step_id)
 
-
-def _explain_event_fallback(lesson, step_id, step_title, outline_titles, question, prev_step, prev_error, session_id):
-    """step agent 失败时回退到旧 generate_step(一次性 JSON,无浏览器在环)。生成器 yield 事件 dict。"""
-    last_err = None
-    for attempt in range(3):
-        try:
-            sd = generate_step(step_title, outline_titles, prev_step=prev_step, question=question, prev_error=prev_error)
-            sc = sd.get("sceneCode", "") if sd else ""
-            dlog(f"explain sid={session_id} step={step_id} FALLBACK attempt={attempt+1} sceneCode_len={len(sc)}")
-            if sd and sd.get("sceneCode"):
-                if session_id:
-                    agent.set_step_cache(session_id, step_id, sd)
-                yield _new_evt(session_id, "explain", {
-                    "stepId": step_id,
-                    "title": sd.get("title", step_title),
-                    "intent": sd.get("intent", ""),
-                    "formula": sd.get("formula", ""),
-                    "narration": sd.get("narration", ""),
-                    "explanation": sd.get("explanation", ""),
-                    "paramsUsed": [p.get("name") for p in sd.get("params", [])],
-                    "params": sd.get("params", []),
-                    "sceneCode": sd.get("sceneCode", ""),
-                }, agent_name="step", stepId=step_id)
-                return
-            last_err = "sceneCode 为空"
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-            dlog(f"explain sid={session_id} step={step_id} FALLBACK attempt={attempt+1} EXCEPTION: {last_err}")
-        time.sleep(2)
-    dlog(f"explain sid={session_id} step={step_id} FAILED all last_err={last_err}")
-    yield _new_evt(session_id, "explain", {"stepId": step_id, "title": step_title, "intent": "", "formula": "",
-                       "narration": "", "explanation": "", "paramsUsed": [], "params": [], "sceneCode": ""},
-                   agent_name="step", stepId=step_id)
 
 
 def _emit_lesson_events(lesson: dict, current_step: int = 1, session_id: str | None = None):
@@ -339,6 +308,7 @@ def _valid_step_id(session: dict, step_id) -> bool:
         return False
     lesson = session.get("lesson") or {}
     return 1 <= n <= len(lesson.get("steps", []) or [])
+
 
 
 
@@ -592,12 +562,9 @@ def regenerate(request):
 
     def gen_factory():
         try:
-            # 手动重生成:清该步缓存,重跑 step agent(浏览器在环自修)
-            # step_id 可能是 int(旧)或 str 'topicid-N'(新),统一 str(step_id) 作 cache 键
+            # 保留上一版通过的结果,新草稿通过后才替换。
             sid_step = str(step_id)
-            if sid:
-                agent.set_step_cache(sid, sid_step, {"sceneCode": "", "title": "", "intent": "", "formula": "", "narration": "", "params": []})
-            yield from _explain_event(lesson, sid_step, prev_error=error, session_id=sid)
+            yield from _explain_event(lesson, sid_step, prev_error=error or "用户请求重新生成", session_id=sid)
         except Exception as e:
             yield _new_evt(sid, "error", {"message": f"重生成失败: {e}"}, agent_name="step", stepId=str(step_id))
 
@@ -605,7 +572,20 @@ def regenerate(request):
     return _streaming_response(_stream_run(sid, run.run_id))
 
 
+def _render_request_lock(view):
+    @wraps(view)
+    def locked(request):
+        try:
+            sid = json.loads(request.body or b"{}").get("session_id", "")
+        except (ValueError, AttributeError):
+            return view(request)
+        with writing(sid):
+            return view(request)
+    return locked
+
+
 @csrf_exempt
+@_render_request_lock
 def render_result(request):
     """前端渲染回传:body {session_id, step_id, ok, error?, frame?}。
     恢复暂停的 step agent(浏览器在环验证循环),流式返回 render_request(再次失败)/ explain(通过) / error。
@@ -670,7 +650,7 @@ def render_result(request):
                     return  # 本段结束,等前端再次 POST
                 elif kind == "explain":
                     sd = ev["payload"]["step"]
-                    agent.set_step_cache(sid, step_id, sd)
+                    agent.accept_step(sid, step_id, sd)
                     dlog(f"render_result sid={sid} step={step_id} -> OK sceneCode_len={len(sd.get('sceneCode',''))} STORED")
                     yield _new_evt(sid, "explain", {
                         "stepId": step_id,
@@ -688,7 +668,10 @@ def render_result(request):
             dlog(f"render_result sid={sid} step={step_id} EXCEPTION: {type(e).__name__}: {e}")
             yield _new_evt(sid, "error", {"message": f"恢复 agent 失败: {e}"}, agent_name="step", stepId=step_id)
 
-    run = start_run(sid, f"resume-{step_id}", gen_factory)
+    try:
+        run = start_run(sid, f"resume-{step_id}", gen_factory, precondition=lambda: validate_render_result(sid, step_id, ok, error, nonce, verification))
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=409)
     return _streaming_response(_stream_run(sid, run.run_id))
 
 
@@ -762,6 +745,8 @@ def session_detail(request, sid: str):
         "topics": merged_topics,
         "depth": s.get("depth", "understand"),
         "graph": s.get("graph"),
+        "step_drafts": s.get("step_drafts", {}),
+        "revision": s.get("revision", 0),
     })
 
 
@@ -968,17 +953,23 @@ def chat_answer(request):
 
 @csrf_exempt
 def chat_stop(request):
-    """打断:结束该 sid 的当前 run(停推 SSE)。前端点"■ 停止"时调用。
-    后台 agent 线程本段收尾后不再推有用事件;配合前端 Abort 立即停流。"""
+    """主动取消任务并关闭后续写入；run_id 防止迟到停止请求取消新任务。"""
     try:
         data = json.loads(request.body or b"{}")
     except Exception:
         data = {}
     sid = data.get("sid") or request.POST.get("sid")
     if sid:
-        run = current_run(sid)
-        if run is not None:
-            run.finish()  # 标 done → SSE 读者立即收尾 / 停推
+        from skill.run_control import writing
+        from skill.step_agent import clear_session
+        with writing(sid):
+            run = current_run(sid)
+            expected = data.get("run_id")
+            if expected and (run is None or run.run_id != expected):
+                return JsonResponse({"ok": True, "superseded": True})
+            if run is not None:
+                run.cancel()
+            clear_session(sid)
     return JsonResponse({"ok": True})
 
 

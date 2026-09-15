@@ -295,7 +295,7 @@ export default function ChatPanel() {
         // 浏览器在环验证:让 StagePanel 跑这段 code,拿结果(含可选最后一帧 frame)回传后端,继续 consume 回传流
         // 先打开动画窗保证 StagePanel 可见消费 verifyRequest(否则 Promise 永不 resolve → 死锁)
         setStageOpen(true);
-        const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun);
+        const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun, (ev as any).params || {});
         if (ok_err_frame.status === "cancelled") return;
         if (consumeRunIdRef.current !== myRun) return;
         const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "", ok_err_frame);
@@ -413,7 +413,7 @@ export default function ChatPanel() {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       // 先打开动画窗:StagePanel 有 verifyRequest 消费端;窗口关着时 Promise 永不 resolve → 永久"生成中"死锁
       setStageOpen(true);
-      const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun);
+      const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun, (ev as any).params || {});
         if (ok_err_frame.status === "cancelled") return;
       if (consumeRunIdRef.current !== myRun) return;
       const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "", ok_err_frame);
@@ -585,7 +585,9 @@ export default function ChatPanel() {
     cancelVerification(); // 使当前 consume 的后续事件作废(防串台残留)
     setLoading(false);
     const sid = sessionIdRef.current;
-    if (sid) void chatStop(sid);
+    if (sid) void chatStop(sid).catch(() => {
+      setItems(prev => [...prev, makeItem({ kind: "error", message: "本地已停止，但后端未确认取消，请检查连接。" } as ChatEvent, `stop-error-${Date.now()}`)]);
+    });
     setItems((prev) => [...prev, makeItem({ kind: "message", role: "orchestrator", text: "⛔ 已打断生成。", ts: Date.now() } as ChatEvent, `s-${Date.now()}`)]);
   }
 

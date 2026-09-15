@@ -27,8 +27,9 @@ from typing import Optional
 from collections import defaultdict
 
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
+from .run_control import GuardedMemorySaver as MemorySaver, SessionRegistry, guarded_tool
 from langchain_core.tools import tool
+tool = guarded_tool(tool)
 from langchain_openai import ChatOpenAI
 
 from .manim_lesson import _get_runtime_cfg
@@ -38,13 +39,13 @@ import threading as _threading
 
 
 # 每会话一份图草稿 + 事件 side-channel 队列
-_GRAPHS: dict[str, dict] = defaultdict(lambda: {
+_GRAPHS: dict[str, dict] = SessionRegistry(lambda: {
     "nodes": {},        # id -> {title, aliases, sets, mastery, depth}
     "edges": set(),     # (from_id, to_id),只有 prerequisite_of
     "frontier": [],     # 待拆节点 id 列表
     "title_index": {},  # 标题/别名 -> id(去重用,只含当前存活节点)
 })
-_EMIT: dict[str, list[dict]] = defaultdict(list)
+_EMIT: dict[str, list[dict]] = SessionRegistry(list)
 _LOCKS: dict[str, _threading.Lock] = defaultdict(_threading.Lock)  # 每会话一把锁,防并行 tool_call 改图竞态
 import uuid as _uuid
 import json as _json
