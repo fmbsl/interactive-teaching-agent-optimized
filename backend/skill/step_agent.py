@@ -24,6 +24,7 @@ from .manim_lesson import (
     RUNTIME_POWER_BLOCK, OFFICIAL_EXAMPLES_BLOCK,
 )
 from .llm_config_store import _get_vision_cfg
+from .verification import normalize_verification, code_version
 
 
 # ---------- 草稿存储:每个 (sid, step_id) 一份,工具往里写 ----------
@@ -202,7 +203,11 @@ def _build_tools(sid: str, step_id: int):
         # 直接送同一段代码验证,无副作用;定稿状态只在渲染**通过**后(interrupt 返回)才写 sceneCode。
         # 暂停,等前端渲染回传。interrupt 的值会作为 SSE render_request 推给前端。
         result = interrupt({"code": new_code})
-        if isinstance(result, dict) and result.get("ok"):
+        report = normalize_verification(result.get("verification") if isinstance(result, dict) else None,
+                                        result.get("ok", False) if isinstance(result, dict) else False,
+                                        expected_code=new_code)
+        if report["ok"]:
+            draft["verification"] = report
             draft["sceneCode"] = new_code  # 定稿:与工作草稿一致
             # 视觉检查:截帧 → 视觉模型描述画面布局。_run_vision_check 的 prompt 强制返回以
             # 「正常」或「问题:」开头。只有报问题时才返回给 agent 改;正常/未开启/失败 → 自动收尾。
@@ -276,13 +281,23 @@ def _build_agent(cfg: LLMConfig, sid: str, step_id: int):
 _RESUMES: dict[tuple[str, str, str], dict] = {}
 
 
-def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: str = "", nonce: str = "") -> None:
+def validate_render_result(sid: str, step_id, ok: bool, error: str = "", nonce: str = "", verification=None):
+    draft = _DRAFTS.get((sid, str(step_id)))
+    if not draft or not draft.get("runNonce") or nonce != draft["runNonce"]:
+        raise ValueError("渲染结果属于已过期或未知的任务")
+    if isinstance(verification, dict) and verification.get("codeVersion") and verification["codeVersion"] != code_version(draft.get("draftCode", "")):
+        raise ValueError("渲染结果对应的代码已过期")
+    return normalize_verification(verification, ok, error, draft.get("draftCode", ""))
+
+
+def set_render_result(sid: str, step_id, ok: bool, error: str = "", frame_path: str = "", nonce: str = "", verification=None) -> None:
     """前端渲染回传结果(由 /api/render_result 调用)。
     frame_path:若 ok=True 且前端截了最后一帧(视觉检查用),为图片存盘路径;否则空。
     nonce:render_request 事件里带的 run nonce,标识该结果属于哪个 run(见 _RESUMES 注释)。"""
     # 键统一为字符串:run 与 resume 都 str(step_id),防旧整数流 int/str 键不匹配 → resume 失效
     key = (sid, str(step_id), nonce or _resolve_run_nonce(sid, step_id, ""))
-    _RESUMES[key] = {"ok": ok, "error": error, "framePath": frame_path}
+    report = validate_render_result(sid, step_id, ok, error, nonce, verification)
+    _RESUMES[key] = {"ok": report["ok"], "error": report["error"], "framePath": frame_path if report["ok"] else "", "verification": report}
 
 
 def _resolve_run_nonce(sid: str, step_id, nonce: str) -> str:
@@ -435,7 +450,6 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
     ⚠️ 若该 nonce 与当前草稿的 runNonce 不一致 = 此结果属于已被重新 explain 取代的旧 run → 直接丢弃,
     否则会用旧结果 resume 新 run 的线程(新 run 可能还在流式执行/还没到 interrupt),两线程并发跑同一
     MemorySaver thread_id 互踩草稿 → 重复 render_request / 落错 sceneCode。"""
-    cfg = cfg or _get_runtime_cfg()
     step_id = str(step_id)  # 与 run_step_agent/set_render_result 键一致(统一字符串)
     draft = _DRAFTS.get((sid, step_id), {})
     if not draft.get("runNonce"):
@@ -457,6 +471,15 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
         yield {"kind": "error", "id": _new_id(sid), "parentId": None,
                "agent": "step", "stepId": step_id, "payload": {"message": "无待处理的渲染结果"}}
         return
+    if result["verification"]["status"] in ("incomplete", "cancelled"):
+        yield {"kind": "render_result", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
+               "agent": "step", "stepId": step_id,
+               "payload": {"ok": False, "error": result["error"], "verification": result["verification"]}}
+        yield {"kind": "error", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
+               "agent": "step", "stepId": step_id,
+               "payload": {"message": result["error"] or "验证未完成，草稿未定稿；请重试"}}
+        return
+    cfg = cfg or _get_runtime_cfg()
     agent_obj = _build_agent(cfg, sid, step_id)
     config = {"configurable": {"thread_id": tid}}
     # 失败计数:只在回传 ok=False 时累计,> 12 次拦截(避免 renderAttempts 被 resume 重复执行 tool 翻倍)
@@ -474,7 +497,7 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
     # (render_request 的 id 在前端已有,resume 时前端会带上来?为简化,这里挂 agent_start)
     yield {"kind": "render_result", "id": _new_id(sid), "parentId": agent_evt_id,
            "agent": "step", "stepId": step_id,
-           "payload": {"ok": result.get("ok", False), "error": result.get("error", "")}}
+           "payload": {"ok": result.get("ok", False), "error": result.get("error", ""), "verification": result["verification"]}}
 
     interrupt_value = None
     finished = False  # commit 通过+字段齐全自动收尾(返回 FINISHED)或 finish 成功 → 停 stream,省掉多余 LLM 轮

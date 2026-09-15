@@ -1,3 +1,4 @@
+import { VerificationMailbox, type VerificationReport } from "./verificationTypes";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { emptyLesson, type Lesson } from "./data/lesson";
 import { listLlmConfigs, getAppSettings, type EndpointConfig, type SessionSummary } from "./data/llmClient";
@@ -26,9 +27,9 @@ interface AppState {
   setSceneCode: (code: string) => void;
   // 浏览器在环验证:后端 render_request 推一段待验证 code,StagePanel 跑完回调 reportVerifyResult
   verifyRequest: { stepId: number; code: string; nonce: number; myRun: number } | null;
-  requestVerify: (stepId: number, code: string, myRun: number) => void;
-  reportVerifyResult: (ok: boolean, error: string, frame: string, myRun: number) => void;
-  verifyResultHandler: React.MutableRefObject<{ myRun: number; resolve: (ok: boolean, error: string, frame: string) => void } | null>;
+  requestVerify: (stepId: number, code: string, myRun: number) => Promise<VerificationReport>;
+  reportVerifyResult: (result: VerificationReport, nonce: number) => void;
+  cancelVerification: () => void;
   // 验证开关:BB 重叠检测 / 视觉检查
   bbCheckEnabled: boolean; setBbCheckEnabled: (v: boolean) => void;
   visionCheckEnabled: boolean; setVisionCheckEnabled: (v: boolean) => void;
@@ -136,14 +137,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
   const [verifyRequest, setVerifyRequest] = useState<{ stepId: number; code: string; nonce: number; myRun: number } | null>(null);
-  const verifyResultHandler = useRef<{ myRun: number; resolve: (ok: boolean, error: string, frame: string) => void } | null>(null);
-  const requestVerify = (stepId: number, code: string, myRun: number) => setVerifyRequest({ stepId, code, nonce: Date.now(), myRun });
-  // ⚠️ 必须按 myRun 匹配才 resolve:切 session 后旧 session 的离屏验证可能晚到,若不匹配直接丢弃
-  // (否则旧验证结果会 resolve 新 session 的 verify handler → 用 A 的渲染结果 resume B 的 step_agent)
-  const reportVerifyResult = (ok: boolean, error: string, frame: string = "", myRun: number) => {
-    const h = verifyResultHandler.current;
-    if (h && h.myRun === myRun) { verifyResultHandler.current = null; h.resolve(ok, error, frame); }
+  const mailbox = useRef(new VerificationMailbox()).current;
+  const cancelVerification = () => {
+    mailbox.cancel();
+    setVerifyRequest(null);
   };
+  const requestVerify = (stepId: number, code: string, myRun: number): Promise<VerificationReport> => {
+    const { nonce, promise } = mailbox.begin();
+    setVerifyRequest({ stepId, code, nonce, myRun });
+    return promise;
+  };
+  const reportVerifyResult = (result: VerificationReport, nonce: number) => {
+    if (mailbox.complete(nonce, result)) setVerifyRequest(null);
+  };
+  useEffect(() => () => mailbox.cancel(), [mailbox]);
   const [stepStatus, setStepStatus] = useState<Record<number, StepStatus>>({ 1: "active" });
   const [paramValues, setParamValues] = useState<ParamValues>(() => ({}));
 
@@ -209,6 +216,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const switchSession = (info: { sessionId: string; lesson: Lesson | null; currentStep: number; sceneCode: string }) => {
+    cancelVerification();
     setSessionId(info.sessionId);
     setCurrentStep(info.currentStep);
     setSceneCode(info.sceneCode);
@@ -230,6 +238,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const resetToEmpty = () => {
+    cancelVerification();
     setSessionId(null);
     setCurrentStep(1);
     setSceneCode("");
@@ -271,7 +280,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isPlaying, setIsPlaying,
       stageResetKey, bumpStageReset: () => setStageResetKey((k) => k + 1),
       sceneCode, setSceneCode,
-      verifyRequest, requestVerify, reportVerifyResult, verifyResultHandler,
+      verifyRequest, requestVerify, reportVerifyResult, cancelVerification,
       bbCheckEnabled, setBbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled,
       sessionId, setSessionId,
       sessionList, setSessionList,

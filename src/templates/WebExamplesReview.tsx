@@ -73,9 +73,7 @@ export default function WebExamplesReview() {
           const r = await execScript(ctx, tpl.sceneCode, 40000);
           if (rid !== runIdRef.current) return;
           if (!r.ok) throw new Error(r.error);
-          setStatus(r.timedOut
-            ? { text: "完成 · (动画长,超时兜底)", ok: true }
-            : { text: "完成 · 自建 scene(可拖拽/旋转)", ok: true });
+          setStatus({ text: "完成 · 自建 scene(可拖拽/旋转)", ok: true });
         } else {
           const want3D = tpl.is3D ?? is3DCode(tpl.sceneCode);
           const opts = { backgroundColor: "#0a0c14", width: size.w, height: size.h };

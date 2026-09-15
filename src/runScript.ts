@@ -11,6 +11,7 @@
 
 import { adaptColorLiterals } from "./themeColor";
 import { ensureManimGlobals } from "./manimCtx";
+import { executeWithDeadline, type ExecutionOutcome } from "./scriptExecution";
 
 const AsyncFunctionCtor = Object.getPrototypeOf(async function () {}).constructor;
 
@@ -42,49 +43,55 @@ export async function transpileTS(code: string, _callBackup?: (fn: () => void) =
 /** 是否"自建场景"代码:代码里自己 new Scene/ThreeDScene(而非用注入的 scene)。
  * 自建场景时用自由脚本模式(给真 container + 全局导出),暂停/断点降级为连播。 */
 export function isSelfBuildCode(code: string): boolean {
-  return /new\s+(?:Scene|ThreeDScene)\s*\(/.test(code);
+  if (/new\s+(?:(?:ctx|window)\.)?(?:Scene|ThreeDScene)\s*\(/.test(code)) return true;
+  // Playback routing hint only; validation collects real constructors independently.
+  const aliases = [
+    ...code.matchAll(/\b(?:Scene|ThreeDScene)\s*:\s*([A-Za-z_$][\w$]*)/g),
+    ...code.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*ctx\.(?:Scene|ThreeDScene)\b/g),
+  ];
+  return aliases.some(match => {
+    const alias = match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\bnew\\s+${alias}\\s*\\(`).test(code);
+  });
 }
 
-export type ExecResult =
-  | { ok: true; timedOut?: boolean; code: string }
-  | { ok: false; error: string; code?: string };
+export type ExecResult = ExecutionOutcome & { code?: string };
+export interface ExecOptions { signal?: AbortSignal; bindings?: Record<string, unknown> }
 
 /**
  * 执行一段脚本。流程:剥 import → 先按纯 JS 用 AsyncFunction 直跑(快路径,不加载 TS 编译器)
  * → 若语法错(极可能是带类型注解),懒加载 typescript 转译后重跑。
  * @param ctx 传给代码的上下文(模板检查页:self-build 传 {container, params,...};主应用传注入 scene 的 ctx)
  * @param code 脚本字符串
- * @param timeoutMs 超时(长动画/卡死的兜底;超时视为通过,仅标记 timedOut)
+ * @param timeoutMs 协作式截止时间；超时为未完成，不算通过，也不能抢占同步死循环。
  */
-export async function execScript(ctx: any, code: string, timeoutMs = 40000): Promise<ExecResult> {
+export async function execScript(ctx: any, code: string, timeoutMs = 40000, options: ExecOptions = {}): Promise<ExecResult> {
   // 兜底:把 manim-web 导出铺到 window 全局,LLM 忘在解构行列出 LEFT/RIGHT/DOWN/UP/颜色/类名时能从全局拿到
   ensureManimGlobals();
   // 颜色字面量浅色兜底(adaptColorLiterals 内部会判断是否浅色背景;非浅色则原样返回)
   let js = stripBareImports(adaptColorLiterals(code));
   let fn: any;
+  // Lexical bindings avoid mutating global constructors while multiple scenes run.
+  const compile = (source: string) => {
+    const bindings = options.bindings || {};
+    return new Function(...Object.keys(bindings), `return async function(ctx) {\n${source}\n}`)(...Object.values(bindings));
+  };
   try {
-    fn = new AsyncFunctionCtor("ctx", js);
+    fn = options.bindings ? compile(js) : new AsyncFunctionCtor("ctx", js);
   } catch (e: any) {
     // 直跑语法错(多半带 TS 注解)→ 转译后重试
     let tjs: string;
     try {
       tjs = await transpileTS(js);
     } catch (te: any) {
-      return { ok: false, error: "TS 转译失败: " + String(te?.message || te), code: js };
+      return { ok: false, status: "failed", error: "TS 转译失败: " + String(te?.message || te), code: js };
     }
     try {
-      fn = new AsyncFunctionCtor("ctx", tjs);
+      fn = options.bindings ? compile(tjs) : new AsyncFunctionCtor("ctx", tjs);
     } catch (e2: any) {
-      return { ok: false, error: "代码(转译后)仍非合法 JS,无法执行: " + String(e2?.message || e2), code: tjs };
+      return { ok: false, status: "failed", error: "代码(转译后)仍非合法 JS,无法执行: " + String(e2?.message || e2), code: tjs };
     }
     js = tjs;
   }
-  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("__exec_timeout__")), timeoutMs));
-  try {
-    await Promise.race([fn(ctx), timeout]);
-    return { ok: true, code: js };
-  } catch (e: any) {
-    if (String(e?.message) === "__exec_timeout__") return { ok: true, timedOut: true, code: js };
-    return { ok: false, error: String(e?.message || e), code: js };
-  }
+  return { ...await executeWithDeadline(() => fn(ctx), timeoutMs, options.signal), code: js };
 }

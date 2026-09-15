@@ -16,7 +16,7 @@ from django.views.decorators.csrf import csrf_exempt
 import agent
 import skill as skill_mod  # noqa: F401  (确保 skill 包可被发现)
 from skill import generate_step
-from skill.step_agent import run_step_agent, resume_step_agent, set_render_result
+from skill.step_agent import run_step_agent, resume_step_agent, set_render_result, validate_render_result
 from skill.debug_log import dlog
 from skill.executor import start_run, iter_events, current_run
 
@@ -617,7 +617,7 @@ def render_result(request):
         body = json.loads(request.body or b"{}")
         sid = body.get("session_id", "")
         step_id = body.get("step_id", 0)  # 可能是 int(旧)或 str(新分层 topic step_id,如 "3af9a407-1")
-        ok = bool(body.get("ok", False))
+        ok = body.get("ok", False) is True
         error = body.get("error", "") or ""
         frame = body.get("frame", "") or ""  # base64 PNG(无 data:image/png;base64, 前缀)
         nonce = str(body.get("nonce", "") or "")  # render_request 事件带的 run nonce(精确 resume 对应 run)
@@ -627,6 +627,11 @@ def render_result(request):
         return _streaming_response(iter([_sse("error", {"message": "session_id/step_id 缺失"})]))
     # step_id 统一转字符串(set_render_result/resume_step_agent/step_cache 都按字符串键存)
     step_id = str(step_id)
+    try:
+        verification = validate_render_result(sid, step_id, ok, error, nonce, body.get("verification"))
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=409)
+    ok, error = verification["ok"], verification["error"]
     # 文件名的 step_id 必须白名单清洗:禁止 / \ .. 等路径穿越字符(step_id 也作缓存键,故单独清洗出一份)
     try:
         import re as _re_safe
@@ -648,7 +653,10 @@ def render_result(request):
         except Exception as e:
             dlog(f"FRAME_SAVE_FAIL sid={sid} step={step_id} err={e!r}")
     dlog(f"RENDER_RESULT sid={sid} step={step_id} ok={ok} error={error!r} frame={'Y' if frame_path else 'N'} nonce={nonce!r}")
-    set_render_result(sid, step_id, ok, error, frame_path=frame_path, nonce=nonce)
+    try:
+        set_render_result(sid, step_id, ok, error, frame_path=frame_path, nonce=nonce, verification=verification)
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=409)
 
     def gen_factory():
         try:

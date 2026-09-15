@@ -1,3 +1,4 @@
+import type { VerificationReport } from "../verificationTypes";
 // 真后端流式客户端:对接 Django LangGraph agent。
 // 三端点:/api/start /api/next /api/update + /api/upload(文件)
 // SSE 事件:session / plan / step-start / explain / done / error
@@ -23,7 +24,7 @@ export type ChatEvent = {
   | { kind: "tool_call"; stepId: number | null; name: string; args: Record<string, any> }
   | { kind: "tool_result"; stepId: number | null; toolCallId: string | null; output: string }
   | { kind: "render_request"; stepId: number; code: string; nonce?: string }  // nonce: 该 render 所属 step_agent run,回传 render_result 时原样带回,后端据此 resume 对应 run(防旧 run 结果污染新 run)
-  | { kind: "render_result"; stepId: number; ok: boolean; error: string }
+  | { kind: "render_result"; stepId: number; ok: boolean; error: string; verification?: VerificationReport }
   | { kind: "explain"; stepId: number; title: string; intent: string; formula: string; narration: string; explanation?: string; paramsUsed: string[]; params: { name: string; label: string; min: number; max: number; step: number; default: number }[]; sceneCode: string }
   | { kind: "topic_added"; topic: Topic }
   | { kind: "ask"; question: string; options?: string[] }
@@ -160,9 +161,9 @@ export async function* regenerateScene(sessionId: string, stepId: number, error:
 
 /** 浏览器渲染回传:把渲染结果(ok/error)POST 给后端,后端恢复 agent,流式返回 render_request(再次失败)/ explain / error。
  * nonce:render_request 事件带的 run nonce,原样带回,后端据此 resume 对应 run。 */
-export async function* postRenderResult(sessionId: string, stepId: number, ok: boolean, error: string, frame: string = "", nonce: string = ""): AsyncGenerator<ChatEvent> {
+export async function* postRenderResult(sessionId: string, stepId: number, ok: boolean, error: string, frame: string = "", nonce: string = "", verification?: VerificationReport): AsyncGenerator<ChatEvent> {
   // frame: ok=true 时可选,最后一帧 base64(视觉检查用);为空字符串则不带
-  const body: Record<string, unknown> = { session_id: sessionId, step_id: stepId, ok, error, nonce };
+  const body: Record<string, unknown> = { session_id: sessionId, step_id: stepId, ok, error, nonce, verification: verification && { ...verification, frame: "" } };
   if (frame) body.frame = frame;
   yield* streamSSE(`${API_BASE}/api/render_result`, body);
 }
@@ -235,7 +236,7 @@ export async function getTrace(sid: string): Promise<ChatEvent[]> {
       case "tool_call": return { ...base, kind: "tool_call", stepId: (p.stepId ?? e.stepId), name: p.name, args: p.args || {} };
       case "tool_result": return { ...base, kind: "tool_result", stepId: (p.stepId ?? e.stepId), toolCallId: p.toolCallId ?? null, output: p.output || "" };
       case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? e.stepId), code: p.code || "", nonce: p.nonce || "" };
-      case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? e.stepId), ok: !!p.ok, error: p.error || "" };
+      case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? e.stepId), ok: !!p.ok, error: p.error || "", verification: p.verification };
       case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? e.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
       case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
       case "ask": return { ...base, kind: "ask", question: p.question || "", options: p.options };
@@ -598,7 +599,7 @@ function parseSSE(raw: string): ChatEvent | null {
     case "tool_call": return { ...base, kind: "tool_call", stepId: (p.stepId ?? tree?.stepId), name: p.name, args: p.args || {} };
     case "tool_result": return { ...base, kind: "tool_result", stepId: (p.stepId ?? tree?.stepId), toolCallId: p.toolCallId ?? null, output: p.output || "" };
     case "render_request": return { ...base, kind: "render_request", stepId: (p.stepId ?? tree?.stepId), code: p.code || "", nonce: p.nonce || "" };
-    case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? tree?.stepId), ok: !!p.ok, error: p.error || "" };
+    case "render_result": return { ...base, kind: "render_result", stepId: (p.stepId ?? tree?.stepId), ok: !!p.ok, error: p.error || "", verification: p.verification };
     case "explain": return { ...base, kind: "explain", stepId: (p.stepId ?? tree?.stepId), title: p.title, intent: p.intent, formula: p.formula, narration: p.narration, explanation: p.explanation || "", paramsUsed: p.paramsUsed, params: p.params || [], sceneCode: p.sceneCode || "" };
     case "topic_added": return { ...base, kind: "topic_added", topic: p as Topic };
     case "ask": return { ...base, kind: "ask", question: p.question || "", options: p.options };

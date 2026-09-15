@@ -3,7 +3,9 @@ import { makeManimCtx, makeSelfBuildCtx, Scene, ThreeDScene, Axes, Dot, Line, Te
 import { useApp } from "../store";
 import { regenerateScene } from "../data/llmClient";
 import { SkipBack, Play, Pause, SkipForward, RotateCcw, Camera, Square, Video } from "lucide-react";
-import { is3DCode, detectOverlap, detectMathTexError, detectOutOfBounds, detectNaN } from "../sceneCheck";
+import { is3DCode } from "../sceneCheck";
+import { verifyScene } from "../verifyScene";
+import { verificationCheckLabel, type VerificationReport } from "../verificationTypes";
 import { execScript, isSelfBuildCode } from "../runScript";
 
 // 转换器路线:后端把 Python Manim → TS,再拼成 `const {...} = ctx; <body>`。
@@ -48,6 +50,7 @@ function pickVideoMime(): string {
 }
 
 export default function StagePanel() {
+  const [verificationFeedback, setVerificationFeedback] = useState<{ code: string; report: VerificationReport } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // 自管 scene:固定 16:9 内部分辨率(manim-web 默认帧),canvas 用 CSS object-fit 缩放居中适配容器。
   // 不随容器尺寸建场景 → 宽扁/窄高容器不拉伸变形;开合窗口/拖拽列宽不重建场景、动画不重启。
@@ -102,6 +105,7 @@ export default function StagePanel() {
     } catch { /* 不支持则静默 */ }
   };
   const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled, theme } = useApp();
+  useEffect(() => { setVerificationFeedback(null); }, [sessionId, currentStep]);
 
   // 参数调整消抖 + 调完自动播放:
   // paramKey(JSON 化 paramValues)变化 → 停稳 350ms 后才重建一次场景(滑块拖动不每 tick 全量重绘);
@@ -164,7 +168,7 @@ export default function StagePanel() {
   // "播放"= 解除暂停,连续往后播(各段不再停,直到用户按暂停);"暂停"= 设标志,下个动画段末停住。
   // "下一段"(⏭)= stepOnce=true,只走一段到下个断点再停。
   const pauseCtrl = useRef<{ paused: boolean; resume: (() => void) | null; stepOnce: boolean }>({ paused: true, resume: null, stepOnce: false });
-  const waitIfPaused = async () => {
+  const waitIfPaused = async (signal?: AbortSignal) => {
     // stepOnce:被"下一段"唤醒后,只走这一段,到这里重新挂起(单步推进语义)
     if (pauseCtrl.current.stepOnce) {
       pauseCtrl.current.stepOnce = false;
@@ -172,101 +176,31 @@ export default function StagePanel() {
       setIsPlaying(false);
       return;
     }
-    while (pauseCtrl.current.paused) {
-      await new Promise<void>((resolve) => { pauseCtrl.current.resume = resolve; });
+    while (pauseCtrl.current.paused && !signal?.aborted) {
+      await new Promise<void>((resolve) => {
+        const resume = () => { signal?.removeEventListener("abort", resume); resolve(); };
+        pauseCtrl.current.resume = resume;
+        signal?.addEventListener("abort", resume, { once: true });
+      });
     }
+    if (signal?.aborted) throw new Error("播放已取消");
   };
 
-  // 浏览器在环验证:收到 verifyRequest 时,在临时 scene 上跑 code,成功/失败回报给后端 agent
+  // One validator for injected and self-created scenes; request identity prevents late replies.
   useEffect(() => {
     if (!verifyRequest) return;
-    let disposed = false;
-    (async () => {
-      const { code, myRun } = verifyRequest;
-      const offscreen = document.createElement("div");
-      offscreen.style.cssText = `position:absolute;left:-9999px;top:0;width:${FRAME.w}px;height:${FRAME.h}px;`;
-      document.body.appendChild(offscreen);
-      // 自建场景代码(自己 new Scene):离屏 freedom-Kitchen 跑,不做 BB/视觉检查(姿势多样)。
-      if (isSelfBuildCode(code)) {
-        try {
-          exposeManimGlobals(offscreen);
-          const cc: any = makeSelfBuildCtx(offscreen, paramValues);
-          const rr = await execScript(cc, code, 30000);
-          if (disposed) return;
-          if (!rr.ok) throw new Error(rr.error);
-          reportVerifyResult(true, "", "", myRun);
-        } catch (e: any) {
-          if (!disposed) reportVerifyResult(false, String(e?.message || e), "", myRun);
-        } finally {
-          offscreen.remove();
-        }
-        return;
+    const controller = new AbortController();
+    void verifyScene(verifyRequest.code, paramValues, {
+      signal: controller.signal, layout: bbCheckEnabled, vision: visionCheckEnabled,
+      background: cssVar("--bg-deepest"),
+    }).then(result => {
+      if (!controller.signal.aborted) {
+        setVerificationFeedback({ code: verifyRequest.code, report: result });
+        reportVerifyResult(result, verifyRequest.nonce);
       }
-      const want3D = is3DCode(code);
-      // 离屏验证用固定 16:9 帧(与主舞台一致),相机 frame 可见边界 = 用户看到的画面。
-      const opts = { backgroundColor: cssVar("--bg-deepest"), width: FRAME.w, height: FRAME.h };
-      const s = want3D ? new ThreeDScene(offscreen, opts) : new Scene(offscreen, opts);
-      try {
-        const ctx: any = makeManimCtx(s, paramValues);
-        // 执行(TS 容忍 + 30s 超时):execScript 先按纯 JS 直跑,语法错(含 TS 注解)才转译重跑。
-        // ⚠️ 超时阈值必须大于典型教学动画总时长(常 15-20s,含结尾 Indicate/Pulse/Circumscribe)。
-        // 之前 10s 太短:长动画跑到一半被超时判"通过",后段 Indicate/Pulse 从没被验证过 →
-        // 主舞台跑完整代码时在那一步报错(e107.map),回退默认梯度下降并 REGENERATE 循环。
-        // 超时时间是"动画太长安逸通过"下限。注:超时那一刻后的动画段未被验证(主舞台仍可能触发),
-        // 30s 已覆盖绝大多数教学动画全长;这是当前实现的取舍,非"无条件通过"。
-        const execR = await execScript(ctx, code, 30000);
-        if (!execR.ok) throw new Error(execR.error);
-        if (disposed) return;
-        // MathTex 渲染错误检查:manim-web 的 MathTex._renderPromise 用 .catch 吞掉 MathJax 错误
-        // (只 console.error + 存 _renderError,Promise 仍 resolve),所以 await waitForRender() 不会抛。
-        // 但主舞台后续读取 MathTex 几何(nextTo/getBoundingBox/Indicate 读点)会触发同步 MathJax retry 抛错
-        // → 主舞台 build 失败 → 回退默认场景。这里主动查 getRenderError(),把 MathJax 失败暴露给 agent 自修。
-        const texErr = detectMathTexError(s);
-        if (texErr) {
-          reportVerifyResult(false, `公式渲染失败(MathJax 字体异步加载问题,改用 MathTexImage 或简化 LaTeX 避开 \\overrightarrow/\\mathcal 等需动态字体的命令):${texErr}`, "", myRun);
-          return;
-        }
-        // NaN 检测(硬错误,不受 BB 开关控制):标签/坐标含 NaN -> 打回自修
-        const nan = detectNaN(s);
-        if (nan) {
-          reportVerifyResult(false, nan, "", myRun);
-          return;
-        }
-        // 渲染成功后:2D BB 重叠检测(开关开且非 3D)
-        if (bbCheckEnabled && !want3D) {
-          const overlap = detectOverlap(s);
-          if (overlap) {
-            reportVerifyResult(false, `文字/形状重叠:${overlap}`, "", myRun);
-            return;
-          }
-          // 文字/标注越界检测:文字飘出画布边缘被裁 → 打回自修
-          const ob = detectOutOfBounds(s);
-          if (ob) {
-            reportVerifyResult(false, ob, "", myRun);
-            return;
-          }
-        }
-        // 视觉检查:开关开且非 3D 时,截最后一帧(canvas.toDataURL)随结果回传后端,
-        // 后端存 png 并调视觉辅助模型描述画面(主模型无视觉时)。3D 的 WebGL canvas
-        // toDataURL 多半空白,暂跳过(降级无视觉检查)。
-        let frame = "";
-        if (visionCheckEnabled && !want3D) {
-          try {
-            const cv = (s as any).getCanvas?.();
-            if (cv && cv.toDataURL) frame = cv.toDataURL("image/png");
-          } catch { /* 截帧失败:降级无 frame,不阻塞验证通过 */ }
-        }
-        reportVerifyResult(true, "", frame, myRun);
-      } catch (e: any) {
-        if (!disposed) reportVerifyResult(false, String(e?.message || e), "", myRun);
-      } finally {
-        try { (s as any).dispose?.(); } catch { /* ignore */ }
-        offscreen.remove();
-      }
-    })();
-    return () => { disposed = true; };
-  }, [verifyRequest]); // eslint-disable-line react-hooks/exhaustive-deps
-
+    });
+    return () => controller.abort();
+  }, [verifyRequest]); // Snapshot settings/params for this request.
 
   // 滑块 → tracker(默认场景实时响应,无动画)
   useEffect(() => {
@@ -289,6 +223,7 @@ export default function StagePanel() {
     // 注入 scene 路径需要 scene;自建场景路径不需要(自己在 container 上建)
     if (!s && !selfBuild) return;
     let cancelled = false;
+    const playback = new AbortController();
     // scene 类型和 sceneCode 不匹配时跳过本次 build(等重建 scene 的 useEffect 换成正确类型再跑),
     // 否则 3D 代码会在普通 Scene 上执行报 "setCameraOrientation is not a function"(仅注入 scene 路径)
     const want3D = is3DCode(sceneCode);
@@ -303,6 +238,7 @@ export default function StagePanel() {
           regenCountByStepRef.current[currentStep] = 0;
           return;
         } catch (e: any) {
+          if (cancelled) return;
           console.warn("[sceneCode] 自建场景首跑失败,重试一次:", e?.message || e);
           await new Promise((r) => setTimeout(r, 250));
           if (cancelled) return;
@@ -310,6 +246,7 @@ export default function StagePanel() {
             await runSelfBuild(sceneCode, paramValues);
             regenCountByStepRef.current[currentStep] = 0;
           } catch (e2: any) {
+            if (cancelled) return;
             console.warn("[sceneCode] 自建场景重试仍失败:", e2?.message || e2);
             if (s) { try { s.clear(); } catch {} }
           }
@@ -327,6 +264,7 @@ export default function StagePanel() {
           regenCountByStepRef.current[currentStep] = 0;
           return;
         } catch (e: any) {
+          if (cancelled) return;
           console.warn("[sceneCode] 首次执行失败,等待 250ms 后用同一段已验证代码重试一次:", e?.message || e);
           // 主舞台与离屏验证共享 manim-web 全局状态(MathJax/KaTeX 加载、渲染资源),
           // 验证刚结束、离屏 scene 销毁后立刻 build,可能撞上瞬时竞态(如 MathJax retry)。
@@ -339,12 +277,13 @@ export default function StagePanel() {
             regenCountByStepRef.current[currentStep] = 0;
             return;
           } catch (e2: any) {
+            if (cancelled) return;
             console.warn("[sceneCode] 重试仍失败,回退默认场景:", e2?.message || e2);
             s.clear();
             // 仅当代码确实有问题(两次都失败)才回退默认 + 触发后端重生成;
             // 且每步上限 1 次重生成,超过则保留默认场景(避免反复横跳浪费 LLM 调用)
             const used = regenCountByStepRef.current[currentStep] || 0;
-            if (used < 1 && sessionId) {
+            if (used < 1 && sessionId && !(verificationFeedback?.code === sceneCode && verificationFeedback.report.status !== "passed")) {
               regenCountByStepRef.current[currentStep] = used + 1;
               (async () => {
                 try {
@@ -446,7 +385,7 @@ function buildDefaultScene(s: any) {
       stage.appendChild(host);
       exposeManimGlobals(host);
       const ctx: any = makeSelfBuildCtx(host, params);
-      const r = await execScript(ctx, code, 40000);
+      const r = await execScript(ctx, code, Infinity, { signal: playback.signal });
       if (!r.ok) throw new Error(r.error);
     }
 
@@ -469,15 +408,15 @@ function buildDefaultScene(s: any) {
       const origWait = s.wait.bind(s);
       s.play = async function (...anims: any[]) {
         await origPlay(...anims);
-        await waitIfPaused();
+        await waitIfPaused(playback.signal);
       };
       s.wait = async function (dur?: number) {
         await origWait(dur);
-        await waitIfPaused();
+        await waitIfPaused(playback.signal);
       };
       // 执行:支持 TS+JS(execScript 先按纯 JS 直跑,语法错才懒加载 typescript 转译剥类型),
-      // 带 40s 超时防代码挂死(卡死的动画不再把主舞台 build 卡住)。
-      const execR = await execScript(ctx, code, 40000);
+      // 播放允许用户长时间暂停；验证截止时间仅在离屏验证生效，播放用 signal 清理。
+      const execR = await execScript(ctx, code, Infinity, { signal: playback.signal });
       if (execR.ok) return;
       // 完整信息打到 console,便于定位主舞台 vs 离屏验证不一致的错(e107.map / MathJax retry 等)
       console.error("[runSceneCode FAIL]", execR.error);
@@ -487,6 +426,7 @@ function buildDefaultScene(s: any) {
     void build();
     return () => {
       cancelled = true;
+      playback.abort();
       iterateRef.current = null;
     };
   }, [scene, currentStep, stageResetKey, sceneCode, paramRebuildKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -508,6 +448,16 @@ function buildDefaultScene(s: any) {
 
   return (
     <div className="flex h-full flex-col stage-transition">
+      {verificationFeedback?.report.status === "incomplete" && (
+        <div role="status" className="px-4 py-2 text-xs border-b border-[var(--border)] text-[var(--text)]">
+          <p>验证未完成：{verificationFeedback.report.error}</p>
+          <details><summary>查看检查范围</summary>
+            <p>已检查：{verificationFeedback.report.checks.map(verificationCheckLabel).join("、") || "尚无"}；未覆盖：{verificationFeedback.report.missing.map(verificationCheckLabel).join("、")}</p>
+          </details>
+          <button className="btn-ghost mt-1" onClick={() => setSceneCode(verificationFeedback.code)}>预览未验证草稿</button>
+          {sceneCode === verificationFeedback.code && <p>当前为未验证预览，不会保存为通过版本。</p>}
+        </div>
+      )}
       {/* 舞台上方加一行步骤标题,让中栏有"标题感" */}
       <div className="flex items-center px-4 h-9 border-b border-[var(--border)] shrink-0">
         <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">Stage</span>

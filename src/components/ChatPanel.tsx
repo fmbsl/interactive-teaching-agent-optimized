@@ -92,7 +92,7 @@ export default function ChatPanel() {
     sessionId, setSessionId, setSceneCode, mergeStepParams, updateStepContent, updateTopicStep,
     sessionList, setSessionList, switchSession, resetToEmpty,
     navRequest,
-    requestVerify, verifyResultHandler,
+    requestVerify, cancelVerification,
     depth, setDepth, topics, addTopic, setTopics, decomposeGraph, setDecomposeGraph,
     setStageOpen, setExplainOpen, setGraphOpen, closeAllWindows,
     setPendingQuiz, setQuizResult,
@@ -159,6 +159,7 @@ export default function ChatPanel() {
     if (!pendingResume || !sessionIdRef.current) return;
     const sid = sessionIdRef.current;
     consumeRunIdRef.current++;
+    cancelVerification();
     const myRun = consumeRunIdRef.current;
     (async () => {
       try {
@@ -294,12 +295,10 @@ export default function ChatPanel() {
         // 浏览器在环验证:让 StagePanel 跑这段 code,拿结果(含可选最后一帧 frame)回传后端,继续 consume 回传流
         // 先打开动画窗保证 StagePanel 可见消费 verifyRequest(否则 Promise 永不 resolve → 死锁)
         setStageOpen(true);
-        const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
-          verifyResultHandler.current = { myRun, resolve: (ok, error, frame) => resolve({ ok, error, frame }) };
-          requestVerify(ev.stepId, ev.code, myRun);
-        });
+        const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun);
+        if (ok_err_frame.status === "cancelled") return;
         if (consumeRunIdRef.current !== myRun) return;
-        const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "");
+        const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "", ok_err_frame);
         // 递归 consume 回传流:内联消费(不再走外层 for await,避免嵌套)
         for await (const sub of subStream) {
           if (consumeRunIdRef.current !== myRun) return;
@@ -414,12 +413,10 @@ export default function ChatPanel() {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       // 先打开动画窗:StagePanel 有 verifyRequest 消费端;窗口关着时 Promise 永不 resolve → 永久"生成中"死锁
       setStageOpen(true);
-      const ok_err_frame: { ok: boolean; error: string; frame: string } = await new Promise((resolve) => {
-        verifyResultHandler.current = { myRun, resolve: (ok, error, frame) => resolve({ ok, error, frame }) };
-        requestVerify(ev.stepId, ev.code, myRun);
-      });
+      const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun);
+        if (ok_err_frame.status === "cancelled") return;
       if (consumeRunIdRef.current !== myRun) return;
-      const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "");
+      const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "", ok_err_frame);
       let subErr = "";
       for await (const sub of subStream) {
         if (consumeRunIdRef.current !== myRun) return;
@@ -584,7 +581,8 @@ export default function ChatPanel() {
   function stopGeneration() {
     abortRef.current?.abort();
     abortRef.current = null;
-    consumeRunIdRef.current++; // 使当前 consume 的后续事件作废(防串台残留)
+    consumeRunIdRef.current++;
+    cancelVerification(); // 使当前 consume 的后续事件作废(防串台残留)
     setLoading(false);
     const sid = sessionIdRef.current;
     if (sid) void chatStop(sid);
@@ -637,7 +635,8 @@ export default function ChatPanel() {
   }
 
   async function handleNewSession() {
-    consumeRunIdRef.current++; // 作废旧 session 的 consume
+    consumeRunIdRef.current++;
+    cancelVerification(); // 作废旧 session 的 consume
     abortRef.current?.abort(); // 取消旧 SSE reader:后台生成由 executor 解耦继续跑(不调 chatStop,勿停旧生成)
     abortRef.current = null;
     setLoading(false); // 新会话立刻可输入(旧生成残留的 loading 不冻结新会话)
@@ -669,7 +668,8 @@ export default function ChatPanel() {
   async function handleSwitchSession(sid: string) {
     if (sid === sessionId) { setShowSessions(false); return; }
     setSessionQuery("");
-    consumeRunIdRef.current++; // 作废当前 session 的 consume,防止旧 SSE 事件串台
+    consumeRunIdRef.current++;
+    cancelVerification(); // 作废当前 session 的 consume,防止旧 SSE 事件串台
     abortRef.current?.abort(); // 取消旧 SSE reader:后台生成由 executor 解耦继续跑(不调 chatStop,勿停旧生成)
     abortRef.current = null;
     setLoading(false); // 新会话立刻可输入(旧生成残留的 loading 不冻结新会话)
@@ -1224,7 +1224,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "render_result":
       return (
         <div className={`flex items-center gap-1.5 text-[10.5px] py-0.5 ml-2 ${event.ok ? "text-[var(--blue-strong)]" : "text-[#e07a5f]"}`}>
-          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.ok ? "渲染通过" : "渲染失败"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
+          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.verification?.status === "incomplete" ? "验证未完成" : event.verification?.status === "cancelled" ? "验证已取消" : event.ok ? "末帧检查通过" : "验证失败"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
         </div>
       );
     case "explain":
