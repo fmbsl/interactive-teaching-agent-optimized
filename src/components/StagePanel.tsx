@@ -448,11 +448,14 @@ function buildDefaultScene(s: any) {
 
   return (
     <div className="flex h-full flex-col stage-transition">
-      {verificationFeedback?.report.status === "incomplete" && (
+      {verificationFeedback && ['incomplete','failed'].includes(verificationFeedback.report.status) && (
         <div role="status" className="px-4 py-2 text-xs border-b border-[var(--border)] text-[var(--text)]">
-          <p>验证未完成：{verificationFeedback.report.error}</p>
-          <details><summary>查看检查范围</summary>
+          <p>{verificationFeedback.report.status === 'failed' ? '布局或执行验证失败，草稿未定稿。' : '验证未完成，草稿未定稿。'}</p>
+          <details><summary>查看原因和检查范围</summary>
+            <p className="max-h-32 overflow-auto break-all">{verificationFeedback.report.error}</p>
             <p>已检查：{verificationFeedback.report.checks.map(verificationCheckLabel).join("、") || "尚无"}；未覆盖：{verificationFeedback.report.missing.map(verificationCheckLabel).join("、")}</p>
+            {verificationFeedback.report.sampling && <p>实际播放采样 {verificationFeedback.report.sampling.samples} 次，最大间隔 {verificationFeedback.report.sampling.maxGapMs}ms；不能覆盖任意短暂瞬间。</p>}
+            {!!verificationFeedback.report.overlapDeclarations?.length && <p>过渡叠放声明：{verificationFeedback.report.overlapDeclarations.map(d=>`${d.objects.join(' / ')}，${d.start}–${d.end}s：${d.reason}`).join('；')}</p>}
           </details>
           <button className="btn-ghost mt-1" onClick={() => setSceneCode(verificationFeedback.code)}>预览未验证草稿</button>
           {sceneCode === verificationFeedback.code && <p>当前为未验证预览，不会保存为通过版本。</p>}

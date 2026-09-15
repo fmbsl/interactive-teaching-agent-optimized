@@ -4,6 +4,22 @@ import * as manimWeb from "manim-web";
 
 const anyMW = manimWeb as any;
 
+// Text bakes fill alpha into its canvas; MathTexImage uses material opacity.
+// Upstream only marks transform dirty, leaving an already drawn Text texture stale.
+for (const name of ['Text', 'MathTexImage']) {
+  const proto = anyMW[name]?.prototype;
+  if (proto && !Object.prototype.hasOwnProperty.call(proto, '__teachingFillOpacity')) {
+    const original = proto.setFillOpacity;
+    Object.defineProperty(proto, '__teachingFillOpacity', {value:true});
+    proto.setFillOpacity = function (value: number) {
+      original.call(this,value);
+      if (name === 'Text') this._canvasDirty = true;
+      else this.opacity = value;
+      return this;
+    };
+  }
+}
+
 // Line.putStartAndEndOn(start, end):manim CE 常用(更新线段端点),manim-web Line 没有此方法
 // 但有 setStart/setEnd,组合实现。DashedLine 同理(若有 setStart/setEnd)。
 for (const cls of ["Line", "DashedLine", "Arrow", "DoubleArrow"]) {

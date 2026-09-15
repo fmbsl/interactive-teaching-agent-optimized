@@ -36,6 +36,14 @@ _DRAFTS: dict[tuple[str, str], dict] = defaultdict(lambda: {
 
 # 事件 id 生成(无 Date.now/random 限制只针对 workflow 脚本;这里是后端 Python,可用 uuid)
 import uuid as _uuid
+import os as _os
+
+
+def _layout_retry_limit():
+    try:
+        return max(0, min(12, int(_os.environ.get('LAYOUT_MAX_RETRIES', '2'))))
+    except ValueError:
+        return 2
 
 
 def _new_id(sid: str) -> str:
@@ -75,6 +83,21 @@ sceneCode 格式:manim-web JS/TS 函数体。开头 `const {{ ... }} = ctx;` 解
 {RUNTIME_POWER_BLOCK}
 
 {TEACHING_NORMS_BLOCK}
+
+═══ 2D 公共布局与局部修复 ═══
+从 ctx 解构 teachingLayout，const layout = teachingLayout(scene)。默认未旋转相机可用：
+await layout.place(title, 'title'); await layout.place(eq, 'formula');
+区域还有 'plot'、'explanation'。Text 自动按实测宽度换行，空间不足抛错，请拆分/分页，禁止无限缩小。
+layout.stack([a,b], [0,0,0], 0.25) 纵向排列；layout.replace('explanation',[note]) 只替换该命名组，保留其他坐标轴/推导结果。
+layout.align([a,b],'left') 对齐可见边界（也支持 right/top/bottom）；layout.avoid(label,[eq,title]) 避让指定对象，空间不足会抛错要求分页。
+layout.role(eq,'equation-main','formula') 指定稳定对象 ID。
+示例：const layout = teachingLayout(scene); const title = new Text({{text:'函数变化',fontSize:24,fontFamily:'Arial,SimSun'}});
+await layout.place(title,'title'); layout.replace('heading',[title]);
+检测反馈含 [layout]、对象 ID、真实播放秒数、投影边界、代码版本。优先 patch 调整位置、换行、分步替换；每次 commit 会复验完整动画。
+布局失败默认最多自动修复 2 轮（服务端 LAYOUT_MAX_RETRIES 可配置），用尽后用户手动重试。
+不得删核心公式、取消参数、隐藏教学对象或添加豁免来规避失败。
+仅设计上确有公式变换时，可事先 layout.allowOverlap(a,b,startSeconds,endSeconds,'公式替换过渡') 声明不超过5秒的窗口（从场景创建起的实际秒数）；窗口外以及末帧恢复检查，声明会记录。不要给普通文字遮挡加豁免。
+曲线相交与图形内标签通常允许；3D 不使用这些 2D 区域。
 
 ═══ 官方 manim-web 示例参考(约 50%,自建 scene 风格;运行时已支持 TS/自建)═══
 下方是 manim-web 官方 example 原文。它们自带 Scene/相机、可能写 TS/多色,是 API 用法参考。
@@ -479,9 +502,15 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
                "agent": "step", "stepId": step_id,
                "payload": {"message": result["error"] or "验证未完成，草稿未定稿；请重试"}}
         return
-    cfg = cfg or _get_runtime_cfg()
-    agent_obj = _build_agent(cfg, sid, step_id)
-    config = {"configurable": {"thread_id": tid}}
+    # Count returned layout failures, not replayed commit tool invocations.
+    if not result.get('ok', False) and '[layout]' in result.get('error', ''):
+        draft['layoutFailCount'] = draft.get('layoutFailCount', 0) + 1
+        if draft['layoutFailCount'] > _layout_retry_limit():
+            yield {"kind": "render_result", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
+                   "agent": "step", "stepId": step_id, "payload": {"ok": False, "error": result['error'], "verification": result['verification']}}
+            yield {"kind": "error", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
+                   "agent": "step", "stepId": step_id, "payload": {"message": f"布局自动修复已达到 {_layout_retry_limit()} 轮上限。草稿未定稿，请手动重试。{result['error']}"}}
+            return
     # 失败计数:只在回传 ok=False 时累计,> 12 次拦截(避免 renderAttempts 被 resume 重复执行 tool 翻倍)
     if not result.get("ok", False):
         draft["failCount"] = draft.get("failCount", 0) + 1
@@ -490,6 +519,9 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
                "agent": "step", "stepId": step_id, "payload": {"message": "动画验证失败超过 12 次仍未通过"}}
         return
 
+    cfg = cfg or _get_runtime_cfg()
+    agent_obj = _build_agent(cfg, sid, step_id)
+    config = {"configurable": {"thread_id": tid}}
     agent_evt_id = draft.get("agentEvtId")
     tcid_to_evt: dict = {}
     current_parent = agent_evt_id

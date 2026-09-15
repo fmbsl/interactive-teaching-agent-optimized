@@ -8,12 +8,15 @@ export interface VerificationReport {
   checks: string[];
   missing: string[];
   frame: string;
+  sampling?: { mode: string; intervalMs: number; samples: number; maxGapMs: number };
+  layoutIssues?: {key:string;type:string;objects:string[];bounds:{left:number;right:number;top:number;bottom:number}[];message:string;scene:number;start:number;end:number}[];
+  overlapDeclarations?: {objects:string[];start:number;end:number;reason:string}[];
 }
 export function verificationCheckLabel(check: string): string {
   const labels: Record<string, string> = {
     execution: "脚本执行", "scene-access": "场景读取", measurements: "对象尺寸",
     mathtex: "公式渲染", nan: "无效数值", "layout-final": "末帧重叠", "bounds-final": "末帧越界",
-    "optional-visual-frame": "可选画面辅助检查", verification: "验证流程",
+    "optional-visual-frame": "可选画面辅助检查", verification: "验证流程", "layout-temporal": "动画过程采样",
   };
   return labels[check] || check;
 }

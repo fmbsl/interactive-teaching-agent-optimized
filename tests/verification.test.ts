@@ -99,3 +99,19 @@ test("interactive playback without a deadline remains cancellable", async () => 
   await new Promise(r => setTimeout(r, 5)); controller.abort();
   assert.equal((await work).status, "cancelled");
 });
+
+// Temporal policy tests use controlled timestamps; browser fixtures exercise the real renderer.
+import { LayoutObservations } from '../src/layoutObservations.ts';
+test('a transient collision clears before persistence threshold', () => {
+  const samples = new LayoutObservations();
+  assert.deepEqual(samples.observe(['a:b'], 0, false), []);
+  assert.deepEqual(samples.observe([], 80, false), []);
+  assert.deepEqual(samples.observe(['a:b'], 240, false), []);
+});
+test('persistent collision, boundary collision and measurement gaps are distinct', () => {
+  const samples = new LayoutObservations();
+  for(const t of [0,80,160])assert.deepEqual(samples.observe(['a:b'],t,false),[]);
+  assert.deepEqual(samples.observe(['a:b'],240,false),[{key:'a:b',start:0,end:240}]);
+  assert.deepEqual(samples.observe(['a:b'],800,false),[]);
+  assert.deepEqual(samples.observe(['a:b'],810,true),[{key:'a:b',start:800,end:810}]);
+});

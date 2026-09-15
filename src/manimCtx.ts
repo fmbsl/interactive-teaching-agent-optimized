@@ -7,6 +7,7 @@ import * as manimWeb from "manim-web";
 import { np } from "./numpyPolyfill";
 import "./manimPolyfill";
 import { adaptHex } from "./themeColor";
+import { teachingLayout } from './teachingLayout';
 
 export type SceneLike = import("manim-web").Scene;
 
@@ -27,7 +28,7 @@ function adaptedColors(): Record<string, string> {
  * 命名色常量铺一层"浅色自适应"覆盖(不影响原常量对象,只换执行时给你解构的那个值)。 */
 export function makeManimCtx(scene: SceneLike, params: Record<string, number>) {
   const alwaysRedraw = (fn: any) => fn(); // manim CE always_redraw 简化:取首帧静态(非每帧重算)
-  return { ...manimWeb, ...adaptedColors(), matMul, np, alwaysRedraw, scene, params };
+  return { ...manimWeb, ...adaptedColors(), matMul, np, alwaysRedraw, teachingLayout, scene, params };
 }
 
 /** 把 manim-web 全部导出(+matMul/np)铺到 window 全局,不设 container。
@@ -41,6 +42,7 @@ export function ensureManimGlobals() {
   }
   w.matMul = matMul;
   w.np = np;
+  w.teachingLayout = teachingLayout;
 }
 
 /** 自由脚本运行时:铺全局 + 设 container,让 `import {X}`(被剥掉后)的名字与 `container` 在脚本里直接可用,
@@ -56,7 +58,7 @@ export function exposeManimGlobals(container: HTMLElement) {
  * undefined → "ThreeDScene is not a constructor"(实测 step agent 自建 3D 场景反复踩)。 */
 export function makeSelfBuildCtx(container: HTMLElement, params: Record<string, number>) {
   const alwaysRedraw = (fn: any) => fn(); // 同 makeManimCtx
-  return { ...manimWeb, ...adaptedColors(), matMul, np, alwaysRedraw, container, params };
+  return { ...manimWeb, ...adaptedColors(), matMul, np, alwaysRedraw, teachingLayout, container, params };
 }
 
 /** 矩阵乘法:支持矩阵×矩阵、矩阵×向量(JS 没有 @ 运算符,py2ts 也不转,

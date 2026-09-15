@@ -27,7 +27,7 @@ function Harness() {
     setOutput(`正常=${result.status}; 被替换=${previousResult.status}; 新请求=${nextResult.status}; 主动取消=${cancelled.status}; 关闭检查=${incomplete.status}`);
   }
   return <main style={{height:"100vh",background:"#151821",color:"white",display:"flex",flexDirection:"column"}}>
-    <h1>批次 A UI 回归（StrictMode）</h1><button onClick={run}>运行 UI 验证</button><p>{output}</p>
+    <h1>批次 A/B UI 回归（StrictMode）</h1><button onClick={run}>运行 UI 验证</button><button onClick={async()=>{setBbCheckEnabled(true);await new Promise(r=>setTimeout(r,0));const r=await requestVerify(1,normal+"scene.add(new ctx.Text({text:'Overlap',fontSize:24,fontFamily:'Arial'}));",1);setOutput(`布局冲突=${r.status}`);}}>测试布局失败反馈</button><p>{output}</p>
     <div style={{flex:1,minHeight:0}}><StagePanel/></div>
   </main>;
 }

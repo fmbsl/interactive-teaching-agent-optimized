@@ -634,6 +634,15 @@ export default function ChatPanel() {
     try { await consume(explainStep(sessionId, stepId)); } finally { setLoading(false); }
   }
 
+  const lastRender = [...items].reverse().find(item => item.event.kind === 'render_result')?.event;
+  const layoutRetry = lastRender?.kind === 'render_result' && String(lastRender.stepId) === String(currentStep) && !lastRender.ok && lastRender.error.includes('[layout]') ? lastRender : null;
+  async function retryLayout() {
+    if (!sessionId || loading || !layoutRetry) return;
+    setLoading(true);
+    try { await consume(modifyStep(sessionId, String(layoutRetry.stepId), `根据布局反馈局部修复，保留核心公式和参数，修复后重新验证整个场景：${layoutRetry.error}`)); }
+    finally { setLoading(false); }
+  }
+
   async function handleNewSession() {
     consumeRunIdRef.current++;
     cancelVerification(); // 作废旧 session 的 consume
@@ -939,6 +948,7 @@ export default function ChatPanel() {
 
       {/* 底部:输入(无上一步/下一步按钮,改用 list 点击或键盘) */}
       <div className="p-2.5 border-t border-[var(--border)] shrink-0 space-y-1.5">
+        {layoutRetry && <button className="btn-ghost text-xs" disabled={loading || !sessionId} onClick={() => void retryLayout()}>重试修复本步布局</button>}
         {/* 深度选择 + 待发文件 chip */}
         <div className="flex items-center gap-2 flex-wrap">
           <select
@@ -1224,7 +1234,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "render_result":
       return (
         <div className={`flex items-center gap-1.5 text-[10.5px] py-0.5 ml-2 ${event.ok ? "text-[var(--blue-strong)]" : "text-[#e07a5f]"}`}>
-          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.verification?.status === "incomplete" ? "验证未完成" : event.verification?.status === "cancelled" ? "验证已取消" : event.ok ? "末帧检查通过" : "验证失败"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
+          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.verification?.status === "incomplete" ? "验证未完成" : event.verification?.status === "cancelled" ? "验证已取消" : event.ok ? (event.verification?.checks?.includes("layout-temporal") ? "布局采样检查通过" : "末帧检查通过") : "验证失败"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
         </div>
       );
     case "explain":

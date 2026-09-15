@@ -8,7 +8,14 @@ CODE = "const text = '数学';"
 
 def report(status="passed"):
     return {"schemaVersion": 1, "status": status, "ok": True, "error": "test reason",
-            "codeVersion": code_version(CODE), "checks": sorted(REQUIRED_CHECKS), "missing": []}
+            "codeVersion": code_version(CODE), "checks": sorted(REQUIRED_CHECKS), "missing": [],
+            "sampling": {"mode":"real-playback", "intervalMs":80, "samples":1, "maxGapMs":0}}
+
+
+@pytest.mark.parametrize('sampling', [None, {}, {'mode':'real-playback','intervalMs':80,'samples':1,'maxGapMs':900}, {'mode':'real-playback','intervalMs':80,'samples':True,'maxGapMs':0}])
+def test_invalid_sampling_is_not_certified(sampling):
+    r=report();r['sampling']=sampling
+    assert normalize_verification(r, True, expected_code=CODE)['status']=='incomplete'
 
 @pytest.fixture
 def draft(monkeypatch):
@@ -66,3 +73,46 @@ def test_api_normalizes_success_before_handoff(draft, monkeypatch):
     response = views.render_result(request)
     assert response.status_code == 200
     assert step_agent._RESUMES[("test-verification", "1", "current")]["ok"] is False
+
+
+def test_final_only_report_cannot_certify_batch_b():
+    r = report(); r['checks'].remove('layout-temporal')
+    assert normalize_verification(r, True, expected_code=CODE)['status'] == 'incomplete'
+
+
+@pytest.mark.parametrize('limit,previous', [('2', 2), ('0', 0), ('invalid', 2)])
+def test_layout_retry_budget_stops_before_model(draft, monkeypatch, limit, previous):
+    monkeypatch.setenv('LAYOUT_MAX_RETRIES', limit)
+    monkeypatch.setattr(step_agent, '_get_runtime_cfg', lambda: pytest.fail('must stop before loading model'))
+    draft['layoutFailCount'] = previous
+    r=report('failed'); r['error']='[layout] labels overlap'
+    step_agent.set_render_result('test-verification', '1', False, nonce='current', verification=r)
+    events=list(step_agent.resume_step_agent('test-verification', '1', 'current'))
+    assert [e['kind'] for e in events] == ['render_result','error']
+    assert '上限' in events[-1]['payload']['message']
+    assert draft['sceneCode'] == ''
+
+
+def test_default_budget_allows_exactly_two_layout_repairs(draft, monkeypatch):
+    monkeypatch.delenv('LAYOUT_MAX_RETRIES', raising=False)
+    calls=[]
+    monkeypatch.setattr(step_agent, '_get_runtime_cfg', lambda: object())
+    class Agent:
+        def stream(self, *args, **kwargs):
+            calls.append('repair')
+            return iter([])
+    monkeypatch.setattr(step_agent, '_build_agent', lambda *args: Agent())
+    for _ in range(3):
+        r=report('failed');r['error']='[layout] overlap'
+        step_agent.set_render_result('test-verification','1',False,nonce='current',verification=r)
+        list(step_agent.resume_step_agent('test-verification','1','current'))
+    assert len(calls)==2
+    assert draft['layoutFailCount']==3
+
+
+def test_malformed_diagnostics_are_dropped():
+    r=report();r.update(layoutIssues=[None, {'objects':None}], overlapDeclarations=[{'objects':['x'],'start':0,'end':1,'reason':'transition'}])
+    result=normalize_verification(r,True,expected_code=CODE)
+    assert result['ok'] is True
+    assert result['layoutIssues']==[]
+    assert result['overlapDeclarations'][0]['reason']=='transition'

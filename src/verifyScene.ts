@@ -2,10 +2,12 @@ import { makeSelfBuildCtx, Scene, ThreeDScene } from "./manimCtx";
 import { execScript } from "./runScript";
 import { executeWithDeadline } from "./scriptExecution";
 import { createVerificationScope } from "./verificationScope";
-import { is3DCode, detectMathTexError, detectNaN, detectOverlap, detectOutOfBounds } from "./sceneCheck";
+import { is3DCode, detectMathTexError, detectNaN } from "./sceneCheck";
 import { codeVersionOf, verificationReport, type VerificationReport } from "./verificationTypes";
+import { createLayoutTimeline } from './layoutTimeline';
+import { prepareLayout } from './layoutGeometry';
 
-/** A: certify final-state coverage only. Temporal and formula-specific layout are batch B. */
+/** Certify 2D final state and observed real-playback intervals. */
 export async function verifyScene(code: string, params: Record<string, number>, options: {
   signal: AbortSignal; layout: boolean; vision: boolean; background: string; timeoutMs?: number;
 }): Promise<VerificationReport> {
@@ -14,9 +16,14 @@ export async function verifyScene(code: string, params: Record<string, number>, 
   const host = document.createElement("div");
   host.style.cssText = "position:absolute;left:-9999px;top:0;width:960px;height:540px";
   document.body.appendChild(host);
-  const scope = createVerificationScope({ Scene, ThreeDScene }, c => c instanceof HTMLElement && (c === host || host.contains(c)));
+  const timeline = createLayoutTimeline();
+  const reportOf: typeof verificationReport = (...args) => ({...verificationReport(...args), sampling:timeline.coverage, layoutIssues:timeline.issues, overlapDeclarations:timeline.declarations});
+  const scope = createVerificationScope({ Scene, ThreeDScene }, c => c instanceof HTMLElement && (c === host || host.contains(c)), options.layout ? timeline.boundary : undefined, options.layout ? timeline.register : undefined);
+  const timer = setInterval(() => {
+    if (options.layout) for (const e of scope.scenes) if (!e.disposed && e.kind !== 'ThreeDScene') timeline.sample(e.scene);
+  }, 80);
   const controller = new AbortController();
-  const abort = () => { controller.abort(); scope.close(); host.remove(); };
+  const abort = () => { clearInterval(timer); controller.abort(); scope.close(); host.remove(); };
   options.signal.addEventListener("abort", abort, { once: true });
   if (options.signal.aborted) abort();
   try {
@@ -35,38 +42,42 @@ export async function verifyScene(code: string, params: Record<string, number>, 
       });
       if (!execution.ok) throw Object.assign(new Error(execution.error), { verificationStatus: execution.status });
       await scope.drain();
+      for (const e of scope.scenes) if (!e.disposed) {
+        if (options.layout && e.kind !== 'ThreeDScene') await timeline.boundary(e.scene,true);
+        else await prepareLayout(e.scene);
+      }
     }, options.timeoutMs ?? 30000, controller.signal);
-    if (!result.ok) return verificationReport(result.status, result.error, version, checks, ["execution"]);
+    if (!result.ok) return reportOf(result.status, result.error, version, checks, ["execution"]);
     checks.push("execution");
-    if (!scope.scenes.length) return verificationReport("incomplete", "未收集到场景；请使用 ctx.Scene/ctx.ThreeDScene 或提供的 scene", version, checks, ["scene-access"]);
+    if (!scope.scenes.length) return reportOf("incomplete", "未收集到场景；请使用 ctx.Scene/ctx.ThreeDScene 或提供的 scene", version, checks, ["scene-access"]);
     const trackedCanvases = new Set(scope.scenes.map(({ scene }) => scene.getCanvas?.() ?? scene.renderer?.getCanvas?.()));
     if ([...host.querySelectorAll("canvas")].some(canvas => !trackedCanvases.has(canvas))) {
-      return verificationReport("incomplete", "发现未收集的渲染画布，不能确认所有场景都经过检查", version, checks, ["scene-access"]);
+      return reportOf("incomplete", "发现未收集的渲染画布，不能确认所有场景都经过检查", version, checks, ["scene-access"]);
     }
     for (const entry of scope.scenes) {
       const s = entry.scene;
       if (entry.disposed || !s._mobjects || typeof s._mobjects[Symbol.iterator] !== "function") {
-        return verificationReport("incomplete", "场景已释放或无法读取对象，未完成检查", version, checks, ["scene-access"]);
+        return reportOf("incomplete", "场景已释放或无法读取对象，未完成检查", version, checks, ["scene-access"]);
       }
       const tex = detectMathTexError(s), nan = detectNaN(s);
-      if (tex || nan) return verificationReport("failed", tex || nan, version, checks);
+      if (tex || nan) return reportOf("failed", tex || nan, version, checks);
       const measurement = measureCoverage(s);
-      if (measurement) return verificationReport("incomplete", measurement, version, checks, ["measurements"]);
+      if (measurement) return reportOf("incomplete", measurement, version, checks, ["measurements"]);
     }
     checks.push("scene-access", "mathtex", "nan", "measurements");
-    if (!options.layout) missing.push("layout-final", "bounds-final");
-    for (const { scene: s, kind } of scope.scenes) {
+    if (options.layout && timeline.error) return reportOf('incomplete', timeline.error, version, checks, ['layout-temporal']);
+    if (options.layout && timeline.failure) return reportOf('failed', `[layout] ${timeline.failure}; codeVersion=${version}`, version, checks);
+    if (!options.layout) missing.push("layout-final", "bounds-final", "layout-temporal");
+    for (const { kind } of scope.scenes) {
       if (kind === "ThreeDScene") {
-        if (!missing.includes("layout-final")) missing.push("layout-final", "bounds-final");
+        if (!missing.includes("layout-final")) missing.push("layout-final", "bounds-final", "layout-temporal");
         continue;
       }
-      if (!options.layout) continue;
-      const overlap = detectOverlap(s), outside = detectOutOfBounds(s);
-      if (overlap || outside) return verificationReport("failed", overlap || outside, version, checks);
     }
-    if (missing.length) return verificationReport("incomplete", options.layout ? "3D 已完成运行和对象检查，屏幕布局检查尚未覆盖" : "布局检查已关闭，本次不能完整验证", version, checks, missing);
-    checks.push("layout-final", "bounds-final");
-    const report = verificationReport("passed", "", version, checks);
+    if (missing.length) return reportOf("incomplete", options.layout ? "3D 已完成运行和对象检查，屏幕布局检查尚未覆盖" : "布局检查已关闭，本次不能完整验证", version, checks, missing);
+    checks.push("layout-final", "bounds-final", "layout-temporal");
+    const report = reportOf("passed", "", version, checks);
+    report.sampling = timeline.coverage;
     if (options.vision) {
       try {
         const s = scope.scenes[0].scene;
@@ -77,7 +88,7 @@ export async function verifyScene(code: string, params: Record<string, number>, 
     }
     return report;
   } catch (error: any) {
-    return verificationReport(controller.signal.aborted ? "cancelled" : "incomplete", String(error?.message || error), version, checks, ["verification"]);
+    return reportOf(controller.signal.aborted ? "cancelled" : "incomplete", String(error?.message || error), version, checks, ["verification"]);
   } finally {
     options.signal.removeEventListener("abort", abort);
     abort();
