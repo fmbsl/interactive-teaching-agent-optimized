@@ -1,3 +1,4 @@
+import { AnimationAcceptance } from "../animationAcceptance";
 import { busyForEvent } from "../busyTask";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
@@ -85,6 +86,7 @@ export default function ChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   // session 隔离:每次 consume 抓一个 runId,切换 session 时 bump,旧 consume 检测到 runId 变了就停止写 state
   const consumeRunIdRef = useRef(0);
+  const acceptedRef = useRef(new AnimationAcceptance());
   const sessionIdRef = useRef<string | null>(null);
 
   const {
@@ -202,6 +204,7 @@ export default function ChatPanel() {
 
   async function consume(stream: AsyncGenerator<ChatEvent>, opts?: { isUpdate?: boolean }) {
     const myRun = ++consumeRunIdRef.current;
+    acceptedRef.current.clear();
     setBusyTask({kind: "agent", label: "正在处理…", runId: myRun});
     try {
       await consumeRun(stream, myRun, opts);
@@ -214,6 +217,7 @@ export default function ChatPanel() {
       // session 已切换:旧 consume 的事件作废,不再写 state(防止串台到新 session)
       if (consumeRunIdRef.current !== myRun) return;
       observeBusy(ev, myRun);
+      acceptedRef.current.observe(myRun, ev);
       // explain 事件:若该 step 已有消息则替换(不重复 append),其它事件照常 append
       if (ev.kind === "explain") {
         setItems((prev) => {
@@ -351,6 +355,7 @@ export default function ChatPanel() {
         const stepId = (ev as any).step_id || ev.stepId || "";
         // 先把右侧切到这一步(该步已在 topics 里有标题占位),否则讲解要等 explain 事件(动画在环验证通过后)才出现
         if (stepId) setCurrentStep(stepId as any);
+        const beforeAccepted = acceptedRef.current.version(myRun, stepId);
         let ok = false, errMsg = "";
         try {
           for await (const sev of explainStep(sid, stepId)) {
@@ -358,11 +363,11 @@ export default function ChatPanel() {
             // render_request 走 handleEvent(浏览器在环验证 + postRenderResult 递归);explain 写 store;error 记录
             const r = await handleEvent(sev, myRun);
             if (r?.error) errMsg = r.error;
-            if (sev.kind === "explain") ok = true;
             if (sev.kind === "error") errMsg = sev.message || "";
           }
-          // 流正常结束且无 error → 视为成功(explain 可能在 handleEvent 递归的 postRenderResult 流里,外层 sev 检测不到)
-          if (!errMsg) ok = true;
+          // 只有本次任务收到 explain 才算成功，包括递归回传流
+          ok = acceptedRef.current.completed(myRun, stepId, beforeAccepted, errMsg);
+          if (!ok && !errMsg) errMsg = "任务结束但未收到已验证的动画结果，请重试。";
         } catch (e: any) { errMsg = e.message; }
         if (consumeRunIdRef.current !== myRun) return;
         // resume 主 agent:传 result={ok, step_id, error?}
@@ -379,16 +384,17 @@ export default function ChatPanel() {
         const stepId = (ev as any).step_id || ev.stepId || "";
         const feedback = (ev as any).feedback || "";
         if (stepId) setCurrentStep(stepId as any);
+        const beforeAccepted = acceptedRef.current.version(myRun, stepId);
         let ok = false, errMsg = "";
         try {
           for await (const sev of modifyStep(sid, stepId, feedback)) {
             if (consumeRunIdRef.current !== myRun) return;
             const r = await handleEvent(sev, myRun);
             if (r?.error) errMsg = r.error;
-            if (sev.kind === "explain") ok = true;
             if (sev.kind === "error") errMsg = sev.message || "";
           }
-          if (!errMsg) ok = true;
+          ok = acceptedRef.current.completed(myRun, stepId, beforeAccepted, errMsg);
+          if (!ok && !errMsg) errMsg = "任务结束但未收到已验证的动画结果，请重试。";
         } catch (e: any) { errMsg = e.message; }
         if (consumeRunIdRef.current !== myRun) return;
         const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });
@@ -414,6 +420,7 @@ export default function ChatPanel() {
   async function handleEvent(ev: ChatEvent, myRun: number): Promise<{ error: string } | undefined> {
     if (consumeRunIdRef.current !== myRun) return;
     observeBusy(ev, myRun);
+    acceptedRef.current.observe(myRun, ev);
     // 落盘 explain 到 store;其他事件也追加到对话树
     if (ev.kind === "explain") {
       setItems((prev) => {
@@ -477,16 +484,17 @@ export default function ChatPanel() {
       const stepId = (ev as any).step_id || ev.stepId || "";
       const feedback = (ev as any).feedback || "";
       if (stepId) setCurrentStep(stepId as any);
+      const beforeAccepted = acceptedRef.current.version(myRun, stepId);
       let ok = false, errMsg = "";
       try {
         for await (const sev of modifyStep(sid, stepId, feedback)) {
           if (consumeRunIdRef.current !== myRun) return;
           const r = await handleEvent(sev, myRun);
           if (r?.error) errMsg = r.error;
-          if (sev.kind === "explain") ok = true;
           if (sev.kind === "error") errMsg = sev.message || "";
         }
-        if (!errMsg) ok = true;
+        ok = acceptedRef.current.completed(myRun, stepId, beforeAccepted, errMsg);
+        if (!ok && !errMsg) errMsg = "任务结束但未收到已验证的动画结果，请重试。";
       } catch (e: any) { errMsg = e.message; }
       if (consumeRunIdRef.current !== myRun) return;
       const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });
@@ -500,16 +508,17 @@ export default function ChatPanel() {
       const sid = sessionIdRef.current || "";
       const stepId = (ev as any).step_id || ev.stepId || "";
       if (stepId) setCurrentStep(stepId as any); // 先切右侧到该步(标题占位),等 explain 填讲解
+      const beforeAccepted = acceptedRef.current.version(myRun, stepId);
       let ok = false, errMsg = "";
       try {
         for await (const sev of explainStep(sid, stepId)) {
           if (consumeRunIdRef.current !== myRun) return;
           const r = await handleEvent(sev, myRun);
           if (r?.error) errMsg = r.error;
-          if (sev.kind === "explain") ok = true;
           if (sev.kind === "error") errMsg = sev.message || "";
         }
-        if (!errMsg) ok = true;  // 流正常结束且无 error → 成功(explain 可能在递归流里,外层检测不到)
+        ok = acceptedRef.current.completed(myRun, stepId, beforeAccepted, errMsg);
+        if (!ok && !errMsg) errMsg = "任务结束但未收到已验证的动画结果，请重试。";
       } catch (e: any) { errMsg = e.message; }
       if (consumeRunIdRef.current !== myRun) return;
       const subStream = chatAnswer(sid, "", { ok, step_id: stepId, error: errMsg });

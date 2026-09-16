@@ -30,6 +30,7 @@ from . import user_prefs
 
 # 每会话一份草稿(topics 在此累积,写回 session)
 _DRAFTS: dict[str, dict] = SessionRegistry(lambda: {"topics": []})
+_ANIMATION_FAILURES = SessionRegistry(dict)
 # side-channel 事件队列:工具内不能 yield,往这里 append 事件,run_main_agent 在每个 ToolMessage 前 drain yield(仿 decompose_agent)
 _EMIT: dict[str, list[dict]] = SessionRegistry(list)
 import uuid as _uuid
@@ -229,6 +230,8 @@ def _build_tools(sid: str):
         """触发某步的完整讲解生成(动画+讲解+公式+参数,交 subagent 浏览器验证)。会暂停等生成完。
         step_id 是 add_topic 返回的子知识点 id(形如 topicid-N)。结果写共享状态 step_status。
         用户想学/看某步时调。调一次等于讲完那步,不要调完又自己再讲。"""
+        if step_id in _ANIMATION_FAILURES[sid]:
+            return f"本轮该步骤已生成失败，请向用户说明原因并等待其重试，不得自动重新生成：{_ANIMATION_FAILURES[sid][step_id]}"
         # 已生成过(缓存命中):不重复跑,直接告知主 agent 该步已就绪
         sc = _agent().get_step_cache(sid, step_id)
         if sc and sc.get("sceneCode"):
@@ -236,9 +239,11 @@ def _build_tools(sid: str):
         # 暂停,等视图层跑 subagent 后 resume。interrupt value 传 step_id,视图层据此调 step_agent。
         result = interrupt({"kind": "generate", "step_id": step_id})
         # result 形如 {"ok":true, "step_id":...} 或 {"ok":false, "error":...}
-        if isinstance(result, dict) and result.get("ok"):
+        if isinstance(result, dict) and result.get("ok") and (_agent().get_step_cache(sid, step_id) or {}).get("sceneCode"):
             return f"第 {step_id} 步讲解(动画+讲解)已生成。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
+        err = err or "未收到已验证的动画结果"
+        _ANIMATION_FAILURES[sid][step_id] = err
         return f"第 {step_id} 步生成失败:{err}"
 
     @tool
@@ -398,6 +403,8 @@ def _build_tools(sid: str):
         feedback 用自然语言描述要改什么(如"把第三段动画改成红色""字体大一点""讲解里补个例子""标题改成X")。
         会暂停,把修改任务交给动画 agent(step_agent)在浏览器里改并验证,通过才生效。
         **你只描述用户要改什么,不要自己改代码、不关心渲染/验证细节。** 改完返回结果。"""
+        if step_id in _ANIMATION_FAILURES[sid]:
+            return f"本轮该步骤已失败，请说明原因并等待用户重试：{_ANIMATION_FAILURES[sid][step_id]}"
         sc = _agent().get_step_cache(sid, step_id)
         if not sc or not sc.get("sceneCode"):
             return f"第 {step_id} 步还没有动画可改(未生成)。先调 generate_animation 生成,或确认 step_id 对不对。"
@@ -405,6 +412,7 @@ def _build_tools(sid: str):
         if isinstance(result, dict) and result.get("ok"):
             return f"第 {step_id} 步已按反馈修改完成(动画已通过浏览器验证)。"
         err = result.get("error", "未知错误") if isinstance(result, dict) else str(result)
+        _ANIMATION_FAILURES[sid][step_id] = err or "未收到已验证的动画结果"
         return f"第 {step_id} 步修改失败:{err}"
 
     return [add_topic, ask_user, read, grep, generate_animation, generate_quiz,
@@ -463,6 +471,7 @@ def run_main_agent(sid: str, user_text: str, depth: Optional[str] = None, cfg=No
     """运行主 agent 一轮(用户发消息)。生成器 yield 事件 dict。
     事件 kind:agent_start|tool_call|tool_result|ask|topic_added|animation_request|error|done。
     遇 ask_user/generate_animation 的 interrupt,yield 对应事件后 return(等前端 resume)。"""
+    _ANIMATION_FAILURES[sid] = {}  # Only a new explicit user turn resets the retry gate.
     cfg = cfg or _get_runtime_cfg()
     s = _agent().get_session(sid)
     cur_depth = depth or (s.get("depth") if s else "understand")

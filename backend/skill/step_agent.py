@@ -89,7 +89,12 @@ sceneCode 格式:manim-web JS/TS 函数体。开头 `const {{ ... }} = ctx;` 解
 从 ctx 解构 teachingLayout，const layout = teachingLayout(scene)。默认未旋转相机可用：
 await layout.place(title, 'title'); await layout.place(eq, 'formula');
 区域还有 'plot'、'explanation'。Text 自动按实测宽度换行，空间不足抛错，请拆分/分页，禁止无限缩小。
-layout.stack([a,b], [0,0,0], 0.25) 纵向排列；layout.replace('explanation',[note]) 只替换该命名组，保留其他坐标轴/推导结果。
+默认画面约 14.22×8 场景单位；plot 仅约 7.40×5.40，formula 仅约 4.55×5.40。
+坐标轴建议 xLength<=6、yLength<=3.5，给轴标签留白。先 await layout.place(axes,'plot') 再 axes.getAxisLabels/axes.plot；不要把轴放进平移 VGroup 后又单独 Create 其子对象，以免重新挂载丢失组变换。
+公式不要把完整长等式硬塞进右侧窄区；拆成多行 MathTexImage 后 VGroup.arrange(DOWN,0.18)，每行不超过右区宽度。多项公式组过宽时 place 会按可见字形自动分行，不会删除项。
+await layout.replace('explanation',[note]) 会把单条新说明移到说明区；其他自定义组仍需先定位。
+每步只讲一个核心变化，scene.play/wait 总时长建议 8–18 秒；长推导分步显示，避免超过验证时限。
+layout.stack([a,b], [0,0,0], 0.25) 纵向排列；await layout.replace('explanation',[note]) 只替换该命名组，保留其他坐标轴/推导结果。
 layout.align([a,b],'left') 对齐可见边界（也支持 right/top/bottom）；layout.avoid(label,[eq,title]) 避让指定对象，空间不足会抛错要求分页。
 layout.role(eq,'equation-main','formula') 指定稳定对象 ID。
 示例：const layout = teachingLayout(scene); const title = new Text({{text:'函数变化',fontSize:24,fontFamily:'Arial,SimSun'}});

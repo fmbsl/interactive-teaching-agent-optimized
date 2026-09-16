@@ -489,7 +489,7 @@ def delete_session(sid: str) -> bool:
     for mod_name in ("skill.decompose_agent", "skill.main_agent", "skill.step_agent"):
         try:
             m = __import__(mod_name, fromlist=["x"])
-            for attr in ("_GRAPHS", "_EMIT", "_LOCKS", "_DRAFTS", "_RESUMES"):
+            for attr in ("_GRAPHS", "_EMIT", "_LOCKS", "_DRAFTS", "_RESUMES", "_ANIMATION_FAILURES"):
                 if hasattr(m, attr):
                     try:
                         getattr(m, attr).pop(sid, None)

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { makeManimCtx, makeSelfBuildCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn, exposeManimGlobals } from "../manimCtx";
 import { useApp } from "../store";
-import { regenerateScene } from "../data/llmClient";
 import { SkipBack, Play, Pause, SkipForward, RotateCcw, Camera, Square, Video, Loader2 } from "lucide-react";
 import { is3DCode } from "../sceneCheck";
 import { verifyScene } from "../verifyScene";
@@ -50,6 +49,7 @@ function pickVideoMime(): string {
 }
 
 export default function StagePanel() {
+  const [playbackError, setPlaybackError] = useState("");
   const [verificationFeedback, setVerificationFeedback] = useState<{ code: string; report: VerificationReport } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // 自管 scene:固定 16:9 内部分辨率(manim-web 默认帧),canvas 用 CSS object-fit 缩放居中适配容器。
@@ -232,9 +232,7 @@ export default function StagePanel() {
   }, [(paramValues.start ?? -2.5)]);
 
   // scene 就绪后构建当前步场景
-  // 防死循环 + 避免重复调 LLM:按 stepId 累计 regenerate 次数(跨 build 持久),每步上限 2 次。
-  // 超过上限后即便代码仍报错也直接回退默认场景,不再调后端——点回已访问步秒回,不重新生成。
-  const regenCountByStepRef = useRef<Record<number, number>>({});
+
   useEffect(() => {
     // 自动播放标志合并两源:参数调整完(消抖前置 true)或"当前代码是新落地代码"
     // (freshCodeRef 由 scene 创建 effect 在 sceneCode 变化时设置、⏮回开头时清除)。
@@ -255,11 +253,11 @@ export default function StagePanel() {
     if (!selfBuild && want3D !== sceneIs3D) return;
 
     async function build() {
+      setPlaybackError("");
       if (selfBuild) {
         // 自建场景(自由脚本):代码自己 new Scene(container,{相机...}),暂停/断点降级为连播。
         try {
           await runSelfBuild(sceneCode, paramValues);
-          regenCountByStepRef.current[currentStep] = 0;
           return;
         } catch (e: any) {
           if (cancelled) return;
@@ -268,24 +266,22 @@ export default function StagePanel() {
           if (cancelled) return;
           try {
             await runSelfBuild(sceneCode, paramValues);
-            regenCountByStepRef.current[currentStep] = 0;
           } catch (e2: any) {
             if (cancelled) return;
             console.warn("[sceneCode] 自建场景重试仍失败:", e2?.message || e2);
-            if (s) { try { s.clear(); } catch {} }
+            setPlaybackError(String(e2?.message || e2));
+            setIsPlaying(false);
           }
           return;
         }
       }
       if (!s) return;
       s.clear();
-      // 优先执行 LLM 生成的场景代码;失败则回退默认场景并触发重生成
+      // 优先执行 LLM 生成的场景代码;失败时显示错误，由对话统一发起修复
       if (sceneCode) {
         try {
           console.log('[build] scene type=', s.constructor?.name, 'is3D=', is3DCode(sceneCode), 'hasSetCam=', typeof (s as any).setCameraOrientation);
           await runSceneCode(s, sceneCode, paramValues);
-          // 成功执行:该步代码 OK,重置 regenCount(以后点回不再 regenerate)
-          regenCountByStepRef.current[currentStep] = 0;
           return;
         } catch (e: any) {
           if (cancelled) return;
@@ -298,30 +294,12 @@ export default function StagePanel() {
             await new Promise((r) => setTimeout(r, 250));
             if (cancelled) return;
             await runSceneCode(s, sceneCode, paramValues);
-            regenCountByStepRef.current[currentStep] = 0;
             return;
           } catch (e2: any) {
             if (cancelled) return;
-            console.warn("[sceneCode] 重试仍失败,回退默认场景:", e2?.message || e2);
-            s.clear();
-            // 仅当代码确实有问题(两次都失败)才回退默认 + 触发后端重生成;
-            // 且每步上限 1 次重生成,超过则保留默认场景(避免反复横跳浪费 LLM 调用)
-            const used = regenCountByStepRef.current[currentStep] || 0;
-            if (used < 1 && sessionId && !(verificationFeedback?.code === sceneCode && verificationFeedback.report.status !== "passed")) {
-              regenCountByStepRef.current[currentStep] = used + 1;
-              (async () => {
-                try {
-                  for await (const ev of regenerateScene(sessionId, currentStep, String(e2?.message || e2))) {
-                    if (cancelled) return; // 切会话/卸载:停止把回传流写到已失效的舞台
-                    if (ev.kind === "explain" && ev.sceneCode) {
-                      setSceneCode(ev.sceneCode); // 触发 build 重建,用新代码
-                    }
-                  }
-                } catch { /* ignore */ }
-              })();
-            }
-            buildDefaultScene(s);
-            if (autoPlay) setIsPlaying(true); // 参数调整完:默认场景也自动播(iterateRef 跑起来)
+            console.warn("[sceneCode] 重试仍失败:", e2?.message || e2);
+            setPlaybackError(String(e2?.message || e2));
+            setIsPlaying(false);
             return;
           }
         }
@@ -472,6 +450,9 @@ function buildDefaultScene(s: any) {
 
   return (
     <div className="flex h-full flex-col stage-transition">
+      {playbackError && <div role="alert" className="px-4 py-2 text-xs text-[var(--danger-text)] bg-[var(--danger-bg)]">
+        播放失败：{playbackError}。可点击重置重播，或在对话中要求修复这一步。
+      </div>}
       {verificationFeedback?.report.status === 'passed' && (
         <p className="text-xs px-3 py-1">验证仅覆盖本次默认参数；调整滑块后的画面尚未验证。</p>
       )}

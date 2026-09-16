@@ -20,6 +20,7 @@ function Harness() {
     <button onClick={()=>{setSceneCode(`const {Scene,Dot}=ctx;const scene=new Scene(container,{width:960,height:540});scene.add(new Dot());await scene.wait(0.05);document.getElementById('playback-marker').textContent='自建场景完成';`);clearBusyTask(1);}}>等待后载入自建场景</button>
     <button onClick={()=>{setBusyTask({kind:'animation',label:'新任务',runId:2});clearBusyTask(1);}}>迟到清理旧任务</button>
     <button onClick={()=>setBusyTask(null)}>清空等待</button>
+    <button onClick={()=>setSceneCode(`throw new Error('播放故障回归'); // ${++count.current}`)}>播放故障测试</button>
     <p>当前任务：{busyTask?.label || '无'}</p><p>播放标记：<span id="playback-marker">待播放</span></p>
     <p>页面异常：{errors.length ? errors.join(';') : '无'}</p>
     <div style={{flex:1,minHeight:0}}><StagePanel/></div>

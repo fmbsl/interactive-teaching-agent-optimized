@@ -1,3 +1,4 @@
+import { AnimationGroup } from "manim-web";
 import { makeSelfBuildCtx, Scene, ThreeDScene } from "./manimCtx";
 import { execScript } from "./runScript";
 import { executeWithDeadline } from "./scriptExecution";
@@ -95,24 +96,34 @@ export async function verifyScene(code: string, params: Record<string, number>, 
   }
 }
 
+// AnimationGroup/LaggedStart add a library-owned, empty scheduling mobject to the scene.
+// Identify its actual constructor, not a minified class name or arbitrary missing bounds.
+const animationPlaceholderType = new AnimationGroup([]).mobject.constructor;
+
 /** Detect missing/throwing geometry APIs before legacy detectors can swallow them. */
 export function measureCoverage(scene: any): string {
   if (![scene.camera?.frameWidth, scene.camera?.frameHeight].every(n => Number.isFinite(n) && n > 0)) return "相机尺寸不可测量";
   const objects = [...scene._mobjects];
   if (!objects.length) return "结束场景为空，无法验证布局";
   const visited = new Set<any>();
+  let measured = 0;
   const visit = (m: any): void => {
     if (visited.has(m)) return;
     visited.add(m);
+    if(m.constructor === animationPlaceholderType) {
+      const root=m.getThreeObject?.();
+      if(root?.isGroup && !root.geometry && root.children.length===0 && !(m.submobjects || m._submobjects || []).length)return;
+    }
     const bb = m.getBoundingBox?.(), center = m.getCenter?.();
     if (!bb || !Array.isArray(center) || center.length < 2 ||
       ![bb.width, bb.height, center[0], center[1]].every(Number.isFinite) || bb.width < 0 || bb.height < 0) throw new Error("对象边界不可测量");
+    measured++;
     // Legacy detectors suppress getter errors; missing observations must not pass.
     if (typeof m.getText === "function") m.getText();
     if (typeof m.getLatex === "function") m.getLatex();
     if (typeof m.getRenderError === "function") m.getRenderError();
     for (const child of m.submobjects || m._submobjects || []) visit(child);
   };
-  try { objects.forEach(visit); return ""; }
+  try { objects.forEach(visit); return measured ? "" : "场景只有动画调度对象，没有可验证的内容"; }
   catch (error: any) { return `测量未完成：${String(error?.message || error)}`; }
 }

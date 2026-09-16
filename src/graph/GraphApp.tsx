@@ -18,17 +18,23 @@ const FLOW_CSS = `
 .react-flow__controls-button { background: var(--bg-2); color: var(--text); border-bottom: 1px solid var(--border); fill: var(--text); }
 .react-flow__controls-button:hover { background: var(--bg-3); }
 .react-flow__node { color: var(--text); visibility: visible !important; }
-/* 节点出现动画:只用独立 scale/translate 属性(与 ReactFlow 的 position transform 复合,不覆盖)。
-   不用 opacity——动画若没播(预览冻结/降级),节点仍可见,不会整个图消失。 */
-.react-flow__node.rf-node-in { animation: rfNodeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1); }
-@keyframes rfNodeIn {
-  from { scale: 0.6; translate: 0 10px; }
-  to { scale: 1; translate: 0 0; }
-}
+/* Keep node geometry stable while ReactFlow measures handle positions.
+   Scale/translate entrance animations leave cached edge endpoints at the initial size. */
 .react-flow__minimap { background: var(--bg-1); border: 1px solid var(--border); }
 .react-flow__minimap svg { background: var(--bg-1); }
 /* minimap 节点缩略图:确保可见(默认继承,深色底上用蓝/绿) */
 .react-flow__minimap-node { fill: var(--blue); }
+/* 对齐修复:default-node 的样式类(.react-flow__node-default)打在 wrapper 自身(不是子元素),
+   ReactFlow 用 node.width/height 内联把 wrapper 钉死为 180×54(handle 锚点=50% 宽、上/下边),
+   但该规则自带的 padding:10px 会把内容挤进 160 宽的内容盒,文本与 180×54 盒(handle 锚点)错位
+   → 箭头贴不齐气泡。只需清掉 padding:内容盒回到 180×54,node.style 的内联背景/边框(比普通
+   规则优先级高,天然生效)即为唯一视觉气泡,几何与 handle 锚点完全重合。
+   注意:不能动 wrapper 的 width/height(absolute 元素百分比会解析到 0/视口高)。 */
+.xf-graph .react-flow__node-default,
+.xf-graph .react-flow__node-input,
+.xf-graph .react-flow__node-output {
+  padding: 0;
+}
 `;
 
 type LogItem = { id: string; parentId?: string | null; kind: string; text: string; depth: number };
@@ -125,15 +131,15 @@ function relatives(id: string, edges: { from: string; to: string }[]): { ancesto
   return { ancestors, descendants };
 }
 
-// 节点 label(React 节点):标题 + mastery✓ + 别名 + 集合便签
-// 边的出入锚点由节点的 sourcePosition=Top / targetPosition=Bottom 控制(见 snapshotToNodesEdges),
-// 让每条边从下面节点的顶边出、到上面节点的底边入,箭头统一朝上。
+// 节点 label(React 节点):标题 + mastery✓ + 别名 + 集合便签。精确填满 180×54 气泡盒
+// (wrapper 内容盒≈178×52;三行总高 16+13+13+8padding=50≤52,溢出裁掉),保证视觉气泡
+// 与 handle 锚点(wrapper 边沿 50%)完全重合,箭头不漂移。
 function nodeLabel(title: string, mastery: boolean, sets: string[], aliases: string[]) {
   return (
-    <div style={{ padding: "4px 8px", fontSize: 12, maxWidth: 180 }}>
-      <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}{mastery ? " ✓" : ""}</div>
-      {aliases.length > 0 && <div style={{ fontSize: 10, color: "var(--text-mute)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>亦称:{aliases.join(" / ")}</div>}
-      {sets.length > 0 && <div style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sets.join(" › ")}</div>}
+    <div style={{ width: "100%", height: "100%", boxSizing: "border-box", padding: "4px 8px", fontSize: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "16px" }}>{title}{mastery ? " ✓" : ""}</div>
+      {aliases.length > 0 && <div style={{ fontSize: 10, color: "var(--text-mute)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "13px" }}>亦称:{aliases.join(" / ")}</div>}
+      {sets.length > 0 && <div style={{ fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "13px" }}>{sets.join(" › ")}</div>}
     </div>
   );
 }
@@ -488,7 +494,7 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
   const inputStyle: React.CSSProperties = { background: "var(--bg-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 4, padding: "4px 8px" };
 
   return (
-    <div className="stage-transition" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden", color: "var(--text)" }}>
+    <div className="stage-transition xf-graph" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", overflow: "hidden", color: "var(--text)" }}>
       <style>{FLOW_CSS}</style>
       {/* embedded(中间舞台):无顶栏,画布占满;分解由主 agent 对话触发。非 embedded(独立页)保留输入框+分解按钮 */}
       {!embedded && (

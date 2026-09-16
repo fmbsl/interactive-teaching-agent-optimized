@@ -1,6 +1,6 @@
 import { layoutRole, allowOverlap, prepareLayout, screenBounds } from './layoutGeometry';
 
-/** World-space layout helpers for the default, unrotated 2D camera. Never silently shrink content. */
+/** World-space layout helpers for the default, unrotated 2D camera. */
 export function teachingLayout(scene: any) {
   const w=scene.camera.frameWidth, h=scene.camera.frameHeight, gap=0.25;
   const zones = {
@@ -33,9 +33,32 @@ export function teachingLayout(scene: any) {
       if(typeof m.getFontSize==='function' && m.getFontSize()*scale<20) throw new Error('[layout] 缩放后字号低于 20，请拆分内容或分页');
       const rendered=screenBounds(scene,m);
       if(!rendered)throw new Error('[layout] 布局对象不可见');
-      const b={width:(rendered.right-rendered.left)*w/2,height:(rendered.top-rendered.bottom)*h/2};
-      if(b.width>z.width || b.height>z.height) throw new Error(`[layout] 布局空间不足(${zone})，请拆分公式、调整排列或分步显示`);
-      m.moveTo([z.x,z.y,0]); return m;
+      let b={width:(rendered.right-rendered.left)*w/2,height:(rendered.top-rendered.bottom)*h/2};
+      // A row of formula terms can be stacked without shrinking or dropping a term.
+      const children=m.submobjects || m._submobjects || [];
+      if(zone==='formula' && b.width>z.width && children.length>1 && children.every((c:any)=>typeof c.getLatex==='function') && typeof m.arrange==='function') {
+        // MathTexImage's texture includes transparent padding. Pack visible glyph bounds.
+        const root=m.getThreeObject();root.updateWorldMatrix(true,true);
+        const sizes=children.map((c:any)=>{
+          const r=screenBounds(scene,c);
+          if(!r)throw new Error('[layout] 公式尚未渲染');
+          return {m:c,width:(r.right-r.left)*w/2,height:(r.top-r.bottom)*h/2,x:(r.left+r.right)*w/4,y:(r.top+r.bottom)*h/4};
+        });
+        let x=0,y=0,rowHeight=0;
+        for(const item of sizes) {
+          if(x>0 && x+item.width>z.width){x=0;y-=rowHeight+0.18;rowHeight=0;}
+          const from=root.worldToLocal(root.position.clone().set(item.x,item.y,0));
+          const to=root.worldToLocal(root.position.clone().set(x+item.width/2,y-item.height/2,0));
+          item.m.shift([to.x-from.x,to.y-from.y,to.z-from.z]);
+          x+=item.width+0.18;rowHeight=Math.max(rowHeight,item.height);
+        }
+        m.getBoundingBox();
+        const wrapped=screenBounds(scene,m)!;
+        b={width:(wrapped.right-wrapped.left)*w/2,height:(wrapped.top-wrapped.bottom)*h/2};
+      }
+      if(b.width>z.width+0.01 || b.height>z.height+0.01) throw new Error(`[layout] 布局空间不足(${zone})：对象 ${b.width.toFixed(2)}×${b.height.toFixed(2)}，可用 ${z.width.toFixed(2)}×${z.height.toFixed(2)}（场景单位）。${zone==='plot'?'按可用宽高设置 Axes 的 xLength/yLength，并给轴标签留 0.6 单位；':'把长公式拆成多行独立 MathTexImage，再组为 VGroup；'}不要只改字号或重复提交相同代码。`);
+      const final=screenBounds(scene,m)!;
+      m.shift([z.x-(final.left+final.right)*w/4,z.y-(final.top+final.bottom)*h/4,0]); return m;
     },
     stack(objects:any[], center=[0,0,0], spacing=gap) {
       const heights=objects.map(m=>m.getBoundingBox().height);
@@ -64,7 +87,10 @@ export function teachingLayout(scene: any) {
       }
       throw new Error('[layout] 无可用避让空间，请调整排列或分页');
     },
-    replace(key:string, objects:any[]) {
+    async replace(key:string, objects:any[]) {
+      // Named region replacements inherit their region instead of piling up at the origin.
+      const zone=zones[key as keyof typeof zones];
+      if(zone && objects.length===1)await this.place(objects[0],key as keyof typeof zones);
       for(const old of groups.get(key)||[]) if(!objects.includes(old))scene.remove(old);
       scene.add(...objects); groups.set(key,[...objects]);
     },

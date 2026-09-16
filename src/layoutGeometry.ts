@@ -73,18 +73,27 @@ export function screenBounds(scene: any, m: any, strict = true): Rect | null {
   camera.updateMatrixWorld(true); root.updateWorldMatrix(true, true);
   const points: any[] = [];
   let observed = false;
-  const visit = (o: any) => {
+  // Descendant textures must use their own mobject's text metadata, including inside VGroup.
+  const owners = new WeakMap<object, any>();
+  const collect = (object:any) => {
+    const three=object.getThreeObject?.();
+    if(three)owners.set(three,object);
+    for(const child of object.submobjects || object._submobjects || [])collect(child);
+  };
+  collect(m);
+  const visit = (o: any, inherited = m) => {
+    const owner=owners.get(o) || inherited;
     if (!o.visible) { observed = true; return; }
     const materials = Array.isArray(o.material) ? o.material : [o.material];
     if (o.geometry && materials.some((v:any)=>v)) observed = true;
     if (o.geometry && materials.some((v: any) => v && v.visible !== false && v.opacity > 0.05)) {
       o.geometry.computeBoundingBox();
       const b = o.geometry.boundingBox?.clone();
-      if (b && readable(m) && o.geometry.type === 'PlaneGeometry' && materials.length===1) {
+      if (b && readable(owner) && o.geometry.type === 'PlaneGeometry' && materials.length===1) {
         const texture=materials[0]?.map;
         const alpha=alphaBounds(texture);
         if (alpha === null) {
-          if (strict && (m.fillOpacity ?? 1)>0.05 && String(m.getText?.()??m.getLatex?.()??'').trim()) throw new Error('文字/公式纹理为空，无法确认可读内容');
+          if (strict && (owner.fillOpacity ?? 1)>0.05 && String(owner.getText?.()??owner.getLatex?.()??'').trim()) throw new Error('文字/公式纹理为空，无法确认可读内容');
           return;
         }
         if (alpha) {
@@ -99,7 +108,7 @@ export function screenBounds(scene: any, m: any, strict = true): Rect | null {
         points.push(new THREE.Vector3(x,y,z).applyMatrix4(o.matrixWorld).project(camera));
       }
     }
-    o.children.forEach(visit);
+    o.children.forEach((child:any)=>visit(child,owner));
   };
   for (let parent = root.parent; parent; parent = parent.parent) if (!parent.visible) return null;
   visit(root);

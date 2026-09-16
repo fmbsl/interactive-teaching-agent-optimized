@@ -3,6 +3,12 @@ const text = `const {scene,Text,MathTexImage,Axes,VGroup,Line,Rectangle,teaching
 const t=(s)=>new Text({text:s,fontSize:24,fontFamily:'Arial,SimSun'});
 const pause=(ms)=>new Promise(r=>setTimeout(r,ms));`;
 const cases = [
+  {name:'错峰动画的空调度对象不误报',body:`const a=t('第一项').moveTo([-2,0,0]),b=t('第二项').moveTo([2,0,0]);await scene.play(new ctx.LaggedStart([new ctx.FadeIn(a,{duration:.2}),new ctx.FadeIn(b,{duration:.2})],{lagRatio:.3}));`,status:'passed'},
+  {name:'只有空调度对象仍不能通过',body:`scene.add(new ctx.AnimationGroup([]).mobject);`,status:'incomplete'},
+
+  {name:'超宽公式组自动分行',body:`const l=teachingLayout(scene),terms=['f(t)=','\\sin t','+0.6\\sin 3t','+0.35\\sin 6t'].map(latex=>new MathTexImage({latex,fontSize:28}));await Promise.all(terms.map(t=>t.waitForRender()));const g=new VGroup(...terms).arrange([1,0,0],.06);await l.place(g,'formula');scene.add(g);`,status:'passed'},
+  {name:'命名说明替换自动定位',body:`const l=teachingLayout(scene);scene.add(t('图中标签'));await l.replace('explanation',[t('第一段说明')]);await l.replace('explanation',[t('第二段说明')]);if(scene._mobjects.size!==2)throw Error('replacement failed');`,status:'passed'},
+
   {name:'中文长标签重叠',body:`scene.add(t('这是较长的中文标题'),t('这里是第二段说明'));`,status:'failed'},
   {name:'两个公式重叠',body:`scene.add(new MathTexImage({latex:'x^2+y^2=1',fontSize:24}),new MathTexImage({latex:'a^2+b^2=c^2',fontSize:24}));`,status:'failed'},
   {name:'公式与正文重叠',body:`scene.add(new MathTexImage({latex:'x^2',fontSize:24}),t('公式说明'));`,status:'failed'},
