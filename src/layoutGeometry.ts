@@ -47,6 +47,32 @@ export function allowOverlap(a: object, b: object, start: number, end: number, r
   permissions.set(a, [...(permissions.get(a) || []), { other: b, start, end, reason }]);
 }
 export const readable = (m: any) => typeof m.getText === 'function' || typeof m.getLatex === 'function' || typeof m._text === 'string';
+
+/** Reject text that only becomes unreadable after it is nested/scaled in a group. */
+export function assertReadableTypography(scene:any, root:any, minimum=20) {
+  scene.camera?.getCamera?.()?.updateMatrixWorld?.(true);
+  root.getThreeObject?.()?.updateWorldMatrix?.(true,true);
+  const seen=new Set<any>();
+  const visit=(m:any) => {
+    if(seen.has(m))return;seen.add(m);
+    if(readable(m) && typeof m.getFontSize==='function') {
+      const three=m.getThreeObject?.();three?.updateWorldMatrix?.(true,true);
+      const matrix=three?.matrixWorld?.elements;
+      if(!matrix)throw new Error('[layout] 无法测量文字的屏幕字号');
+      const scale=Math.min(
+        Math.hypot(matrix[0],matrix[1],matrix[2]),
+        Math.hypot(matrix[4],matrix[5],matrix[6]),
+      );
+      const size=m.getFontSize()*scale;
+      if(!Number.isFinite(size) || size<minimum) {
+        const label=String(m.getText?.() ?? m.getLatex?.() ?? '文字').slice(0,32);
+        throw new Error(`[layout] “${label}”实际字号 ${Number.isFinite(size)?size.toFixed(1):'不可测'}，低于 ${minimum}；请分段展示或减少同屏内容，不要缩小字体`);
+      }
+    }
+    for(const child of m.submobjects || m._submobjects || [])visit(child);
+  };
+  visit(root);
+}
 export async function prepareLayout(scene: any) {
   const seen = new Set<any>();
   const visit = async (m: any): Promise<void> => {
@@ -126,6 +152,7 @@ export function inspectLayout(scene: any, time = 0, ids = new WeakMap<object,str
   const visit = (m: any, axis = false) => {
     if (seen.has(m)) return; seen.add(m);
     const text = readable(m), kids = m.submobjects || m._submobjects || [];
+    if(text)assertReadableTypography(scene,m);
     const isAxis = axis || typeof m.c2p === 'function' || typeof m.p2c === 'function';
     const role = metadata.get(m)?.role;
     const pts = m.getPoints?.() || [];

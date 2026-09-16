@@ -1,4 +1,4 @@
-import { layoutRole, allowOverlap, prepareLayout, screenBounds } from './layoutGeometry';
+import { assertReadableTypography, layoutRole, allowOverlap, prepareLayout, screenBounds } from './layoutGeometry';
 
 /** World-space layout helpers for the default, unrotated 2D camera. */
 export function teachingLayout(scene: any) {
@@ -16,7 +16,6 @@ export function teachingLayout(scene: any) {
       if(typeof m.waitForRender==='function') await m.waitForRender();
       await document.fonts.ready;
       const z=zones[zone];
-      if(typeof m.getFontSize==='function' && m.getFontSize()<20) throw new Error('[layout] 布局字号低于 20，请分页');
       // Canvas Text accepts newlines. Wrap by measuring actual constructed text, including CJK.
       if(typeof m.getText==='function' && typeof m.setText==='function') {
         const original=m.getText(); let line='',lines:string[]=[];
@@ -28,9 +27,7 @@ export function teachingLayout(scene: any) {
         lines.push(line); m.setText(lines.join('\n'));
       }
       m.getBoundingBox(); // synchronize mobject transforms before inspecting display geometry
-      const matrix=m.getThreeObject().matrixWorld.elements;
-      const scale=Math.min(Math.hypot(matrix[0],matrix[1],matrix[2]),Math.hypot(matrix[4],matrix[5],matrix[6]));
-      if(typeof m.getFontSize==='function' && m.getFontSize()*scale<20) throw new Error('[layout] 缩放后字号低于 20，请拆分内容或分页');
+      assertReadableTypography(scene,m);
       const rendered=screenBounds(scene,m);
       if(!rendered)throw new Error('[layout] 布局对象不可见');
       let b={width:(rendered.right-rendered.left)*w/2,height:(rendered.top-rendered.bottom)*h/2};
