@@ -1,3 +1,4 @@
+import { busyForEvent } from "../busyTask";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
@@ -97,6 +98,7 @@ export default function ChatPanel() {
     setStageOpen, setExplainOpen, setGraphOpen, closeAllWindows,
     setPendingQuiz, setQuizResult,
     pendingResume, setPendingResume,
+    setBusyTask, clearBusyTask,
     pendingFiles, addPendingFile, removePendingFile, clearPendingFiles,
   } = useApp();
   // 同步 sessionId 到 ref,供 consume/handleEvent 异步循环里取最新值(避免闭包陈旧)
@@ -160,15 +162,16 @@ export default function ChatPanel() {
     const sid = sessionIdRef.current;
     consumeRunIdRef.current++;
     cancelVerification();
-    const myRun = consumeRunIdRef.current;
+    const myRun = consumeRunIdRef.current + 1;
     (async () => {
       try {
+        setLoading(true);
         const gen = pendingResume.result !== undefined
           ? chatAnswer(sid, "", pendingResume.result)
           : chatAnswer(sid, pendingResume.answer || "");
         await consume(gen);
       } finally {
-        if (consumeRunIdRef.current === myRun) setPendingResume(null);
+        if (consumeRunIdRef.current === myRun) { setLoading(false); setPendingResume(null); }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -198,11 +201,19 @@ export default function ChatPanel() {
   }
 
   async function consume(stream: AsyncGenerator<ChatEvent>, opts?: { isUpdate?: boolean }) {
-    const myRun = consumeRunIdRef.current;
+    const myRun = ++consumeRunIdRef.current;
+    setBusyTask({kind: "agent", label: "正在处理…", runId: myRun});
+    try {
+      await consumeRun(stream, myRun, opts);
+    } finally { clearBusyTask(myRun); }
+  }
+
+  async function consumeRun(stream: AsyncGenerator<ChatEvent>, myRun: number, opts?: { isUpdate?: boolean }) {
     let key = Date.now();
     for await (const ev of stream) {
       // session 已切换:旧 consume 的事件作废,不再写 state(防止串台到新 session)
       if (consumeRunIdRef.current !== myRun) return;
+      observeBusy(ev, myRun);
       // explain 事件:若该 step 已有消息则替换(不重复 append),其它事件照常 append
       if (ev.kind === "explain") {
         setItems((prev) => {
@@ -390,9 +401,19 @@ export default function ChatPanel() {
     refreshSessions();
   }
 
+  function observeBusy(ev: ChatEvent, myRun: number) {
+    const next = busyForEvent(ev, myRun);
+    if (next !== undefined) {
+      if (next === null) clearBusyTask(myRun);
+      else setBusyTask(next);
+    }
+  }
+
   // 处理单个事件(供 render_request 递归消费复用):落盘 explain/plan/session/error,render_request 递归验证
   // myRun:外层 consume 的 runId,递归中切会话时据此中断,防止回传流写到新会话(串台)
   async function handleEvent(ev: ChatEvent, myRun: number): Promise<{ error: string } | undefined> {
+    if (consumeRunIdRef.current !== myRun) return;
+    observeBusy(ev, myRun);
     // 落盘 explain 到 store;其他事件也追加到对话树
     if (ev.kind === "explain") {
       setItems((prev) => {
@@ -505,6 +526,11 @@ export default function ChatPanel() {
       return { error: ev.message || "" };
     } else if (ev.kind === "agent_start" || ev.kind === "tool_call" || ev.kind === "tool_result" || ev.kind === "render_result") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+    } else if (ev.kind === "quiz") {
+      setItems(prev => [...prev, makeItem(ev, `e-${Date.now()}`)]);
+      setPendingQuiz({step_title: ev.step_title, question: ev.question, options: ev.options, answer: ev.answer, explanation: ev.explanation});
+      setQuizResult(null);
+      setExplainOpen(true);
     } else if (ev.kind === "topic_added") {
       setItems((prev) => [...prev, makeItem(ev, `e-${Date.now()}`)]);
       addTopic(ev.topic);
@@ -582,6 +608,7 @@ export default function ChatPanel() {
     abortRef.current?.abort();
     abortRef.current = null;
     consumeRunIdRef.current++;
+    setBusyTask(null);
     cancelVerification(); // 使当前 consume 的后续事件作废(防串台残留)
     setLoading(false);
     const sid = sessionIdRef.current;
@@ -651,6 +678,7 @@ export default function ChatPanel() {
     abortRef.current?.abort(); // 取消旧 SSE reader:后台生成由 executor 解耦继续跑(不调 chatStop,勿停旧生成)
     abortRef.current = null;
     setLoading(false); // 新会话立刻可输入(旧生成残留的 loading 不冻结新会话)
+    setBusyTask(null); // 旧会话的忙碌指示一并作废(切换后面板不再显示旧任务)
     try {
       const sid = await newSession();
       resetToEmpty();
@@ -684,6 +712,7 @@ export default function ChatPanel() {
     abortRef.current?.abort(); // 取消旧 SSE reader:后台生成由 executor 解耦继续跑(不调 chatStop,勿停旧生成)
     abortRef.current = null;
     setLoading(false); // 新会话立刻可输入(旧生成残留的 loading 不冻结新会话)
+    setBusyTask(null); // 旧会话的长任务指示作废(切走即清,防旧任务状态残留)
     try {
       const detail = await getSession(sid);
       switchSession({

@@ -6,7 +6,7 @@ import ExplainPanel from "./components/ExplainPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import GraphApp from "./graph/GraphApp";
 import { applyTheme, applyCustomCss, type ThemeId } from "./theme";
-import { Settings, Play, FileText, Network } from "lucide-react";
+import { Settings, Play, FileText, Network, Loader2 } from "lucide-react";
 
 export default function App() {
   // 访问令牌:优先 localStorage;否则若 URL 带 ?token= 则直接用并记住(评审拿完整 URL 直接进,不用输)。
@@ -55,7 +55,7 @@ function AccessGate({ onSave }: { onSave: (t: string) => void }) {
 
 function AppShell() {
   const [showSettings, setShowSettings] = useState(false);
-  const { stageOpen, setStageOpen, explainOpen, setExplainOpen, graphOpen, setGraphOpen, theme, customCss, loadAppSettings } = useApp();
+  const { stageOpen, setStageOpen, explainOpen, setExplainOpen, graphOpen, setGraphOpen, theme, customCss, loadAppSettings, busyTask } = useApp();
   // 平铺排布:主 agent 对话恒在最左;中列 = 动画(上)+ 分解图(下),右列 = 讲解。打开哪些窗口自由组合,互不遮挡。
   const anyWindow = stageOpen || explainOpen || graphOpen;
   const middleHas = stageOpen || graphOpen;   // 中列存在条件
@@ -238,9 +238,13 @@ function AppShell() {
         )}
       </main>
 
-      {/* 底部编排状态条 */}
+      {/* 底部编排状态条:有长任务(busyTask)时显示真实进行中状态 */}
       <footer className="flex items-center gap-3 px-5 h-7 border-t border-[var(--border)] panel text-[10px] text-[var(--text-mute)] shrink-0">
-        <span className="flex items-center gap-1.5"><span className="w-1 h-1 rounded-full bg-[var(--blue)]/60" />编排:主agent → 拆解 → 生成 → 校验</span>
+        {busyTask ? (
+          <span className="flex items-center gap-1.5 text-[var(--blue-strong)]"><Loader2 size={10} className="animate-spin" />{busyTask.label}</span>
+        ) : (
+          <span className="flex items-center gap-1.5"><span className="w-1 h-1 rounded-full bg-[var(--blue)]/60" />编排:主agent → 拆解 → 生成 → 校验</span>
+        )}
         <span className="text-[var(--border)]">·</span>
         <span>数学/物理/几何 → manim 动画</span>
         <span className="ml-auto text-[var(--text-faint)]">manim-web · React 19 · KaTeX</span>

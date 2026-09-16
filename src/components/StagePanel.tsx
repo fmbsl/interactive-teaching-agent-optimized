@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { makeManimCtx, makeSelfBuildCtx, Scene, ThreeDScene, Axes, Dot, Line, Text, ValueTracker, Create, FadeIn, exposeManimGlobals } from "../manimCtx";
 import { useApp } from "../store";
 import { regenerateScene } from "../data/llmClient";
-import { SkipBack, Play, Pause, SkipForward, RotateCcw, Camera, Square, Video } from "lucide-react";
+import { SkipBack, Play, Pause, SkipForward, RotateCcw, Camera, Square, Video, Loader2 } from "lucide-react";
 import { is3DCode } from "../sceneCheck";
 import { verifyScene } from "../verifyScene";
 import { verificationCheckLabel, type VerificationReport } from "../verificationTypes";
@@ -104,7 +104,8 @@ export default function StagePanel() {
       }
     } catch { /* 不支持则静默 */ }
   };
-  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled, theme } = useApp();
+  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled, theme, busyTask } = useApp();
+  const animating = busyTask?.kind === "animation";
   useEffect(() => { setVerificationFeedback(null); }, [sessionId, currentStep]);
 
   // 参数调整消抖 + 调完自动播放:
@@ -116,6 +117,14 @@ export default function StagePanel() {
   const [paramRebuildKey, setParamRebuildKey] = useState(0);
   const paramTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoPlayRef = useRef(false);
+  // 新落地 sceneCode 的自动播放标记:生成/修改/切步/重生成的新代码到达 → 本次自动播(不停首段静帧)。
+  // 存在 scene 创建 effect 里按 sceneCode/⏮ 变化设置/清除,而非在 build effect 里读后清——
+  // 因为 sceneCode 变化要分两步重建(先建新 Scene → 下一 commit 才在真 scene 上 build),
+  // build effect 会跑两次,一次性标志会被第一次(跑在旧 scene 上,随即被 cancelled)读掉,
+  // 导致最终场景不自动播。持久标记让两次 build 读到同一份真值,⏮回开头时才清除。
+  const freshCodeRef = useRef<string | null>(null);
+  const sceneCodeRef = useRef("");
+  const resetKeyRef = useRef(0);
   const paramEditedRef = useRef(false);
   const handleParamEdit = () => { paramEditedRef.current = true; };
   const prevParamKeyRef = useRef(paramKey);
@@ -146,6 +155,18 @@ export default function StagePanel() {
 
   // sceneCode/重置/主题 变化时重建 scene(固定 16:9;不随容器尺寸重建 → 开合窗口/拖拽列宽不重启动画)
   useEffect(() => {
+    // 新落地 sceneCode → 标记本次要自动播放,并同步 resetKey(切换会话会连 resetKey 一起 bump,
+    // 若照旧走下方 clear 分支会把 fresh 清掉 → 新会话不自动播)。仅"纯 ⏮回开头"(sceneCode 没变)
+    // 才清标记停在起点。
+    if (sceneCode !== sceneCodeRef.current) {
+      sceneCodeRef.current = sceneCode;
+      resetKeyRef.current = stageResetKey;
+      freshCodeRef.current = sceneCode || null;
+    }
+    if (sceneCode === sceneCodeRef.current && stageResetKey !== resetKeyRef.current) {
+      resetKeyRef.current = stageResetKey;
+      freshCodeRef.current = null;
+    }
     const container = containerRef.current;
     if (!container) return;
     // 自建场景代码不需要注入 scene(自己在 container 上 new Scene)
@@ -215,8 +236,11 @@ export default function StagePanel() {
   // 超过上限后即便代码仍报错也直接回退默认场景,不再调后端——点回已访问步秒回,不重新生成。
   const regenCountByStepRef = useRef<Record<number, number>>({});
   useEffect(() => {
-    // 参数调整完的自动播放标志:消抖定时器触发重建前置 true,本次 build 跑完直接播(不停首段)
-    const autoPlay = autoPlayRef.current;
+    // 自动播放标志合并两源:参数调整完(消抖前置 true)或"当前代码是新落地代码"
+    // (freshCodeRef 由 scene 创建 effect 在 sceneCode 变化时设置、⏮回开头时清除)。
+    // 新生成的动画应立刻动起来,不再停在首段静帧(用户"没看到动画");⏮回开头则停在起点等用户按播放。
+    const unverifiedPreview = verificationFeedback?.code === sceneCode && verificationFeedback.report.status !== 'passed';
+    const autoPlay = !unverifiedPreview && (autoPlayRef.current || freshCodeRef.current === sceneCode);
     autoPlayRef.current = false;
     const selfBuild = sceneCode ? isSelfBuildCode(sceneCode) : false;
     const s = scene;
@@ -467,10 +491,17 @@ function buildDefaultScene(s: any) {
       {/* 舞台上方加一行步骤标题,让中栏有"标题感" */}
       <div className="flex items-center px-4 h-9 border-b border-[var(--border)] shrink-0">
         <span className="text-[10px] text-[var(--text-faint)] uppercase tracking-wider">Stage</span>
-        <span className="ml-2 text-[12px] text-[var(--text-dim)]">{stageStepTitle || "等待提问…"}</span>
+        <span className="ml-2 text-[12px] text-[var(--text-dim)]">{stageStepTitle || (animating ? "" : "等待提问…")}</span>
+        {animating && <span className="ml-2 flex items-center gap-1.5 text-[12px] text-[var(--blue-strong)]"><Loader2 size={11} className="animate-spin" />{busyTask?.label}</span>}
         <span className="ml-auto text-[10px] text-[var(--text-faint)] tnum">{stageStepLabel}</span>
       </div>
-      <div ref={containerRef} className="stage-canvas-wrap flex-1 min-h-0 w-full overflow-hidden relative flex items-center justify-center">
+      <div className="relative flex-1 min-h-0 w-full overflow-hidden">
+        <div ref={containerRef} className="stage-canvas-wrap absolute inset-0 overflow-hidden flex items-center justify-center" />
+        {!sceneCode && animating && (
+          <div role="status" className="panel absolute inset-0 flex items-center justify-center gap-2 pointer-events-none" style={{ fontSize: 13, color: "var(--text-dim)" }}>
+            <Loader2 size={16} className="animate-spin" style={{ color: "var(--blue-strong)" }} /> {busyTask?.label}
+          </div>
+        )}
       </div>
       <div className="border-t border-[var(--border)] px-4 py-3 space-y-3 shrink-0">
         <div className="flex items-center gap-2">

@@ -3,10 +3,14 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
+// 端口优先取环境变量 PORT(供 preview_start 的 autoPort 指定),未设则回落到默认 5173。
+const requestedPort = Number(process.env.PORT);
+const DEV_PORT = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort <= 65535 ? requestedPort : 5173;
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5173,
+    port: DEV_PORT,
     host: true,
     // 前端走同源相对 /api,dev 时由 Vite 代理到后端 8000(公网/生产由统一入口反代)
     proxy: {

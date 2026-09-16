@@ -4,7 +4,7 @@ import { ReactFlow, Background, Controls, MiniMap, Position, type Node, type Edg
 import "@xyflow/react/dist/style.css";
 import { uploadFile, decompose, decomposeToTopics, decomposeEdit, decomposeAutoSplit, newSession } from "../data/llmClient";
 import { useApp } from "../store";
-import { Paperclip, ListPlus, Pencil, Trash2, GraduationCap, Split, Merge, Plus } from "lucide-react";
+import { Paperclip, ListPlus, Pencil, Trash2, GraduationCap, Split, Merge, Plus, Loader2 } from "lucide-react";
 
 // 深色主题。xyflow v12 的 .react-flow__edges 缺 width/height,强制铺满。
 // 用默认 node(ReactFlow 内置)而非自定义 nodeTypes——自定义 node 在本环境会触发 ResizeObserver 不触发→visibility:hidden→边不画。
@@ -222,7 +222,9 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
   const justBoxedRef = useRef(false);
   const [selRect, setSelRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
-  const { sessionId, setSessionId, setTopics, setGraphOpen, setStageOpen, decomposeGraph, setDecomposeGraph } = useApp();
+  const { sessionId, setSessionId, setTopics, setGraphOpen, setStageOpen, decomposeGraph, setDecomposeGraph, busyTask } = useApp();
+  // 分解/改图进行中(经 graph_command):ChatPanel 设/清 busyTask(kind=graph),驱动态指示
+  const decomposing = busyTask?.kind === "graph";
   // sid 直接用 store.sessionId(图随 session 走);本地不再单独存 sid
 
   // 节点入场动画:只给"新出现"的节点打 rf-node-in 类(旧节点不动)。
@@ -548,18 +550,29 @@ export default function GraphApp({ visible = true, embedded = false }: { visible
             document.body)}
           {sessionId && (
             <div style={{ position: "absolute", top: 8, left: 8, fontSize: 11, fontFamily: "monospace", color: "var(--text-mute)", background: "var(--panel-bg-soft)", padding: "4px 8px", borderRadius: 4, pointerEvents: "none" }}>
+              {decomposing && (
+                <div style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--blue-strong)", marginBottom: 2 }}><Loader2 size={10} className="animate-spin" />正在分解…</div>
+              )}
               节点 {rfNodes.length} · 边 {rfEdges.length}
               <br /><span style={{ color: "#16a34a" }}>■</span> 已掌握 &nbsp;<span style={{ color: "var(--blue)" }}>■</span> 待学 &nbsp;<span style={{ color: "var(--blue)" }}>─</span> 前置
+            </div>
+          )}
+          {/* 首次分解空画布兜底:节点到达前不只见网格 */}
+          {rfNodes.length === 0 && decomposing && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+              <div className="panel" style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderRadius: 10, fontSize: 13, color: "var(--text-dim)" }}>
+                <Loader2 size={16} className="animate-spin" style={{ color: "var(--blue-strong)" }} /> 正在分解知识点…
+              </div>
             </div>
           )}
           {/* 悬浮:全部导入知识清单(右下角)。分解完成后可用 */}
           {sessionId && rfNodes.length > 0 && (
             <button
               onClick={toTopics}
-              disabled={converting || !done}
+              disabled={converting || !done || decomposing}
               title="把整张分解图按前置依赖拓扑排序,生成学习清单"
               className="btn-blue flex items-center gap-1.5 shadow-lg"
-              style={{ position: "absolute", right: 14, bottom: 14, padding: "8px 14px", borderRadius: 8, fontSize: 13, opacity: converting || !done ? 0.5 : 1 }}>
+              style={{ position: "absolute", right: 14, bottom: 14, padding: "8px 14px", borderRadius: 8, fontSize: 13, opacity: converting || !done || decomposing ? 0.5 : 1 }}>
               <ListPlus size={15} /> {converting ? "导入中…" : "全部导入知识清单"}
             </button>
           )}

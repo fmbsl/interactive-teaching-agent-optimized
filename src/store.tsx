@@ -1,11 +1,15 @@
 import { VerificationMailbox, type VerificationReport } from "./verificationTypes";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { clearBusyRun, type BusyTask } from "./busyTask";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { emptyLesson, type Lesson } from "./data/lesson";
 import { listLlmConfigs, getAppSettings, type EndpointConfig, type SessionSummary } from "./data/llmClient";
 import { loadTheme, saveTheme, loadCustomCss, saveCustomCss, applyTheme, type ThemeId } from "./theme";
 
 type ParamValues = Record<string, number>;
 export type StepStatus = "pending" | "active" | "done";
+
+// 长任务忙碌登记:当前正在进行的后台任务(kind + 展示文案)。全局只有 ChatPanel consume 设/清,
+// 面板(GraphApp/StagePanel/ExplainPanel/footer)读它显示状态指示动画。
 
 interface AppState {
   lesson: Lesson;
@@ -78,6 +82,10 @@ interface AppState {
   // 待处理的 resume 请求(右边栏考题作答等非 ChatPanel 发起的 resume):ChatPanel useEffect 监听并 consume chatAnswer
   pendingResume: { answer?: string; result?: any } | null;
   setPendingResume: (r: { answer?: string; result?: any } | null) => void;
+  // 长任务忙碌登记(分解图/动画生成/出题),各面板用来显示"等待中"状态指示动画
+  busyTask: BusyTask | null;
+  setBusyTask: (t: BusyTask | null) => void;
+  clearBusyTask: (runId: number) => void;
   // 主题 + 自定义 CSS(localStorage 持久化;App 挂载 effect 负责 applyTheme/applyCustomCss)
   theme: string;
   setTheme: (id: string) => void;
@@ -109,6 +117,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pendingQuiz, setPendingQuiz] = useState<{ step_title: string; question: string; options: string[]; answer: number; explanation: string } | null>(null);
   const [quizResult, setQuizResult] = useState<{ choice: number; correct: boolean; explanation: string } | null>(null);
   const [pendingResume, setPendingResume] = useState<{ answer?: string; result?: any } | null>(null);
+  const [busyTask, setBusyTask] = useState<BusyTask | null>(null);
+  const clearBusyTask = useCallback((runId: number) => setBusyTask(cur => clearBusyRun(cur, runId)), []);
   // 浮窗开关(默认全关 = 对话优先)
   const [stageOpen, setStageOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
@@ -298,11 +308,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pendingQuiz, setPendingQuiz,
       quizResult, setQuizResult,
       pendingResume, setPendingResume,
+      busyTask, setBusyTask, clearBusyTask,
       theme, setTheme,
       customCss, setCustomCss,
       decomposeEffort, setDecomposeEffort, loadAppSettings,
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, stageOpen, explainOpen, graphOpen, decomposeGraph, pendingQuiz, quizResult, pendingResume, theme, customCss, decomposeEffort]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, stageOpen, explainOpen, graphOpen, decomposeGraph, pendingQuiz, quizResult, pendingResume, busyTask, theme, customCss, decomposeEffort]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
