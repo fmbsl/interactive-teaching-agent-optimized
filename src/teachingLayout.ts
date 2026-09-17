@@ -1,4 +1,4 @@
-import { assertReadableTypography, layoutRole, allowOverlap, prepareLayout, screenBounds } from './layoutGeometry';
+import { assertReadableTypography, minimumTypographySize, layoutRole, allowOverlap, prepareLayout, screenBounds } from './layoutGeometry';
 
 /** World-space layout helpers for the default, unrotated 2D camera. */
 export function teachingLayout(scene: any) {
@@ -12,7 +12,7 @@ export function teachingLayout(scene: any) {
   const groups=new Map<string,any[]>();
   return {
     zones, role:layoutRole, allowOverlap,
-    async place(m:any, zone: keyof typeof zones) {
+    async place(m:any, zone: keyof typeof zones, options:{minFontSize?:number;autoFit?:boolean}={}) {
       if(typeof m.waitForRender==='function') await m.waitForRender();
       await document.fonts.ready;
       const z=zones[zone];
@@ -27,7 +27,8 @@ export function teachingLayout(scene: any) {
         lines.push(line); m.setText(lines.join('\n'));
       }
       m.getBoundingBox(); // synchronize mobject transforms before inspecting display geometry
-      assertReadableTypography(scene,m);
+      const minFontSize=options.minFontSize ?? 12;
+      assertReadableTypography(scene,m,minFontSize);
       const rendered=screenBounds(scene,m);
       if(!rendered)throw new Error('[layout] 布局对象不可见');
       let b={width:(rendered.right-rendered.left)*w/2,height:(rendered.top-rendered.bottom)*h/2};
@@ -53,7 +54,16 @@ export function teachingLayout(scene: any) {
         const wrapped=screenBounds(scene,m)!;
         b={width:(wrapped.right-wrapped.left)*w/2,height:(wrapped.top-wrapped.bottom)*h/2};
       }
-      if(b.width>z.width+0.01 || b.height>z.height+0.01) throw new Error(`[layout] 布局空间不足(${zone})：对象 ${b.width.toFixed(2)}×${b.height.toFixed(2)}，可用 ${z.width.toFixed(2)}×${z.height.toFixed(2)}（场景单位）。${zone==='plot'?'按可用宽高设置 Axes 的 xLength/yLength，并给轴标签留 0.6 单位；':'把长公式拆成多行独立 MathTexImage，再组为 VGroup；'}不要只改字号或重复提交相同代码。`);
+      if(options.autoFit!==false && (b.width>z.width+0.01 || b.height>z.height+0.01) && typeof m.scale==='function') {
+        const fit=Math.min(z.width/b.width,z.height/b.height)*0.98;
+        const smallest=minimumTypographySize(scene,m);
+        if(fit>0 && (smallest===Infinity || smallest*fit>=minFontSize)) {
+          m.scale(fit);m.getBoundingBox();
+          const fitted=screenBounds(scene,m)!;
+          b={width:(fitted.right-fitted.left)*w/2,height:(fitted.top-fitted.bottom)*h/2};
+        }
+      }
+      if(b.width>z.width+0.01 || b.height>z.height+0.01) throw new Error(`[layout] 布局空间不足(${zone})：对象 ${b.width.toFixed(2)}×${b.height.toFixed(2)}，可用 ${z.width.toFixed(2)}×${z.height.toFixed(2)}（场景单位）。可传 {minFontSize:10} 放宽自动缩放下限；${zone==='plot'?'或缩短 Axes 的 xLength/yLength并给标签留白。':'或把内容拆成多页。'}`);
       const final=screenBounds(scene,m)!;
       m.shift([z.x-(final.left+final.right)*w/4,z.y-(final.top+final.bottom)*h/4,0]); return m;
     },

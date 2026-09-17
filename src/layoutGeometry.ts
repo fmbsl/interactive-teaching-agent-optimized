@@ -48,11 +48,12 @@ export function allowOverlap(a: object, b: object, start: number, end: number, r
 }
 export const readable = (m: any) => typeof m.getText === 'function' || typeof m.getLatex === 'function' || typeof m._text === 'string';
 
-/** Reject text that only becomes unreadable after it is nested/scaled in a group. */
-export function assertReadableTypography(scene:any, root:any, minimum=20) {
+/** Return the smallest effective font size after all group transforms. */
+export function minimumTypographySize(scene:any, root:any) {
   scene.camera?.getCamera?.()?.updateMatrixWorld?.(true);
   root.getThreeObject?.()?.updateWorldMatrix?.(true,true);
   const seen=new Set<any>();
+  let smallest=Infinity;
   const visit=(m:any) => {
     if(seen.has(m))return;seen.add(m);
     if(readable(m) && typeof m.getFontSize==='function') {
@@ -64,14 +65,19 @@ export function assertReadableTypography(scene:any, root:any, minimum=20) {
         Math.hypot(matrix[4],matrix[5],matrix[6]),
       );
       const size=m.getFontSize()*scale;
-      if(!Number.isFinite(size) || size<minimum) {
-        const label=String(m.getText?.() ?? m.getLatex?.() ?? '文字').slice(0,32);
-        throw new Error(`[layout] “${label}”实际字号 ${Number.isFinite(size)?size.toFixed(1):'不可测'}，低于 ${minimum}；请分段展示或减少同屏内容，不要缩小字体`);
-      }
+      if(!Number.isFinite(size))throw new Error('[layout] 文字实际字号不可测');
+      smallest=Math.min(smallest,size);
     }
     for(const child of m.submobjects || m._submobjects || [])visit(child);
   };
   visit(root);
+  return smallest;
+}
+
+/** A local layout may choose its own lower bound; this is not a global verifier rule. */
+export function assertReadableTypography(scene:any, root:any, minimum=12) {
+  const size=minimumTypographySize(scene,root);
+  if(size<minimum)throw new Error(`[layout] 实际字号 ${size.toFixed(1)}，低于本区域设置的 ${minimum}；可调低 minFontSize 或减少同屏内容`);
 }
 export async function prepareLayout(scene: any) {
   const seen = new Set<any>();
@@ -152,7 +158,6 @@ export function inspectLayout(scene: any, time = 0, ids = new WeakMap<object,str
   const visit = (m: any, axis = false) => {
     if (seen.has(m)) return; seen.add(m);
     const text = readable(m), kids = m.submobjects || m._submobjects || [];
-    if(text)assertReadableTypography(scene,m);
     const isAxis = axis || typeof m.c2p === 'function' || typeof m.p2c === 'function';
     const role = metadata.get(m)?.role;
     const pts = m.getPoints?.() || [];

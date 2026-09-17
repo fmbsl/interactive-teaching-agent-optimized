@@ -21,7 +21,7 @@
 9. **`waitForRender` 只用于公式**,见 3。
 10. **构图相对定位,不硬算世界坐标**:`mob.nextTo(ref, dir, buff)`(dir=UP/DOWN/LEFT/RIGHT/UL..,buff≈0.1-0.3)/`toEdge(UP/DOWN)`/`toEdge(DOWN,x)`。**禁止 `toEdge(UP).shift([4.4,-0.55,0])` 或裸 `moveTo([-5.4,1.8,0])` 硬凑**——会重叠/越界被检查打回。三区分明:顶部标题、中部主体、底部说明/公式。
 11. **对象必须进场景**:对 `copy()` 副本做动画前先 `scene.add` 或靠 Create/FadeIn 进场;updater 引用的 mobject 要先 add。
-12. **组定位后保持整组播放**:`VGroup.arrange/moveTo` 或 `layout.place(group,...)` 后，对 group 做 `scene.add/Create/FadeIn`；不要再单独 add/play 子对象，否则子对象会重新挂载并丢失组变换。文字和公式 `fontSize >= 20`，核心公式建议 24–32。
+12. **组定位后保持整组播放**:`VGroup.arrange/moveTo` 或 `layout.place(group,...)` 后，对 group 做 `scene.add/Create/FadeIn`；不要再单独 add/play 子对象，否则子对象会重新挂载并丢失组变换。文字和公式建议 20–32，区域不足时 `layout.place` 会自动缩放到默认 12；可传 `{minFontSize:10}` 调整下限。
 
 ## 常用 API 签名(照抄,勿自己编)
 - `new Axes({ xRange:[xmin,xmax,step], yRange:[...], xLength, yLength, tips:false, axisConfig:{color,strokeWidth} })`

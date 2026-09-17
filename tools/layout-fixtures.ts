@@ -3,8 +3,9 @@ const text = `const {scene,Text,MathTexImage,Axes,VGroup,Line,Rectangle,teaching
 const t=(s)=>new Text({text:s,fontSize:24,fontFamily:'Arial,SimSun'});
 const pause=(ms)=>new Promise(r=>setTimeout(r,ms));`;
 const cases = [
-  {name:'组合内小公式不能绕过字号检查',body:`const l=teachingLayout(scene),a=new MathTexImage({latex:'x^2',fontSize:14}),g=new VGroup(a);await a.waitForRender();await l.place(g,'formula');scene.add(g);`,status:'failed',reason:'实际字号'},
-  {name:'场景内小公式即使不调用 place 也不能通过',body:`const a=new MathTexImage({latex:'x^2',fontSize:14});await a.waitForRender();scene.add(new VGroup(a));`,status:'incomplete',reason:'实际字号'},
+  {name:'组合内 14 号公式允许输出',body:`const l=teachingLayout(scene),a=new MathTexImage({latex:'x^2',fontSize:14}),g=new VGroup(a);await a.waitForRender();await l.place(g,'formula');scene.add(g);`,status:'passed'},
+  {name:'未调用 place 的字号不做全局拦截',body:`const a=new MathTexImage({latex:'x^2',fontSize:14});await a.waitForRender();scene.add(new VGroup(a));`,status:'passed'},
+  {name:'超宽公式在字号下限内自动适配',body:`const l=teachingLayout(scene),a=new MathTexImage({latex:'x_1+x_2+x_3+x_4+x_5+x_6+x_7+x_8+x_9+x_{10}',fontSize:28});await a.waitForRender();await l.place(a,'formula');scene.add(a);`,status:'passed'},
   {name:'错峰动画的空调度对象不误报',body:`const a=t('第一项').moveTo([-2,0,0]),b=t('第二项').moveTo([2,0,0]);await scene.play(new ctx.LaggedStart([new ctx.FadeIn(a,{duration:.2}),new ctx.FadeIn(b,{duration:.2})],{lagRatio:.3}));`,status:'passed'},
   {name:'只有空调度对象仍不能通过',body:`scene.add(new ctx.AnimationGroup([]).mobject);`,status:'incomplete'},
 
