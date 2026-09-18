@@ -11,11 +11,9 @@
 from __future__ import annotations
 import os
 from datetime import datetime
+from .data_paths import data_path
 
-_LOG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "debug.log",
-)
+_LOG_PATH = data_path("debug.log")
 
 
 def dlog(msg: str) -> None:

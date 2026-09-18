@@ -7,6 +7,23 @@ import { loadTheme, saveTheme, loadCustomCss, saveCustomCss, applyTheme, type Th
 
 type ParamValues = Record<string, number>;
 export type StepStatus = "pending" | "active" | "done";
+export type VerificationChecks = {
+  sceneAccess: boolean;
+  measurements: boolean;
+  mathtex: boolean;
+  nan: boolean;
+  finalLayout: boolean;
+  temporalLayout: boolean;
+};
+
+export const DEFAULT_VERIFICATION_CHECKS: VerificationChecks = {
+  sceneAccess: true,
+  measurements: true,
+  mathtex: true,
+  nan: true,
+  finalLayout: true,
+  temporalLayout: false,
+};
 
 // 长任务忙碌登记:当前正在进行的后台任务(kind + 展示文案)。全局只有 ChatPanel consume 设/清,
 // 面板(GraphApp/StagePanel/ExplainPanel/footer)读它显示状态指示动画。
@@ -34,9 +51,11 @@ interface AppState {
   requestVerify: (stepId: number, code: string, myRun: number, params?: Record<string, number>) => Promise<VerificationReport>;
   reportVerifyResult: (result: VerificationReport, nonce: number) => void;
   cancelVerification: () => void;
-  // 验证开关:BB 重叠检测 / 视觉检查
-  bbCheckEnabled: boolean; setBbCheckEnabled: (v: boolean) => void;
+  // 验证项目：执行检查始终保留，其余项目可独立开关。
+  verificationChecks: VerificationChecks;
+  setVerificationCheck: (name: keyof VerificationChecks, value: boolean) => void;
   visionCheckEnabled: boolean; setVisionCheckEnabled: (v: boolean) => void;
+  skip3DLayoutCheck: boolean; setSkip3DLayoutCheck: (v: boolean) => void;
   sessionId: string | null;
   setSessionId: (id: string | null) => void;
   // 会话列表
@@ -107,12 +126,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sessionList, setSessionList] = useState<SessionSummary[]>([]);
   const [stageResetKey, setStageResetKey] = useState(0);
   const [sceneCode, setSceneCode] = useState("");
-  const [bbCheckEnabled, setBbCheckEnabled] = useState(true); // BB 重叠检测开关(打回动画)
+  const [verificationChecks, setVerificationChecks] = useState<VerificationChecks>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("verification-checks") || "{}");
+      return { ...DEFAULT_VERIFICATION_CHECKS, ...saved };
+    } catch { return DEFAULT_VERIFICATION_CHECKS; }
+  });
+  const setVerificationCheck = useCallback((name: keyof VerificationChecks, value: boolean) => {
+    setVerificationChecks(current => {
+      const next = { ...current, [name]: value };
+      try { localStorage.setItem("verification-checks", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   // 新:主 agent 多轮对话状态
   const [depth, setDepth] = useState<"popular" | "understand" | "deep">("understand");
   const [topics, setTopics] = useState<import("./data/llmClient").Topic[]>([]);
   const [pendingFiles, setPendingFiles] = useState<{ file_id: string; name: string }[]>([]);
-  const [visionCheckEnabled, setVisionCheckEnabled] = useState(true); // 视觉检查开关(截图给 LLM)。默认开:离屏验证截末帧→qwen3.6-chat 看图→描述塞回 agent,让它真正"看见"画面(重叠/越界)。之前默认 false 导致整条视觉链路从未触发。
+  const [visionCheckEnabled, setVisionCheckEnabledState] = useState(() => {
+    try { return localStorage.getItem("vision-check-enabled") === "true"; }
+    catch { return false; }
+  });
+  const setVisionCheckEnabled = useCallback((value: boolean) => {
+    setVisionCheckEnabledState(value);
+    try { localStorage.setItem("vision-check-enabled", String(value)); } catch { /* ignore */ }
+  }, []);
+  const [skip3DLayoutCheck, setSkip3DLayoutCheckState] = useState(() => {
+    try { return localStorage.getItem("skip-3d-layout-check") !== "false"; }
+    catch { return true; }
+  });
+  const setSkip3DLayoutCheck = useCallback((value: boolean) => {
+    setSkip3DLayoutCheckState(value);
+    try { localStorage.setItem("skip-3d-layout-check", String(value)); } catch { /* ignore */ }
+  }, []);
   const [decomposeGraph, setDecomposeGraph] = useState<{ question: string; root_title: string; snapshot: any } | null>(null);
   const [pendingQuiz, setPendingQuiz] = useState<{ step_title: string; question: string; options: string[]; answer: number; explanation: string } | null>(null);
   const [quizResult, setQuizResult] = useState<{ choice: number; correct: boolean; explanation: string } | null>(null);
@@ -291,7 +337,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       stageResetKey, bumpStageReset: () => setStageResetKey((k) => k + 1),
       sceneCode, setSceneCode,
       verifyRequest, requestVerify, reportVerifyResult, cancelVerification,
-      bbCheckEnabled, setBbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled,
+      verificationChecks, setVerificationCheck, visionCheckEnabled, setVisionCheckEnabled,
+      skip3DLayoutCheck, setSkip3DLayoutCheck,
       sessionId, setSessionId,
       sessionList, setSessionList,
       switchSession, resetToEmpty,
@@ -313,7 +360,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       customCss, setCustomCss,
       decomposeEffort, setDecomposeEffort, loadAppSettings,
     }),
-    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, bbCheckEnabled, visionCheckEnabled, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, stageOpen, explainOpen, graphOpen, decomposeGraph, pendingQuiz, quizResult, pendingResume, busyTask, theme, customCss, decomposeEffort]
+    [lesson, currentStep, stepStatus, paramValues, isPlaying, stageResetKey, sceneCode, verifyRequest, verificationChecks, visionCheckEnabled, skip3DLayoutCheck, sessionId, sessionList, navRequest, llmEndpoints, activeEndpointId, visionEndpoint, depth, topics, pendingFiles, stageOpen, explainOpen, graphOpen, decomposeGraph, pendingQuiz, quizResult, pendingResume, busyTask, theme, customCss, decomposeEffort]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

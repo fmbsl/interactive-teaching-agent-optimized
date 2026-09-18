@@ -14,9 +14,13 @@ export interface VerificationReport {
   overlapDeclarations?: {objects:string[];start:number;end:number;reason:string}[];
 }
 export function verificationCheckLabel(check: string): string {
+  if (check.startsWith("user-skipped:")) return `已关闭：${verificationCheckLabel(check.slice("user-skipped:".length))}`;
   const labels: Record<string, string> = {
     execution: "脚本执行", "scene-access": "场景读取", measurements: "对象尺寸",
     mathtex: "公式渲染", nan: "无效数值", "layout-final": "末帧重叠", "bounds-final": "末帧越界",
+    "3d-layout-skipped": "3D布局已跳过",
+    "display-fallback": "可运行草稿兜底",
+    "layout-warning": "布局检查警告",
     "optional-visual-frame": "可选画面辅助检查", verification: "验证流程", "layout-temporal": "动画过程采样",
   };
   return labels[check] || check;

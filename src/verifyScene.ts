@@ -10,21 +10,34 @@ import { prepareLayout } from './layoutGeometry';
 
 /** Certify 2D final state and observed real-playback intervals. */
 export async function verifyScene(code: string, params: Record<string, number>, options: {
-  signal: AbortSignal; layout: boolean; vision: boolean; background: string; timeoutMs?: number;
+  signal: AbortSignal; vision: boolean; background: string;
+  checks: {
+    sceneAccess: boolean; measurements: boolean; mathtex: boolean; nan: boolean;
+    finalLayout: boolean; temporalLayout: boolean;
+  };
+  skip3DLayout?: boolean; timeoutMs?: number;
 }): Promise<VerificationReport> {
   const checks: string[] = [], missing: string[] = [];
+  const selected = options.checks;
+  const skip = (name: string) => { checks.push(`user-skipped:${name}`); missing.push(name); };
+  const needsPreparedScene = selected.measurements || selected.mathtex || selected.finalLayout || selected.temporalLayout || options.vision;
   let version = "";
   const host = document.createElement("div");
   host.style.cssText = "position:absolute;left:-9999px;top:0;width:960px;height:540px";
   document.body.appendChild(host);
   const timeline = createLayoutTimeline();
   const reportOf: typeof verificationReport = (...args) => ({...verificationReport(...args), params: {...params}, sampling:timeline.coverage, layoutIssues:timeline.issues, overlapDeclarations:timeline.declarations});
-  const scope = createVerificationScope({ Scene, ThreeDScene }, c => c instanceof HTMLElement && (c === host || host.contains(c)), options.layout ? timeline.boundary : undefined, options.layout ? timeline.register : undefined);
-  const timer = setInterval(() => {
-    if (options.layout) for (const e of scope.scenes) if (!e.disposed && e.kind !== 'ThreeDScene') timeline.sample(e.scene);
-  }, 80);
+  const scope = createVerificationScope(
+    { Scene, ThreeDScene },
+    c => c instanceof HTMLElement && (c === host || host.contains(c)),
+    selected.temporalLayout ? timeline.boundary : undefined,
+    selected.temporalLayout ? timeline.register : undefined,
+  );
+  const timer = selected.temporalLayout ? setInterval(() => {
+    if (selected.temporalLayout) for (const e of scope.scenes) if (!e.disposed && e.kind !== 'ThreeDScene') timeline.sample(e.scene);
+  }, 80) : undefined;
   const controller = new AbortController();
-  const abort = () => { clearInterval(timer); controller.abort(); scope.close(); host.remove(); };
+  const abort = () => { if (timer !== undefined) clearInterval(timer); controller.abort(); scope.close(); host.remove(); };
   options.signal.addEventListener("abort", abort, { once: true });
   if (options.signal.aborted) abort();
   try {
@@ -43,40 +56,61 @@ export async function verifyScene(code: string, params: Record<string, number>, 
       });
       if (!execution.ok) throw Object.assign(new Error(execution.error), { verificationStatus: execution.status });
       await scope.drain();
-      for (const e of scope.scenes) if (!e.disposed) {
-        if (options.layout && e.kind !== 'ThreeDScene') await timeline.boundary(e.scene,true);
+      for (const e of scope.scenes) if (!e.disposed && needsPreparedScene) {
+        if ((selected.finalLayout || selected.temporalLayout) && e.kind !== 'ThreeDScene') await timeline.boundary(e.scene,true);
         else await prepareLayout(e.scene);
       }
     }, options.timeoutMs ?? 30000, controller.signal);
     if (!result.ok) return reportOf(result.status, result.error, version, checks, ["execution"]);
     checks.push("execution");
-    if (!scope.scenes.length) return reportOf("incomplete", "未收集到场景；请使用 ctx.Scene/ctx.ThreeDScene 或提供的 scene", version, checks, ["scene-access"]);
+    const needsScene = selected.sceneAccess || selected.measurements || selected.mathtex || selected.nan || selected.finalLayout || selected.temporalLayout || options.vision;
+    if (!scope.scenes.length && needsScene) return reportOf("incomplete", "未收集到场景，无法执行已启用的对象检查", version, checks, ["scene-access"]);
     const trackedCanvases = new Set(scope.scenes.map(({ scene }) => scene.getCanvas?.() ?? scene.renderer?.getCanvas?.()));
-    if ([...host.querySelectorAll("canvas")].some(canvas => !trackedCanvases.has(canvas))) {
+    if (selected.sceneAccess && [...host.querySelectorAll("canvas")].some(canvas => !trackedCanvases.has(canvas))) {
       return reportOf("incomplete", "发现未收集的渲染画布，不能确认所有场景都经过检查", version, checks, ["scene-access"]);
     }
     for (const entry of scope.scenes) {
       const s = entry.scene;
-      if (entry.disposed || !s._mobjects || typeof s._mobjects[Symbol.iterator] !== "function") {
+      if (needsScene && (entry.disposed || !s._mobjects || typeof s._mobjects[Symbol.iterator] !== "function")) {
         return reportOf("incomplete", "场景已释放或无法读取对象，未完成检查", version, checks, ["scene-access"]);
       }
-      const tex = detectMathTexError(s), nan = detectNaN(s);
-      if (tex || nan) return reportOf("failed", tex || nan, version, checks);
-      const measurement = measureCoverage(s);
-      if (measurement) return reportOf("incomplete", measurement, version, checks, ["measurements"]);
-    }
-    checks.push("scene-access", "mathtex", "nan", "measurements");
-    if (options.layout && timeline.error) return reportOf('incomplete', timeline.error, version, checks, ['layout-temporal']);
-    if (options.layout && timeline.failure) return reportOf('failed', `[layout] ${timeline.failure}; codeVersion=${version}`, version, checks);
-    if (!options.layout) missing.push("layout-final", "bounds-final", "layout-temporal");
-    for (const { kind } of scope.scenes) {
-      if (kind === "ThreeDScene") {
-        if (!missing.includes("layout-final")) missing.push("layout-final", "bounds-final", "layout-temporal");
-        continue;
+      if (selected.mathtex) {
+        const tex = detectMathTexError(s);
+        if (tex) return reportOf("failed", tex, version, checks);
+      }
+      if (selected.nan) {
+        const nan = detectNaN(s);
+        if (nan) return reportOf("failed", nan, version, checks);
+      }
+      if (selected.measurements) {
+        const measurement = measureCoverage(s);
+        if (measurement) return reportOf("incomplete", measurement, version, checks, ["measurements"]);
       }
     }
-    if (missing.length) return reportOf("incomplete", options.layout ? "3D 已完成运行和对象检查，屏幕布局检查尚未覆盖" : "布局检查已关闭，本次不能完整验证", version, checks, missing);
-    checks.push("layout-final", "bounds-final", "layout-temporal");
+    selected.sceneAccess ? checks.push("scene-access") : skip("scene-access");
+    selected.mathtex ? checks.push("mathtex") : skip("mathtex");
+    selected.nan ? checks.push("nan") : skip("nan");
+    selected.measurements ? checks.push("measurements") : skip("measurements");
+    if ((selected.finalLayout || selected.temporalLayout) && (timeline.error || timeline.failure)) {
+      // 布局采样用于提示，不再阻止已经完成基础运行检查的动画展示。
+      checks.push('layout-warning');
+      const warning = timeline.failure ? `[layout] ${timeline.failure}; codeVersion=${version}` : timeline.error;
+      if (!selected.finalLayout) { skip('layout-final'); skip('bounds-final'); }
+      if (!selected.temporalLayout) skip('layout-temporal');
+      return reportOf('passed', warning, version, checks, missing);
+    }
+    const has3D = scope.scenes.some(({ kind }) => kind === "ThreeDScene");
+    if (has3D && options.skip3DLayout) {
+      checks.push("3d-layout-skipped");
+      if (!missing.includes('layout-final')) missing.push('layout-final', 'bounds-final', 'layout-temporal');
+    } else if (has3D && (selected.finalLayout || selected.temporalLayout)) {
+      return reportOf("incomplete", "3D 已完成运行和对象检查，屏幕布局检查尚未覆盖", version, checks, ["layout-final", "bounds-final", "layout-temporal"]);
+    } else {
+      if (selected.finalLayout) checks.push("layout-final", "bounds-final");
+      else { skip("layout-final"); skip("bounds-final"); }
+      if (selected.temporalLayout) checks.push("layout-temporal");
+      else skip("layout-temporal");
+    }
     const report = reportOf("passed", "", version, checks);
     report.sampling = timeline.coverage;
     if (options.vision) {

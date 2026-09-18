@@ -22,7 +22,13 @@ export default defineConfig({
       // 但 Vite 在某些平台/版本下监到 root 内文件变动会触发整页 reload
       // (用户反馈"点知识点 list 跳步就整页刷新"——跳步 MISS cache 时后端写
       // sessions jsonl,疑似由此触发)。一并排除,根因防御。
-      ignored: ["**/backend/**"],
+      ignored: [
+        "**/backend/**",
+        "**/.portable-venv/**",
+        "**/build/**",
+        "**/release/**",
+        "**/.tmp/**",
+      ],
     },
   },
   build: {

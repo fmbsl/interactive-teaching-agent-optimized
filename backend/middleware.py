@@ -6,8 +6,9 @@
 import os
 import secrets
 from django.http import JsonResponse
+from skill.data_paths import backend_data_dir
 
-_BACKEND_DIR = os.path.abspath(os.path.dirname(__file__))
+_BACKEND_DIR = backend_data_dir()
 _TOKEN_FILE = os.path.join(_BACKEND_DIR, "access_token.txt")
 
 

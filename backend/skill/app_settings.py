@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import os
 import threading
+from .data_paths import backend_data_dir
 
-_BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_BACKEND_DIR = backend_data_dir()
 _SETTINGS_PATH = os.path.join(_BACKEND_DIR, "app_settings.json")
 
 _lock = threading.Lock()

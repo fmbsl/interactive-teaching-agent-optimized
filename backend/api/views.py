@@ -623,7 +623,8 @@ def render_result(request):
     if ok and frame:
         try:
             import base64 as _b64, os as _os, re as _re
-            frames_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "sessions", f"{sid}_frames")
+            from skill.data_paths import data_path as _data_path
+            frames_dir = _data_path("sessions", f"{sid}_frames")
             _os.makedirs(frames_dir, exist_ok=True)
             # 去掉可能的 data: 前缀
             raw = _re.sub(r"^data:image/\w+;base64,", "", frame)

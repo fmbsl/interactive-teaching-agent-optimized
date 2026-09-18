@@ -11,18 +11,19 @@ import os
 import threading
 import uuid
 from typing import Optional
+from .data_paths import backend_data_dir
 
 # 确保 .env 已加载(纯 Python 调用/迁移时也读得到;Django settings 已 load 过,幂等)
 try:
     from dotenv import load_dotenv as _load_dotenv
-    _load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    _load_dotenv(os.path.join(backend_data_dir(), ".env"))
 except Exception:
     pass
 
 from .manim_lesson import LLMConfig, _default_config
 
 # backend/ 目录(skill 的上两级)
-_BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_BACKEND_DIR = backend_data_dir()
 _CONFIG_PATH = os.path.join(_BACKEND_DIR, "llm_endpoints.json")
 
 _lock = threading.Lock()

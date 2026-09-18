@@ -4,8 +4,9 @@
 from __future__ import annotations
 import os
 import json
+from .data_paths import data_path
 
-_PREFS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user_prefs.json")
+_PREFS_PATH = data_path("user_prefs.json")
 
 
 def load_prefs() -> str:

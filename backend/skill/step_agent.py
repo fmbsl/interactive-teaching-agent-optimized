@@ -47,6 +47,72 @@ def _layout_retry_limit():
         return 2
 
 
+def _repair_limit():
+    """模型修复的总上限；之后改用可运行草稿或确定性 2D 兜底。"""
+    try:
+        return max(1, min(8, int(_os.environ.get('ANIMATION_MAX_REPAIRS', '3'))))
+    except ValueError:
+        return 3
+
+
+_BASE_EXECUTION_CHECKS = {"execution", "scene-access", "measurements", "mathtex", "nan"}
+
+
+def _is_3d_candidate(code: str) -> bool:
+    import re
+    return bool(re.search(r'\b(?:ThreeDScene|ThreeDAxes|Surface3D|setCameraOrientation|beginAmbientCameraRotation)\b', code or ""))
+
+
+def _is_runnable_report(report: dict) -> bool:
+    """布局可以失败，但只有完成脚本、场景、对象、公式和数值检查的代码才允许直接展示。"""
+    return isinstance(report, dict) and _BASE_EXECUTION_CHECKS.issubset(set(report.get("checks") or []))
+
+
+def _display_fallback_result(result: dict) -> dict:
+    """把已实际运行成功、仅布局未完全通过的结果标成可展示兜底。"""
+    report = dict(result.get("verification") or {})
+    checks = set(report.get("checks") or [])
+    checks.add("display-fallback")
+    original_error = str(report.get("error") or result.get("error") or "布局验证未完全通过")
+    report.update(
+        status="passed", ok=True, checks=sorted(checks),
+        error=f"已达到自动修复上限，展示可运行草稿：{original_error}",
+    )
+    return {**result, "ok": True, "error": report["error"], "verification": report, "framePath": ""}
+
+
+def _fallback_2d_code(draft: dict, minimal: bool = False) -> str:
+    """不依赖模型的 2D 兜底画面。第二级仅使用基础图形，规避字体环境问题。"""
+    import json
+    if minimal:
+        return """const { scene, Line, Dot, Create, FadeIn } = ctx;
+const axis = new Line({ start: [-3.2, 0, 0], end: [3.2, 0, 0], color: '#4a9eff', strokeWidth: 4 });
+const left = new Dot({ point: [-2.2, 0, 0], radius: 0.16, color: '#5ee0a0' });
+const center = new Dot({ point: [0, 0, 0], radius: 0.2, color: '#ffd166' });
+const right = new Dot({ point: [2.2, 0, 0], radius: 0.16, color: '#5ee0a0' });
+scene.add(axis, left, center, right);
+await scene.play(new Create(axis));
+await scene.play(new FadeIn(left), new FadeIn(center), new FadeIn(right));
+await scene.wait(0.8);"""
+    title = str(draft.get("title") or "知识点动画")[:24]
+    formula = str(draft.get("formula") or "二维简化示意")[:36]
+    return f"""const {{ scene, Text, Line, Dot, Create, FadeIn }} = ctx;
+const title = new Text({{ text: {json.dumps(title, ensure_ascii=False)}, fontSize: 28, color: '#eef4ff', fontFamily: '\"Microsoft YaHei\",\"SimSun\",sans-serif' }});
+title.moveTo([0, 2.25, 0]);
+const note = new Text({{ text: {json.dumps(formula, ensure_ascii=False)}, fontSize: 20, color: '#9fb3c8', fontFamily: '\"Microsoft YaHei\",\"SimSun\",sans-serif' }});
+note.moveTo([0, -1.7, 0]);
+const axis = new Line({{ start: [-3.4, 0, 0], end: [3.4, 0, 0], color: '#4a9eff', strokeWidth: 4 }});
+const left = new Dot({{ point: [-2.3, 0, 0], radius: 0.15, color: '#5ee0a0' }});
+const center = new Dot({{ point: [0, 0, 0], radius: 0.2, color: '#ffd166' }});
+const right = new Dot({{ point: [2.3, 0, 0], radius: 0.15, color: '#5ee0a0' }});
+scene.add(title, note, axis, left, center, right);
+await scene.play(new FadeIn(title));
+await scene.play(new Create(axis));
+await scene.play(new FadeIn(left), new FadeIn(center), new FadeIn(right));
+await scene.play(new FadeIn(note));
+await scene.wait(0.8);"""
+
+
 def _new_id(sid: str) -> str:
     return _uuid.uuid4().hex[:12]
 
@@ -234,8 +300,8 @@ def _build_tools(sid: str, step_id: int):
     def commit() -> str:
         """把当前工作草稿的完整代码一次性送浏览器真渲染验证。返回 {{ok: true}} 渲染通过、动画**定稿**;
         {{ok: false, error}} 报错,草稿仍是送检的那版,继续用 patch 改(改完再 commit)。
-        必须在 write 之后才能 commit。渲染失败不要整段重写,用 patch 只发改动片段;
-        仅当改动超约 1/3 或 patch 连续两次匹配不上时才 write 整段。最多重试 12 次。"""
+        必须在 write 之后才能 commit。渲染失败优先 patch 局部修复；3D 失败时改写为 2D。
+        自动修复次数有限，达到上限后系统会展示可运行草稿或生成简化 2D 兜底。"""
         new_code = draft.get("draftCode") or ""
         if not new_code:
             return "commit 失败:工作草稿为空,没东西可提交。先调 write(code) 写一版完整代码。"
@@ -243,7 +309,8 @@ def _build_tools(sid: str, step_id: int):
         # 落盘每次提交的完整代码(临时调试:看 LLM 实际生成/合成什么)
         try:
             import os as _os, datetime as _dt
-            _p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "step_codes.log")
+            from .data_paths import data_path as _data_path
+            _p = _data_path("step_codes.log")
             with open(_p, "a", encoding="utf-8") as _f:
                 _f.write(f"\n===== {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} sid={sid} step={step_id} attempt={draft['renderAttempts']} code_len={len(new_code)} mode=commit =====\n")
                 _f.write(new_code)
@@ -273,10 +340,10 @@ def _build_tools(sid: str, step_id: int):
             if frame_path:
                 vision_desc = _run_vision_check(frame_path, sid, step_id)
             if vision_desc and vision_desc.lstrip().startswith("问题"):
-                draft["verification"] = {**report, "status": "failed", "ok": False, "error": vision_desc}
+                # 视觉模型只提供排版建议，不再阻止已经通过基础运行检查的动画展示。
+                draft["visionWarning"] = vision_desc
+                draft["verification"] = {**report, "error": vision_desc}
                 save_candidate(sid, step_id, draft)
-                return (f"几何检查通过，但视觉复核发现问题，草稿未定稿:{vision_desc}\n"
-                        f"请按上面指出的问题修改(改完再 commit,视觉会复查)。")
             draft["sceneCode"] = new_code
             # 自动收尾:字段齐全 + 定稿一致 → 直接 FINISHED(视图层检测到该值即停 stream,无需额外步骤)
             if _finish_ready(draft):
@@ -540,29 +607,56 @@ def resume_step_agent(sid: str, step_id, nonce: str = "", cfg: Optional[LLMConfi
         yield {"kind": "error", "id": _new_id(sid), "parentId": None,
                "agent": "step", "stepId": step_id, "payload": {"message": "无待处理的渲染结果"}}
         return
-    if result["verification"]["status"] in ("incomplete", "cancelled"):
+    if result["verification"]["status"] == "cancelled":
         yield {"kind": "render_result", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
                "agent": "step", "stepId": step_id,
                "payload": {"ok": False, "error": result["error"], "verification": result["verification"]}}
         yield {"kind": "error", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
                "agent": "step", "stepId": step_id,
-               "payload": {"message": result["error"] or "验证未完成，草稿未定稿；请重试"}}
+               "payload": {"message": result["error"] or "验证已取消"}}
         return
-    # Count returned layout failures, not replayed commit tool invocations.
-    if not result.get('ok', False) and '[layout]' in result.get('error', ''):
-        draft['layoutFailCount'] = draft.get('layoutFailCount', 0) + 1
-        if draft['layoutFailCount'] > _layout_retry_limit():
-            yield {"kind": "render_result", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
-                   "agent": "step", "stepId": step_id, "payload": {"ok": False, "error": result['error'], "verification": result['verification']}}
-            yield {"kind": "error", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
-                   "agent": "step", "stepId": step_id, "payload": {"message": f"布局自动修复已达到 {_layout_retry_limit()} 轮上限。草稿未定稿，请手动重试。{result['error']}"}}
-            return
-    # 失败计数:只在回传 ok=False 时累计,> 12 次拦截(避免 renderAttempts 被 resume 重复执行 tool 翻倍)
+
+    # 失败后不立即终止：先让模型有限修复；3D 首次失败时明确要求完全改写为 2D。
     if not result.get("ok", False):
         draft["failCount"] = draft.get("failCount", 0) + 1
-    if draft.get("failCount", 0) > 12:
+    is_layout_failure = not result.get('ok', False) and '[layout]' in result.get('error', '')
+    if is_layout_failure:
+        draft['layoutFailCount'] = draft.get('layoutFailCount', 0) + 1
+
+    force_2d = (not result.get("ok", False) and _is_3d_candidate(draft.get("draftCode", ""))
+                and not draft.get("forced2D"))
+    if force_2d:
+        draft["forced2D"] = True
+        instruction = ("\n[自动降级] 这份 3D 动画未通过验证。下一次必须用 write 完全重写为普通 2D Scene；"
+                       "禁止 ThreeDScene、ThreeDAxes、Surface3D 和相机旋转。保留教学含义，减少对象数量后重新 commit。")
+        result = {**result, "error": (result.get("error") or "3D 验证失败") + instruction}
+
+    reached_limit = (not result.get("ok", False) and not force_2d and
+                     (draft.get("failCount", 0) >= _repair_limit() or
+                      (is_layout_failure and draft.get("layoutFailCount", 0) > _layout_retry_limit())))
+    if reached_limit and _is_runnable_report(result.get("verification", {})):
+        # 脚本实际跑通，只是布局/覆盖检查失败：直接定稿为“可展示兜底”。
+        result = _display_fallback_result(result)
+        draft["fallbackMode"] = "runnable-draft"
+    elif reached_limit:
+        # 连脚本都没跑通：绕开模型生成一份确定性 2D 画面，再走同一浏览器验证链路。
+        fallback_attempt = int(draft.get("fallbackAttempt", 0))
+        if fallback_attempt < 2:
+            draft["fallbackAttempt"] = fallback_attempt + 1
+            draft["fallbackMode"] = "simple-2d"
+            draft["draftCode"] = _fallback_2d_code(draft, minimal=fallback_attempt > 0)
+            draft["sceneCode"] = ""
+            save_candidate(sid, step_id, draft)
+            yield {"kind": "render_result", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
+                   "agent": "step", "stepId": step_id,
+                   "payload": {"ok": False, "error": result.get("error", ""), "verification": result["verification"]}}
+            yield {"kind": "render_request", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
+                   "agent": "step", "stepId": step_id,
+                   "payload": {"code": draft["draftCode"], "nonce": run_nonce, "params": default_params(draft)}}
+            return
         yield {"kind": "error", "id": _new_id(sid), "parentId": draft.get("agentEvtId"),
-               "agent": "step", "stepId": step_id, "payload": {"message": "动画验证失败超过 12 次仍未通过"}}
+               "agent": "step", "stepId": step_id,
+               "payload": {"message": "简化 2D 兜底仍无法执行，请检查浏览器图形环境或 manim-web 依赖。"}}
         return
 
     cfg = cfg or _get_runtime_cfg()

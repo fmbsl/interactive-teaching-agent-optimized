@@ -52,9 +52,9 @@ export default function StagePanel() {
   const [playbackError, setPlaybackError] = useState("");
   const [verificationFeedback, setVerificationFeedback] = useState<{ code: string; report: VerificationReport } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  // 自管 scene:固定 16:9 内部分辨率(manim-web 默认帧),canvas 用 CSS object-fit 缩放居中适配容器。
+  // 自管 scene:固定 16:9 1080p 内部分辨率,canvas 用 CSS object-fit 缩放居中适配容器。
   // 不随容器尺寸建场景 → 宽扁/窄高容器不拉伸变形;开合窗口/拖拽列宽不重建场景、动画不重启。
-  const FRAME = { w: 960, h: 540 };
+  const FRAME = { w: 1920, h: 1080 };
   const [scene, setScene] = useState<InstanceType<typeof Scene> | null>(null);
   // 动画导出:截图(即时)/ 录制 WebM(MediaRecorder,点击开始→再点停止并下载)
   const [recording, setRecording] = useState(false);
@@ -104,7 +104,7 @@ export default function StagePanel() {
       }
     } catch { /* 不支持则静默 */ }
   };
-  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, bbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled, theme, busyTask } = useApp();
+  const { lesson, currentStep, topics, paramValues, isPlaying, setIsPlaying, stageResetKey, bumpStageReset, sceneCode, setSceneCode, sessionId, requestNav, verifyRequest, reportVerifyResult, verificationChecks, visionCheckEnabled, setVisionCheckEnabled, skip3DLayoutCheck, theme, busyTask } = useApp();
   const animating = busyTask?.kind === "animation";
   useEffect(() => { setVerificationFeedback(null); }, [sessionId, currentStep]);
 
@@ -172,7 +172,9 @@ export default function StagePanel() {
     // 自建场景代码不需要注入 scene(自己在 container 上 new Scene)
     if (isSelfBuildCode(sceneCode)) { setScene(null); return; }
     const want3D = is3DCode(sceneCode);
-    const opts = { backgroundColor: cssVar("--bg-deepest"), width: FRAME.w, height: FRAME.h };
+    // 固定 pixelRatio=1，使实际绘图缓冲区精确为 1920×1080；避免高 DPI 屏幕再放大到 4K，
+    // 导致显存和逐帧渲染开销无谓翻倍，同时让截图/录屏分辨率保持可预期。
+    const opts = { backgroundColor: cssVar("--bg-deepest"), width: FRAME.w, height: FRAME.h, pixelRatio: 1 };
     const s = want3D ? new ThreeDScene(container, opts) : new Scene(container, opts);
     setScene(s);
     return () => {
@@ -212,7 +214,8 @@ export default function StagePanel() {
     if (!verifyRequest) return;
     const controller = new AbortController();
     void verifyScene(verifyRequest.code, verifyRequest.params ?? paramValues, {
-      signal: controller.signal, layout: bbCheckEnabled, vision: visionCheckEnabled,
+      signal: controller.signal, checks: verificationChecks, vision: visionCheckEnabled,
+      skip3DLayout: skip3DLayoutCheck,
       background: cssVar("--bg-deepest"),
     }).then(result => {
       if (!controller.signal.aborted) {
@@ -454,7 +457,15 @@ function buildDefaultScene(s: any) {
         播放失败：{playbackError}。可点击重置重播，或在对话中要求修复这一步。
       </div>}
       {verificationFeedback?.report.status === 'passed' && (
-        <p className="text-xs px-3 py-1">验证仅覆盖本次默认参数；调整滑块后的画面尚未验证。</p>
+        <p className="text-xs px-3 py-1">
+          {verificationFeedback.report.checks.includes("layout-warning")
+            ? "基础运行检查已通过；检测到重叠、越界或采样问题，但不影响展示。"
+            : verificationFeedback.report.checks.includes("display-fallback")
+            ? "完整布局验证未通过；已达到修复上限，当前展示实际运行成功的草稿。"
+            : verificationFeedback.report.checks.includes("3d-layout-skipped")
+            ? "3D 基础检查通过；已按设置跳过重叠、越界和逐帧布局检查。"
+            : "验证仅覆盖本次默认参数；调整滑块后的画面尚未验证。"}
+        </p>
       )}
       {verificationFeedback && ['incomplete','failed'].includes(verificationFeedback.report.status) && (
         <div role="status" className="px-4 py-2 text-xs border-b border-[var(--border)] text-[var(--text)]">

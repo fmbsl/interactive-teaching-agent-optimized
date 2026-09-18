@@ -3,6 +3,8 @@ import hashlib
 import math
 
 REQUIRED_CHECKS = {"execution", "scene-access", "measurements", "mathtex", "nan", "layout-final", "bounds-final", "layout-temporal"}
+LAYOUT_CHECKS = {"layout-final", "bounds-final", "layout-temporal"}
+SKIPPABLE_CHECKS = REQUIRED_CHECKS - {"execution"}
 STATUSES = {"passed", "failed", "incomplete", "cancelled"}
 
 
@@ -61,10 +63,21 @@ def normalize_verification(report, legacy_ok=False, error="", expected_code=""):
         return {"schemaVersion": 1, "status": "incomplete", "ok": False, "error": "验证协议或状态不受支持",
                 "codeVersion": "", "checks": [], "missing": sorted(REQUIRED_CHECKS)}
     if out["status"] == "passed":
-        absent = REQUIRED_CHECKS - set(out["checks"])
-        absent.update(v for v in out["missing"] if v != "optional-visual-frame")
+        checks = set(out["checks"])
+        skipped_3d_layout = "3d-layout-skipped" in checks
+        display_fallback = "display-fallback" in checks
+        layout_warning = "layout-warning" in checks
+        user_skipped = {
+            value.split(":", 1)[1] for value in checks
+            if value.startswith("user-skipped:") and value.split(":", 1)[1] in SKIPPABLE_CHECKS
+        }
+        relaxed_layout = skipped_3d_layout or display_fallback or layout_warning
+        required = (REQUIRED_CHECKS - LAYOUT_CHECKS if relaxed_layout else REQUIRED_CHECKS) - user_skipped
+        absent = required - checks
+        ignored_missing = {"optional-visual-frame"} | user_skipped | (LAYOUT_CHECKS if relaxed_layout else set())
+        absent.update(v for v in out["missing"] if v not in ignored_missing)
         sampling = out['sampling']
-        if not sampling or sampling['intervalMs'] != 80 or sampling['samples'] < 1 or sampling['maxGapMs'] > 320:
+        if "layout-temporal" in required and not relaxed_layout and (not sampling or sampling['intervalMs'] != 80 or sampling['samples'] < 1 or sampling['maxGapMs'] > 320):
             absent.add('layout-temporal')
         if out["codeVersion"] != code_version(expected_code):
             absent.add("code-version")

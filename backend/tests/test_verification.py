@@ -50,14 +50,27 @@ def test_stale_api_rejected_before_starting_worker(draft, monkeypatch, nonce, co
     assert views.render_result(request).status_code == 409
     assert not step_agent._RESUMES
 
-@pytest.mark.parametrize("status", ["incomplete", "cancelled"])
-def test_incomplete_does_not_resume_model_or_finalize(draft, monkeypatch, status):
+def test_cancelled_does_not_resume_model_or_finalize(draft, monkeypatch):
     monkeypatch.setattr(step_agent, "_build_agent", lambda *a: pytest.fail("must not call model"))
-    step_agent.set_render_result("test-verification", "1", True, nonce="current", verification=report(status))
+    step_agent.set_render_result("test-verification", "1", True, nonce="current", verification=report("cancelled"))
     events = list(step_agent.resume_step_agent("test-verification", "1", "current"))
     assert [e["kind"] for e in events] == ["render_result", "error"]
-    assert events[0]["payload"]["verification"]["status"] == status
+    assert events[0]["payload"]["verification"]["status"] == "cancelled"
     assert draft["sceneCode"] == ""
+
+
+def test_incomplete_resumes_model_for_repair(draft, monkeypatch):
+    calls=[]
+    monkeypatch.setattr(step_agent, '_get_runtime_cfg', lambda: object())
+    class Agent:
+        def stream(self, *args, **kwargs):
+            calls.append('repair')
+            return iter([])
+    monkeypatch.setattr(step_agent, '_build_agent', lambda *args: Agent())
+    step_agent.set_render_result("test-verification", "1", True, nonce="current", verification=report("incomplete"))
+    events = list(step_agent.resume_step_agent("test-verification", "1", "current"))
+    assert calls == ['repair']
+    assert events[0]["kind"] == "render_result"
 
 @pytest.mark.parametrize("status,expected", [("passed", CODE), ("incomplete", ""), ("cancelled", ""), ("unknown", "")])
 def test_actual_commit_requires_current_complete_report(draft, monkeypatch, status, expected):
@@ -80,17 +93,38 @@ def test_final_only_report_cannot_certify_batch_b():
     assert normalize_verification(r, True, expected_code=CODE)['status'] == 'incomplete'
 
 
+def test_explicit_3d_layout_skip_can_certify_base_checks_without_sampling():
+    r = report()
+    r['checks'] = sorted((REQUIRED_CHECKS - {'layout-final', 'bounds-final', 'layout-temporal'}) | {'3d-layout-skipped'})
+    r['sampling'] = {'mode':'real-playback', 'intervalMs':80, 'samples':0, 'maxGapMs':0}
+    result = normalize_verification(r, True, expected_code=CODE)
+    assert result['status'] == 'passed'
+    assert result['ok'] is True
+
+
+def test_3d_layout_skip_does_not_bypass_execution_checks():
+    r = report()
+    r['checks'] = sorted((REQUIRED_CHECKS - {'execution', 'layout-final', 'bounds-final', 'layout-temporal'}) | {'3d-layout-skipped'})
+    r['sampling'] = {'mode':'real-playback', 'intervalMs':80, 'samples':0, 'maxGapMs':0}
+    result = normalize_verification(r, True, expected_code=CODE)
+    assert result['status'] == 'incomplete'
+    assert 'execution' in result['missing']
+
+
 @pytest.mark.parametrize('limit,previous', [('2', 2), ('0', 0), ('invalid', 2)])
-def test_layout_retry_budget_stops_before_model(draft, monkeypatch, limit, previous):
+def test_layout_retry_budget_promotes_runnable_draft(draft, monkeypatch, limit, previous):
     monkeypatch.setenv('LAYOUT_MAX_RETRIES', limit)
-    monkeypatch.setattr(step_agent, '_get_runtime_cfg', lambda: pytest.fail('must stop before loading model'))
+    monkeypatch.setattr(step_agent, '_get_runtime_cfg', lambda: object())
+    class Agent:
+        def stream(self, *args, **kwargs): return iter([])
+    monkeypatch.setattr(step_agent, '_build_agent', lambda *args: Agent())
     draft['layoutFailCount'] = previous
     r=report('failed'); r['error']='[layout] labels overlap'
     step_agent.set_render_result('test-verification', '1', False, nonce='current', verification=r)
     events=list(step_agent.resume_step_agent('test-verification', '1', 'current'))
-    assert [e['kind'] for e in events] == ['render_result','error']
-    assert '上限' in events[-1]['payload']['message']
-    assert draft['sceneCode'] == ''
+    assert events[0]['kind'] == 'render_result'
+    assert events[0]['payload']['verification']['status'] == 'passed'
+    assert 'display-fallback' in events[0]['payload']['verification']['checks']
 
 
 def test_default_budget_allows_exactly_two_layout_repairs(draft, monkeypatch):
@@ -106,8 +140,28 @@ def test_default_budget_allows_exactly_two_layout_repairs(draft, monkeypatch):
         r=report('failed');r['error']='[layout] overlap'
         step_agent.set_render_result('test-verification','1',False,nonce='current',verification=r)
         list(step_agent.resume_step_agent('test-verification','1','current'))
-    assert len(calls)==2
+    assert len(calls)==3
     assert draft['layoutFailCount']==3
+
+
+def test_runtime_failures_end_in_deterministic_2d_fallback(draft, monkeypatch):
+    monkeypatch.setenv('ANIMATION_MAX_REPAIRS', '1')
+    monkeypatch.setattr(step_agent, '_get_runtime_cfg', lambda: pytest.fail('fallback must not call model'))
+    r=report('failed'); r['checks']=[]; r['missing']=['execution']; r['error']='ReferenceError'
+    step_agent.set_render_result('test-verification','1',False,nonce='current',verification=r)
+    events=list(step_agent.resume_step_agent('test-verification','1','current'))
+    assert [e['kind'] for e in events] == ['render_result','render_request']
+    assert 'ThreeDScene' not in events[-1]['payload']['code']
+    assert 'new Text' in events[-1]['payload']['code']
+
+
+def test_display_fallback_still_requires_execution_checks():
+    r=report('passed')
+    r['checks']=['display-fallback']
+    r['missing']=sorted(REQUIRED_CHECKS)
+    result=normalize_verification(r,True,expected_code=CODE)
+    assert result['ok'] is False
+    assert 'execution' in result['missing']
 
 
 def test_malformed_diagnostics_are_dropped():

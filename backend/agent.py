@@ -162,7 +162,8 @@ import os as _os
 
 def _uploads_dir(sid: str) -> str:
     """session 的上传文件目录。"""
-    base = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "uploads", sid)
+    from skill.data_paths import data_path
+    base = data_path("uploads", sid)
     _os.makedirs(base, exist_ok=True)
     return base
 
@@ -517,10 +518,9 @@ _OSEXISTS = __import__("os").path.exists
 def _path_exists(sid: str) -> bool:
     """判断该 sid 是否有任何落盘痕迹(state.json / jsonl / uploads / frames / decompose)。"""
     try:
-        base = (__import__("os").path.join(
-            __import__("os").path.dirname(__import__("os").path.abspath(__file__)), "sessions"))
-        ul = (__import__("os").path.join(
-            __import__("os").path.dirname(__import__("os").path.abspath(__file__)), "uploads", sid))
+        from skill.data_paths import data_path
+        base = data_path("sessions")
+        ul = data_path("uploads", sid)
         return (_OSEXISTS(__import__("os").path.join(base, f"{sid}.state.json")) or
                 _OSEXISTS(__import__("os").path.join(base, f"{sid}.jsonl")) or
                 _OSEXISTS(__import__("os").path.join(base, "decompose", f"{sid}.jsonl")) or

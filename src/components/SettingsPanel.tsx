@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useApp } from "../store";
 import { saveLlmConfig, deleteLlmConfig, setActiveLlmConfig, saveVisionConfig, getUserPrefs, saveUserPrefs, getAppSettings, saveAppSettings, type EndpointConfig } from "../data/llmClient";
 import { THEMES, DEFAULT_THEME } from "../theme";
-import { Server, User, Paintbrush, Brain, SlidersHorizontal, Check } from "lucide-react";
+import { Server, User, Paintbrush, Brain, ShieldCheck, Check } from "lucide-react";
 
 const EMPTY: EndpointConfig = {
   id: "", name: "", baseUrl: "", apiKey: "", model: "",
@@ -15,7 +15,7 @@ const EMPTY_VISION: EndpointConfig = {
   fallbackModel: "", fallbackBaseUrl: "", fallbackApiKey: "",
 };
 
-type TabId = "model" | "prefs" | "theme" | "decompose" | "misc";
+type TabId = "model" | "prefs" | "theme" | "decompose" | "verification";
 
 // 本地兜底档位→预算(与后端 app_settings.py 的 EFFORT_PRESETS 一致;后端为准,拉取后覆盖)
 const EFFORT_LOCAL: Record<string, { label: string; max_depth: number; max_nodes: number; max_expand: number }> = {
@@ -29,7 +29,7 @@ const TABS: { id: TabId; label: string; Icon: typeof Server }[] = [
   { id: "prefs", label: "偏好", Icon: User },
   { id: "theme", label: "主题", Icon: Paintbrush },
   { id: "decompose", label: "知识分解", Icon: Brain },
-  { id: "misc", label: "其它", Icon: SlidersHorizontal },
+  { id: "verification", label: "验证", Icon: ShieldCheck },
 ];
 
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
@@ -72,7 +72,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           {tab === "prefs" && <PrefsTab />}
           {tab === "theme" && <ThemeTab />}
           {tab === "decompose" && <DecomposeTab />}
-          {tab === "misc" && <MiscTab />}
+          {tab === "verification" && <VerificationTab />}
         </div>
         <div className="px-4 py-2 border-t border-[var(--border)] text-[10px] text-[var(--text-faint)]">
           多数设置即时生效;模型类改动写后端,改完即用。
@@ -334,27 +334,78 @@ function DecomposeTab() {
   );
 }
 
-// ---------- 其它:运行时开关 ----------
-function MiscTab() {
-  const { bbCheckEnabled, setBbCheckEnabled, visionCheckEnabled, setVisionCheckEnabled } = useApp();
+// ---------- 验证：逐项开关 ----------
+function VerificationTab() {
+  const {
+    verificationChecks, setVerificationCheck,
+    visionCheckEnabled, setVisionCheckEnabled,
+    skip3DLayoutCheck, setSkip3DLayoutCheck,
+  } = useApp();
+  const rows = [
+    { key: "sceneAccess" as const, title: "场景读取", cost: "很快", desc: "确认生成代码使用了可读取的动画场景。" },
+    { key: "measurements" as const, title: "对象尺寸", cost: "很快", desc: "检查对象边界是否能可靠测量。" },
+    { key: "mathtex" as const, title: "公式渲染", cost: "较快", desc: "发现 MathTex/公式纹理渲染错误。" },
+    { key: "nan" as const, title: "无效数值", cost: "很快", desc: "发现坐标、矩阵和几何中的 NaN/Infinity。" },
+    { key: "finalLayout" as const, title: "末帧重叠与越界", cost: "中等", desc: "动画结束后扫描一次文字和图形边界；问题只提示，不拦截展示。" },
+    { key: "temporalLayout" as const, title: "播放过程布局采样", cost: "较慢", desc: "播放时每 80ms 扫描重叠与越界，会增加浏览器 CPU 占用。" },
+  ];
+  const recommended = () => {
+    setVerificationCheck("sceneAccess", true);
+    setVerificationCheck("measurements", true);
+    setVerificationCheck("mathtex", true);
+    setVerificationCheck("nan", true);
+    setVerificationCheck("finalLayout", true);
+    setVerificationCheck("temporalLayout", false);
+    setVisionCheckEnabled(false);
+    setSkip3DLayoutCheck(true);
+  };
+  const fastest = () => {
+    for (const row of rows) setVerificationCheck(row.key, false);
+    setVisionCheckEnabled(false);
+    setSkip3DLayoutCheck(true);
+  };
   return (
     <div className="space-y-3">
+      <div className="rounded-md border border-[var(--border)] bg-[var(--bg-row)] px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[12px] text-[var(--text)]">执行动画</div>
+            <div className="text-[10px] text-[var(--text-mute)]">必须保留。验证器需要真实播放整段动画，因此它通常占用最多固定时间。</div>
+          </div>
+          <span className="chip text-[10px]">必选 · 最慢</span>
+        </div>
+      </div>
+      {rows.map(row => (
+        <div key={row.key} className="flex items-center justify-between gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-row)] px-3 py-2.5">
+          <div>
+            <div className="flex items-center gap-2 text-[12px] text-[var(--text)]">
+              {row.title}<span className="text-[9px] text-[var(--text-faint)]">{row.cost}</span>
+            </div>
+            <div className="text-[10px] text-[var(--text-mute)]">{row.desc}</div>
+          </div>
+          <input type="checkbox" checked={verificationChecks[row.key]} onChange={(e) => setVerificationCheck(row.key, e.target.checked)} className="accent-[var(--blue)]" />
+        </div>
+      ))}
       <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-row)] px-3 py-2.5">
         <div>
-          <div className="text-[12px] text-[var(--text)]">动画包围盒重叠检测</div>
-          <div className="text-[10px] text-[var(--text-mute)]">浏览器在环验证时,检测元素是否重叠而打回重生成。</div>
+          <div className="flex items-center gap-2 text-[12px] text-[var(--text)]">视觉模型检查<span className="text-[9px] text-[var(--text-faint)]">很慢</span></div>
+          <div className="text-[10px] text-[var(--text-mute)]">截图并请求远程视觉模型，通常额外增加数秒到几十秒；结果只作为提示。</div>
         </div>
-        <input type="checkbox" checked={bbCheckEnabled} onChange={(e) => setBbCheckEnabled(e.target.checked)} className="accent-[var(--blue)]" title="包围盒重叠检测" />
+        <input type="checkbox" checked={visionCheckEnabled} onChange={(e) => setVisionCheckEnabled(e.target.checked)} className="accent-[var(--blue)]" />
       </div>
       <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-row)] px-3 py-2.5">
         <div>
-          <div className="text-[12px] text-[var(--text)]">视觉检查</div>
-          <div className="text-[10px] text-[var(--text-mute)]">截图动画最后一帧给视觉辅助模型做画面检查(需配置视觉模型)。</div>
+          <div className="text-[12px] text-[var(--text)]">3D 屏幕布局检查（实验性）</div>
+          <div className="text-[10px] text-[var(--text-mute)]">3D 投影边界目前不够稳定，建议关闭；执行、公式、数值等选中项目仍会运行。</div>
         </div>
-        <input type="checkbox" checked={visionCheckEnabled} onChange={(e) => setVisionCheckEnabled(e.target.checked)} className="accent-[var(--blue)]" title="视觉检查" />
+        <input type="checkbox" checked={!skip3DLayoutCheck} onChange={(e) => setSkip3DLayoutCheck(!e.target.checked)} className="accent-[var(--blue)]" />
+      </div>
+      <div className="flex gap-2">
+        <button className="btn-blue px-3 py-1.5 rounded-md text-[11px]" onClick={recommended}>推荐设置</button>
+        <button className="btn-ghost px-3 py-1.5 rounded-md text-[11px]" onClick={fastest}>最快模式</button>
       </div>
       <div className="rounded-md border border-[var(--border)] bg-[var(--bg-row)] px-3 py-2.5 text-[10px] text-[var(--text-mute)] leading-relaxed">
-        正在运行的开关即时生效。若需手动清理布局(恢复面板宽度等),刷新页面即可从 localStorage 重建。
+        设置保存在当前浏览器。关闭项目会缩短检查时间或降低 CPU 占用，但不会缩短动画代码自身的播放时长。
       </div>
     </div>
   );

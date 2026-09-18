@@ -11,9 +11,10 @@ import os
 import logging
 import tempfile
 from .run_control import writing
+from .data_paths import backend_data_dir
 from typing import Optional
 
-_BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_BACKEND_DIR = backend_data_dir()
 _SESSIONS_DIR = os.path.join(_BACKEND_DIR, "sessions")
 logger = logging.getLogger(__name__)
 

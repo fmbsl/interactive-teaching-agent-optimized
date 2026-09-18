@@ -5,6 +5,8 @@ node_modules/
 # 构建产物
 dist/
 dist-ssr/
+build/
+release/
 *.local
 
 # Python
@@ -13,6 +15,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.portable-venv/
 
 # 后端运行时数据
 backend/sessions/

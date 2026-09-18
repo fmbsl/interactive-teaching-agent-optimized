@@ -129,11 +129,21 @@ export function screenBounds(scene: any, m: any, strict = true): Rect | null {
           return;
         }
         if (alpha) {
-          if(texture.rotation || texture.offset.x || texture.offset.y || texture.repeat.x!==1 || texture.repeat.y!==1) throw new Error('不支持变换过的文字纹理 UV');
-          const width=b.max.x-b.min.x,height=b.max.y-b.min.y,x=b.min.x,y=b.min.y;
-          b.min.x=x+width*alpha.left;b.max.x=x+width*alpha.right;
-          b.min.y=y+height*(texture.flipY?1-alpha.bottom:alpha.top);
-          b.max.y=y+height*(texture.flipY?1-alpha.top:alpha.bottom);
+          const uvTransformed = Math.abs(texture.rotation || 0) > 1e-7
+            || Math.abs(texture.offset?.x || 0) > 1e-7
+            || Math.abs(texture.offset?.y || 0) > 1e-7
+            || Math.abs((texture.repeat?.x ?? 1) - 1) > 1e-7
+            || Math.abs((texture.repeat?.y ?? 1) - 1) > 1e-7;
+          if (!uvTransformed) {
+            // 普通文字按实际非透明像素收紧边界，减少透明纹理留白造成的误报。
+            const width=b.max.x-b.min.x,height=b.max.y-b.min.y,x=b.min.x,y=b.min.y;
+            b.min.x=x+width*alpha.left;b.max.x=x+width*alpha.right;
+            b.min.y=y+height*(texture.flipY?1-alpha.bottom:alpha.top);
+            b.max.y=y+height*(texture.flipY?1-alpha.top:alpha.bottom);
+          }
+          // 旋转、偏移或缩放过的文字 UV 难以可靠反推字形像素边界。
+          // 此时保留 PlaneGeometry 的完整边界并继续做世界矩阵、相机投影、
+          // 越界和重叠检查；不再把“无法精确裁掉透明留白”当成动画失败。
         }
       }
       if (b && !b.isEmpty()) for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) {

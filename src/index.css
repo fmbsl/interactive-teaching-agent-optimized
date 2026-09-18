@@ -130,7 +130,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .tnum { font-variant-numeric: tabular-nums; }
 
-/* StagePanel 舞台:固定 16:9 内部分辨率(960×540,DPR 后 canvas 更大),canvas 元素盒填满容器 +
+/* StagePanel 舞台:固定 16:9 内部分辨率(1920×1080),canvas 元素盒填满容器 +
    object-fit:contain 保比例缩放居中(需 !important 压过 three.js 设的内联 style.width/height)。
    开合窗口/拖拽列宽不重建场景不重启动画;宽扁/窄高容器不拉伸变形。 */
 .stage-canvas-wrap canvas {

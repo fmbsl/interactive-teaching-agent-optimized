@@ -121,7 +121,8 @@ def _call_llm(prompt: str, cfg: LLMConfig, client: Optional["OpenAI"] = None, sy
                 from .debug_log import dlog, log_path as _dbg_path
                 import os as _os, datetime as _dt
                 kind = "step" if system_prompt is STEP_PROMPT else ("outline" if system_prompt is OUTLINE_PROMPT else "other")
-                _resp_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "llm_responses.log")
+                from .data_paths import data_path as _data_path
+                _resp_path = _data_path("llm_responses.log")
                 with open(_resp_path, "a", encoding="utf-8") as _f:
                     _f.write(f"\n===== {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} model={m} kind={kind} len={len(content)} =====\n")
                     _f.write(content)

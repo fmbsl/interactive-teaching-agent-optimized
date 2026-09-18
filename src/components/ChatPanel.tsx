@@ -442,7 +442,12 @@ export default function ChatPanel() {
       // 先打开动画窗:StagePanel 有 verifyRequest 消费端;窗口关着时 Promise 永不 resolve → 永久"生成中"死锁
       setStageOpen(true);
       const ok_err_frame = await requestVerify(ev.stepId, ev.code, myRun, (ev as any).params || {});
-        if (ok_err_frame.status === "cancelled") return;
+      if (ok_err_frame.status === "cancelled") return;
+      // 脚本已实际运行、只是布局检查未完全通过时，先自动展示草稿，后台仍继续有限修复。
+      const runnableChecks = new Set(ok_err_frame.checks || []);
+      if (!ok_err_frame.ok && ["execution", "scene-access", "measurements", "mathtex", "nan"].every(check => runnableChecks.has(check))) {
+        setSceneCode(ev.code);
+      }
       if (consumeRunIdRef.current !== myRun) return;
       const subStream = postRenderResult(sessionIdRef.current || "", ev.stepId, ok_err_frame.ok, ok_err_frame.error, ok_err_frame.frame, (ev as any).nonce || "", ok_err_frame);
       let subErr = "";
@@ -1274,7 +1279,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
     case "render_result":
       return (
         <div className={`flex items-center gap-1.5 text-[10.5px] py-0.5 ml-2 ${event.ok ? "text-[var(--blue-strong)]" : "text-[#e07a5f]"}`}>
-          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.verification?.status === "incomplete" ? "验证未完成" : event.verification?.status === "cancelled" ? "验证已取消" : event.ok ? (event.verification?.checks?.includes("layout-temporal") ? "布局采样检查通过" : "末帧检查通过") : "验证失败"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
+          <span>{event.ok ? <Check size={12} /> : <X size={12} />}</span> <span>{event.verification?.status === "incomplete" ? "验证未完成，正在修复" : event.verification?.status === "cancelled" ? "验证已取消" : event.ok ? (event.verification?.checks?.includes("layout-warning") ? "基础检查通过，布局有提示" : event.verification?.checks?.includes("display-fallback") ? "已展示可运行草稿" : event.verification?.checks?.includes("3d-layout-skipped") ? "3D 基础检查通过" : event.verification?.checks?.includes("layout-temporal") ? "布局采样检查通过" : "基础检查通过") : "验证失败，正在修复"}</span>{!event.ok && event.error && <span className="text-[var(--text-mute)] truncate">{event.error.slice(0, 60)}</span>}
         </div>
       );
     case "explain":
