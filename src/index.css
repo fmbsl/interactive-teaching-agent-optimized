@@ -181,6 +181,9 @@ input[type="range"]::-moz-range-thumb {
 /* KaTeX 公式:块级 $$ 居中,行内 $ 不换行 */
 .md-prose .katex-display { margin: 0.7em 0; overflow-x: auto; overflow-y: hidden; }
 .md-prose .katex { font-size: 1.05em; }
+/* KaTeX 无法解析极端模型输出时会用内联红色显示源码。保留源码便于理解，
+   但使用正文颜色，避免一个公式错误把整段讲解误显示成系统故障。 */
+.md-prose .katex-error { color: var(--text) !important; overflow-wrap: anywhere; }
 
 /* 中间舞台切换过渡:动画 ↔ 分解图 切换时淡入 + 轻微上移 */
 @keyframes stageFadeIn {

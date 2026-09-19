@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "type-check": "tsc --noEmit",
     "test:verification": "node --experimental-strip-types --test tests/verification.test.ts",
-    "test:reliability": "node --experimental-strip-types --test tests/reliability.test.ts"
+    "test:reliability": "node --experimental-strip-types --test tests/reliability.test.ts tests/markdownMath.test.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.11.2",

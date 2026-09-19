@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
+import { normalizeDisplayMath } from "../markdownMath";
 import {
   nextStep, prevStep, gotoStep,
   postRenderResult, getTrace,
@@ -1190,7 +1191,7 @@ function EventCard({ event, collapsed, onToggle }: { event: ChatEvent; collapsed
             </div>}
             {isUser
               ? <div className="whitespace-pre-wrap">{event.text}</div>
-              : <div className="md-prose"><ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>{event.text}</ReactMarkdown></div>}
+              : <div className="md-prose"><ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>{normalizeDisplayMath(event.text)}</ReactMarkdown></div>}
           </div>
         </div>
       );

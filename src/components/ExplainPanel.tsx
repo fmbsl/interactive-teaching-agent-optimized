@@ -5,6 +5,7 @@ import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import { normalizeDisplayMath } from "../markdownMath";
 
 export default function ExplainPanel() {
   const { lesson, currentStep, topics, pendingQuiz, quizResult, setQuizResult, setPendingResume } = useApp();
@@ -17,9 +18,10 @@ export default function ExplainPanel() {
 
   // 新流程用 explanation(md,含公式);旧流程降级为 narration + formula 独立块。step null 时空。
   const hasMd = !!step && !!(step as any).explanation && (step as any).explanation.trim().length > 0;
-  const mdContent = !step ? "" : (hasMd
+  const rawMdContent = !step ? "" : (hasMd
     ? (step as any).explanation
     : (step.narration ? step.narration : "") + (step.formula ? `\n\n$$${step.formula}$$` : ""));
+  const mdContent = normalizeDisplayMath(rawMdContent);
 
   // 考题作答:用户点选项 → 本地判对错显示+解析;经 store.pendingResume 触发 ChatPanel consume chatAnswer
   // (主 agent 对作答的反馈走 ChatPanel consume 进对话栏)

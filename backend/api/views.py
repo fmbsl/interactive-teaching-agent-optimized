@@ -894,6 +894,19 @@ def chat(request):
     # 把用户消息里的文件信息拼进给主 agent 的文本(只给 file_id+name,不给全文)
     user_msg = text
     s = agent.get_session(sid)
+    # POST /api/sessions 创建的是标题为“新会话”的空壳。第一次正式提问时要把
+    # 用户输入写成会话标题和原始问题，否则后续 add_topic 虽然会持久化主题，
+    # 会话列表仍会永久显示“新会话”。只在空标题阶段自动命名，保留用户手动重命名。
+    if s:
+        metadata_changed = False
+        if not (s.get("question") or "").strip():
+            s["question"] = text
+            metadata_changed = True
+        if not (s.get("title") or "").strip() or s.get("title") == "新会话":
+            s["title"] = text[:20]
+            metadata_changed = True
+        if metadata_changed:
+            agent._persist_state(sid)
     if file_ids and s:
         files_info = ", ".join(f"{fid}({next((f['name'] for f in s.get('files',[]) if f['id']==fid), '?')})" for fid in file_ids)
         user_msg = f"{text}\n[用户上传文件: {files_info}。用 read/grep 工具按需读取,不要凭文件名猜测内容。]"

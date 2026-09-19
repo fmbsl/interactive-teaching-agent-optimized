@@ -169,8 +169,15 @@ export default function StagePanel() {
     }
     const container = containerRef.current;
     if (!container) return;
+    // manim-web 的 Scene.dispose() 会释放渲染资源，但部分版本不会从宿主节点移除
+    // 已创建的 canvas。切换会话或从 3D 切到 2D 时如果直接创建下一场景，旧 canvas
+    // 会继续留在 flex 容器里，最终出现“旧 3D + 新 2D”并排显示。
+    container.replaceChildren();
     // 自建场景代码不需要注入 scene(自己在 container 上 new Scene)
-    if (isSelfBuildCode(sceneCode)) { setScene(null); return; }
+    if (isSelfBuildCode(sceneCode)) {
+      setScene(null);
+      return () => { container.replaceChildren(); };
+    }
     const want3D = is3DCode(sceneCode);
     // 固定 pixelRatio=1，使实际绘图缓冲区精确为 1920×1080；避免高 DPI 屏幕再放大到 4K，
     // 导致显存和逐帧渲染开销无谓翻倍，同时让截图/录屏分辨率保持可预期。
@@ -179,6 +186,9 @@ export default function StagePanel() {
     setScene(s);
     return () => {
       try { (s as any).dispose?.(); } catch { /* ignore */ }
+      // dispose 只负责 WebGL/动画资源；DOM 由舞台组件自己负责清理。
+      // cleanup 发生在下一场景创建前，因此这里不会误删新场景的 canvas。
+      container.replaceChildren();
       setScene(null);
     };
   }, [sceneCode, stageResetKey, theme]);
