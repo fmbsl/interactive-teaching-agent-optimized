@@ -32,6 +32,7 @@ Remove-Item -Recurse -Force (Join-Path $Root "release\ManimAgent") -ErrorAction 
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
 Copy-Item (Join-Path $PSScriptRoot "README.txt") (Join-Path $Root "release\ManimAgent\README.txt") -Force
+Copy-Item (Join-Path $Root "LICENSE") (Join-Path $Root "release\ManimAgent\LICENSE") -Force
 Copy-Item (Join-Path $PSScriptRoot "Stop.cmd") (Join-Path $Root "release\ManimAgent\Stop.cmd") -Force
 
 Write-Host "[4/4] Compressing package..."

@@ -394,6 +394,7 @@ npm run test:reliability
 ├─ portable\             # Windows 便携版启动器和打包配置
 ├─ tests\                # 前端可靠性与验证测试
 ├─ tools\                # 示例和开发工具
+├─ LICENSE               # MIT 开源协议
 ├─ dist\                 # 前端构建产物（生成）
 └─ release\              # EXE 与 ZIP（生成）
 ```
